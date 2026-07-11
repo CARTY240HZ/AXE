@@ -18,8 +18,11 @@ Describe 'Write-LWLog' {
         $content | Should -Match 'ERR   danger'
     }
 
-    It 'Does not throw if log dir missing (creates it)' {
+    It 'Recreates missing log dir and writes the line (Set-LWLogPath can point anywhere)' {
         Remove-Item (Split-Path $script:LWLog) -Recurse -Force -EA SilentlyContinue
-        { Write-LWLog 'recreate' } | Should -Not -Throw
+        Write-LWLog 'recreate'
+        # The logger must recreate the parent dir and actually write
+        Test-Path $script:LWLog | Should -BeTrue
+        (Get-Content $script:LWLog -Raw) | Should -Match 'recreate'
     }
 }

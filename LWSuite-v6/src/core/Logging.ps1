@@ -16,6 +16,9 @@ foreach($d in @($script:LWData,$script:LWBackup)){ if(-not(Test-Path $d)){ New-I
 function Write-LWLog {
     param([string]$Msg,[string]$Level='INFO')
     $line = "[{0}] {1,-5} {2}" -f (Get-Date -Format 'HH:mm:ss'),$Level,$Msg
+    # Ensure parent dir exists (Set-LWLogPath can point anywhere; Add-Content won't create dirs)
+    $dir = Split-Path $script:LWLogPath -Parent
+    if($dir -and -not(Test-Path $dir)){ New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     Add-Content -Path $script:LWLogPath -Value $line -Encoding UTF8
     if($script:LogBox -and $script:LWLogSink){
         try {
