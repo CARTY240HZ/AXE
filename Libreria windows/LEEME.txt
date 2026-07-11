@@ -1,0 +1,52 @@
+=====================================================
+ LIBRERIA WINDOWS TWEAKER - Guia de uso (v4)
+=====================================================
+
+MOTOR ACTIVO (usar este)
+------------------------
+  LWSuite\LWSuite.bat            -> abre la GUI elite (se eleva solo)
+  LWSuite\LWSuite.bat -SelfTest  -> valida integridad (0 fallos = OK)
+  LWSuite\LWSuite.bat -List      -> estado real de cada tweak en tu PC
+  LWSuite\LWSuite.bat -Export perfil.json
+  LWSuite\LWSuite.bat -Import perfil.json   (requiere admin)
+
+  El launcher raiz "Libreria Windows Tweaker.bat" redirige aqui.
+
+
+MOTORES LEGACY (no borrar, pero no usar para lo nuevo)
+------------------------------------------------------
+  Libreria_Windows_Tweaker.ps1   -> GUI v2. Sin gating de hardware,
+                                     sin runspace en restore, valores
+                                     divergentes. Sustituida por v4.
+  Cpu\Tweak Cpu.bat
+  Gpu\Gpu_on_games.bat
+  Gpu\Gpu_off_games.bat
+  Limpieza\Limpieza de basura.bat
+  Privacidad\Desactivar privacidad.bat
+  Red\tweak_red.bat
+  Servicios\Desactivar servicios.bat
+  Sistema\Optimizador_Sistema_general.bat
+  Crear_Punto_Restauracion.bat   -> .bat individuales. Funcionales y
+                                     reversibles, pero el catalogo de
+                                     v4 los unifica y corrige valores.
+  _originales_backup\            -> versiones v1 (riesgosas). Referencia.
+
+
+QUE HACE v4 QUE NO HACIAN LOS ANTERIORES
+----------------------------------------
+  - Gating por hardware: bloquea tweaks que danarian TU PC
+    (Core Parking en laptop hibrida, DNS en VPN corporativa, etc.)
+  - Tier EXTREMO (VBS/Spectre) aislado, opt-in, fuera del preset
+  - Backup de startup robusto + RESTAURAR (antes se perdia)
+  - Master Revert: revierte TODO + limpia residuos de v1
+  - Punto de restauracion en segundo plano (no congela la GUI)
+  - Buscador de tweaks en vivo
+  - -SelfTest: 64 checks de integridad del catalogo
+  - Log diario en LWSuite\lw_log_YYYY-MM-DD.log
+
+
+ARCHIVOS DE ESTADO (no tocar a mano)
+------------------------------------
+  LWSuite\startup_disabled.json   -> backup de autoruns desactivados
+  LWSuite\Backups\*.reg           -> export de claves antes de tocar
+  LWSuite\lw_log_*.log            -> historial de acciones
