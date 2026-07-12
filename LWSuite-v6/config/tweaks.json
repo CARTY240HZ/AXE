@@ -1002,5 +1002,256 @@
                 "OriginalValue": 0
             }
         ]
+    },
+    "cpu_park": {
+        "Category": "CPU", "Tier": 1, "Reboot": false,
+        "Name": "Core Parking OFF", "Desc": "Nucleos siempre activos",
+        "Requires": { "Desktop": true, "NotHybrid": true }, "Recommended": false,
+        "Script": {
+            "Test":  " $g=((Get-RV 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power\\User\\PowerSchemes' 'ActivePowerScheme') -replace '[{}]',''); (Get-RV \"HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power\\User\\PowerSchemes\\$g\\54533251-82be-4824-96c1-47b60b740d00\\0cc5b647-c1df-4637-891a-dec35c318583\" 'ACSettingIndex') -eq 100 ",
+            "Apply": "powercfg -setacvalueindex scheme_current sub_processor 0cc5b647-c1df-4637-891a-dec35c318583 100; powercfg -setactive scheme_current",
+            "Undo":  "powercfg -setacvalueindex scheme_current sub_processor 0cc5b647-c1df-4637-891a-dec35c318583 0; powercfg -setactive scheme_current"
+        }
+    },
+    "cpu_dyntick": {
+        "Category": "CPU", "Tier": 1, "Reboot": true,
+        "Name": "Dynamic Tick OFF", "Desc": "Timer constante, menos jitter (REINICIO)",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " ((Get-LWCache 'bcd' { bcdedit /enum '{current}' | Out-String }) -match 'disabledynamictick\\s+Yes') ",
+            "Apply": "bcdedit /set disabledynamictick yes | Out-Null",
+            "Undo":  "bcdedit /deletevalue disabledynamictick | Out-Null"
+        }
+    },
+    "cpu_tsc": {
+        "Category": "CPU", "Tier": 1, "Reboot": true,
+        "Name": "TSC Sync Enhanced", "Desc": "Sincroniza contador de tiempo entre nucleos (REINICIO)",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " ((Get-LWCache 'bcd' { bcdedit /enum '{current}' | Out-String }) -match 'tscsyncpolicy\\s+Enhanced') ",
+            "Apply": "bcdedit /set tscsyncpolicy Enhanced | Out-Null",
+            "Undo":  "bcdedit /deletevalue tscsyncpolicy | Out-Null"
+        }
+    },
+    "lat_msi_audio": {
+        "Category": "LATENCIA", "Tier": 1, "Reboot": true,
+        "Name": "MSI mode en HD Audio", "Desc": "Baja DPC latency del audio",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " $hd=Get-LWHwCache 'pnp:hda' { Get-CimInstance Win32_PnPEntity -Filter \"Name LIKE '%High Definition Audio%'\" -EA SilentlyContinue | Where-Object PNPDeviceID -like 'PCI*' }; if(-not $hd){return $true}; $ok=$true; foreach($d in $hd){ $p=\"HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\$($d.PNPDeviceID)\\Device Parameters\\Interrupt Management\\MessageSignaledInterruptProperties\"; if((Get-RV $p 'MSISupported') -ne 1){$ok=$false} }; $ok ",
+            "Apply": " $hd=Get-CimInstance Win32_PnPEntity -Filter \"Name LIKE '%High Definition Audio%'\" -EA SilentlyContinue | Where-Object PNPDeviceID -like 'PCI*'; foreach($d in $hd){ $p=\"HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\$($d.PNPDeviceID)\\Device Parameters\\Interrupt Management\\MessageSignaledInterruptProperties\"; Set-RD $p 'MSISupported' 1 } ",
+            "Undo":  " $hd=Get-CimInstance Win32_PnPEntity -Filter \"Name LIKE '%High Definition Audio%'\" -EA SilentlyContinue | Where-Object PNPDeviceID -like 'PCI*'; foreach($d in $hd){ $p=\"HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\$($d.PNPDeviceID)\\Device Parameters\\Interrupt Management\\MessageSignaledInterruptProperties\"; Del-RV $p 'MSISupported' } "
+        }
+    },
+    "lat_irq_gpu": {
+        "Category": "LATENCIA", "Tier": 1, "Reboot": true,
+        "Name": "IRQ priority alta en GPU", "Desc": "DevicePriority=3 en la GPU (REINICIO)",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " $g=Get-LWHwCache 'pnp:disp' { Get-CimInstance Win32_PnPEntity -Filter \"PNPClass='Display'\" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' } }; if(-not $g){return $true}; $ok=$true; foreach($d in $g){ $p=\"HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\$($d.PNPDeviceID)\\Device Parameters\\Interrupt Management\\Affinity Policy\"; if((Get-RV $p 'DevicePriority') -ne 3){$ok=$false} }; $ok ",
+            "Apply": " $g=Get-CimInstance Win32_PnPEntity -Filter \"PNPClass='Display'\" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' }; foreach($d in $g){ $p=\"HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\$($d.PNPDeviceID)\\Device Parameters\\Interrupt Management\\Affinity Policy\"; Set-RD $p 'DevicePriority' 3 } ",
+            "Undo":  " $g=Get-CimInstance Win32_PnPEntity -Filter \"PNPClass='Display'\" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' }; foreach($d in $g){ $p=\"HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\$($d.PNPDeviceID)\\Device Parameters\\Interrupt Management\\Affinity Policy\"; Del-RV $p 'DevicePriority' } "
+        }
+    },
+    "gpu_ulps": {
+        "Category": "GPU", "Tier": 1, "Reboot": true,
+        "Name": "NVIDIA ULPS OFF", "Desc": "GPU no entra en bajo consumo profundo (REINICIO)",
+        "Requires": { "Nvidia": true }, "Recommended": false,
+        "Script": {
+            "Test":  " $k='HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'; $sub=Get-ChildItem $k -EA SilentlyContinue | Where-Object { (Get-RV $_.PSPath 'DriverDesc') -match 'NVIDIA' }; if(-not $sub){return $true}; $ok=$true; foreach($s in $sub){ if((Get-RV $s.PSPath 'EnableUlps') -ne 0){$ok=$false} }; $ok ",
+            "Apply": " $k='HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'; Get-ChildItem $k -EA SilentlyContinue | Where-Object { (Get-RV $_.PSPath 'DriverDesc') -match 'NVIDIA' } | ForEach-Object { Set-RD $_.PSPath 'EnableUlps' 0 } ",
+            "Undo":  " $k='HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'; Get-ChildItem $k -EA SilentlyContinue | Where-Object { (Get-RV $_.PSPath 'DriverDesc') -match 'NVIDIA' } | ForEach-Object { Del-RV $_.PSPath 'EnableUlps' } "
+        }
+    },
+    "net_nagle": {
+        "Category": "RED", "Tier": 1, "Reboot": false,
+        "Name": "Nagle OFF (adaptador activo)", "Desc": "Menos delay en paquetes pequenos",
+        "Requires": {}, "Recommended": true,
+        "Script": {
+            "Test":  " $ifs=Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces' -EA SilentlyContinue; $any=$false; foreach($i in $ifs){ $p=Get-ItemProperty $i.PSPath -EA SilentlyContinue; if($p.DhcpIPAddress -or $p.IPAddress){ if((Get-RV $i.PSPath 'TcpAckFrequency') -eq 1 -and (Get-RV $i.PSPath 'TCPNoDelay') -eq 1){$any=$true} } }; $any ",
+            "Apply": " $ifs=Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces'; foreach($i in $ifs){ $p=Get-ItemProperty $i.PSPath -EA SilentlyContinue; if($p.DhcpIPAddress -or $p.IPAddress){ Set-RD $i.PSPath 'TcpAckFrequency' 1; Set-RD $i.PSPath 'TCPNoDelay' 1 } } ",
+            "Undo":  " $ifs=Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces'; foreach($i in $ifs){ Del-RV $i.PSPath 'TcpAckFrequency'; Del-RV $i.PSPath 'TCPNoDelay' } "
+        }
+    },
+    "net_rss": {
+        "Category": "RED", "Tier": 1, "Reboot": false,
+        "Name": "RSS activado", "Desc": "Reparte trafico de red entre nucleos",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  "try{(Get-NetOffloadGlobalSetting -EA Stop).ReceiveSideScaling -eq 'Enabled'}catch{$false}",
+            "Apply": "netsh interface tcp set global rss=enabled | Out-Null",
+            "Undo":  "netsh interface tcp set global rss=default | Out-Null"
+        }
+    },
+    "net_ctcp": {
+        "Category": "RED", "Tier": 1, "Reboot": false,
+        "Name": "CTCP (congestion gaming)", "Desc": "Recupera antes tras perdida de paquetes",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " $t=Get-LWCache 'nettcp' { try{Get-NetTCPSetting -SettingName Internet -EA Stop}catch{$null} }; if(-not $t){$false}else{$t.CongestionProvider -eq 'CTCP'} ",
+            "Apply": "netsh int tcp set supplemental template=internet congestionprovider=ctcp | Out-Null",
+            "Undo":  "netsh int tcp set supplemental template=internet congestionprovider=cubic | Out-Null"
+        }
+    },
+    "net_ecn": {
+        "Category": "RED", "Tier": 1, "Reboot": false,
+        "Name": "ECN OFF", "Desc": "Evita conflictos con routers viejos",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " $t=Get-LWCache 'nettcp' { try{Get-NetTCPSetting -SettingName Internet -EA Stop}catch{$null} }; if(-not $t){$false}else{$t.EcnCapability -eq 'Disabled'} ",
+            "Apply": "netsh int tcp set global ecncapability=disabled | Out-Null",
+            "Undo":  "netsh int tcp set global ecncapability=default | Out-Null"
+        }
+    },
+    "net_intmod": {
+        "Category": "RED", "Tier": 1, "Reboot": false,
+        "Name": "Interrupt Moderation NIC OFF", "Desc": "Menos buffering en el adaptador activo",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " if(-not $script:HW.NicName){return $true}; try{ $v=(Get-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -EA Stop).RegistryValue; $v -eq 0 }catch{ $true } ",
+            "Apply": " if($script:HW.NicName){ Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 0 -EA SilentlyContinue } ",
+            "Undo":  " if($script:HW.NicName){ Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 1 -EA SilentlyContinue } "
+        }
+    },
+    "net_dns": {
+        "Category": "RED", "Tier": 1, "Reboot": false,
+        "Name": "[OPT] DNS rapidos 1.1.1.1 / 8.8.8.8", "Desc": "OJO: rompe DNS local/VPN. No va en preset",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " if(-not $script:HW.NicName){return $false}; try{(Get-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -AddressFamily IPv4 -EA Stop).ServerAddresses -contains '1.1.1.1'}catch{$false} ",
+            "Apply": " if($script:HW.NicName){ Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ServerAddresses @('1.1.1.1','8.8.8.8') } ",
+            "Undo":  " if($script:HW.NicName){ Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ResetServerAddresses } "
+        }
+    },
+    "mem_lastaccess": {
+        "Category": "MEMORIA", "Tier": 0, "Reboot": false,
+        "Name": "NTFS last-access OFF", "Desc": "Menos escrituras de metadatos al leer",
+        "Requires": {}, "Recommended": true,
+        "Script": {
+            "Test":  " (& fsutil behavior query disablelastaccess) -match 'Disabled|= 1' ",
+            "Apply": "fsutil behavior set disablelastaccess 1 | Out-Null",
+            "Undo":  "fsutil behavior set disablelastaccess 0 | Out-Null"
+        }
+    },
+    "sys_hibernate": {
+        "Category": "SISTEMA", "Tier": 1, "Reboot": false,
+        "Name": "Hibernacion OFF", "Desc": "Libera hiberfil.sys (portatil pierde hibernar)",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  "(Get-RV 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power' 'HibernateEnabled') -eq 0",
+            "Apply": "powercfg /h off",
+            "Undo":  "powercfg /h on"
+        }
+    },
+    "priv_appraiser": {
+        "Category": "PRIVACIDAD", "Tier": 0, "Reboot": false,
+        "Name": "Compatibility Appraiser OFF", "Desc": "Sin analisis de compatibilidad de fondo",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " $t=Get-ScheduledTask -TaskPath '\\Microsoft\\Windows\\Application Experience\\' -EA SilentlyContinue | Where-Object TaskName -match 'Compatibility Appraiser'; if(-not $t){return $true}; @($t | Where-Object State -ne 'Disabled').Count -eq 0 ",
+            "Apply": " Get-ScheduledTask -TaskPath '\\Microsoft\\Windows\\Application Experience\\' -EA SilentlyContinue | Where-Object TaskName -match 'Compatibility Appraiser' | Disable-ScheduledTask -EA SilentlyContinue | Out-Null ",
+            "Undo":  " Get-ScheduledTask -TaskPath '\\Microsoft\\Windows\\Application Experience\\' -EA SilentlyContinue | Where-Object TaskName -match 'Compatibility Appraiser' | Enable-ScheduledTask -EA SilentlyContinue | Out-Null "
+        }
+    },
+    "priv_diagtask": {
+        "Category": "PRIVACIDAD", "Tier": 0, "Reboot": false,
+        "Name": "Tareas de telemetria OFF", "Desc": "Desactiva tareas CEIP",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " $t=Get-ScheduledTask -TaskPath '\\Microsoft\\Windows\\Customer Experience Improvement Program\\' -EA SilentlyContinue; if(-not $t){return $true}; @($t | Where-Object State -ne 'Disabled').Count -eq 0 ",
+            "Apply": " Get-ScheduledTask -TaskPath '\\Microsoft\\Windows\\Customer Experience Improvement Program\\' -EA SilentlyContinue | Disable-ScheduledTask -EA SilentlyContinue | Out-Null ",
+            "Undo":  " Get-ScheduledTask -TaskPath '\\Microsoft\\Windows\\Customer Experience Improvement Program\\' -EA SilentlyContinue | Enable-ScheduledTask -EA SilentlyContinue | Out-Null "
+        }
+    },
+    "app_nvidia": {
+        "Category": "APPS", "Tier": 0, "Reboot": false,
+        "Name": "Telemetria NVIDIA OFF", "Desc": "Servicio NvTelemetryContainer + tareas programadas",
+        "Requires": { "Nvidia": true }, "Recommended": false,
+        "Service": [
+            { "Name": "NvTelemetryContainer", "StartupType": "disabled", "OriginalType": "demand" }
+        ],
+        "Script": {
+            "Test":  " (Get-SvcStart 'NvTelemetryContainer') -eq 'Disabled' ",
+            "Apply": " & schtasks.exe /change /tn 'NvTmRepOnLogon_{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}' /disable 2>$null | Out-Null; & schtasks.exe /change /tn 'NvTmRep_{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}' /disable 2>$null | Out-Null; & schtasks.exe /change /tn 'NvTmMon_{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}' /disable 2>$null | Out-Null ",
+            "Undo":  " & schtasks.exe /change /tn 'NvTmRepOnLogon_{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}' /enable 2>$null | Out-Null; & schtasks.exe /change /tn 'NvTmRep_{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}' /enable 2>$null | Out-Null; & schtasks.exe /change /tn 'NvTmMon_{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}' /enable 2>$null | Out-Null "
+        }
+    },
+    "ext_cfg": {
+        "Category": "EXTREMO", "Tier": 2, "Reboot": true,
+        "Name": "Control Flow Guard (CFG) OFF", "Desc": "Apaga proteccion de salto indirecto. Ganancia pequena en CPU-bound. Requiere reinicio",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " $m=Get-LWCache 'procmit' { try{Get-ProcessMitigation -System -EA Stop}catch{$null} }; if(-not $m){$false}else{$m.Cfg.Enable -eq 'OFF'} ",
+            "Apply": " Set-ProcessMitigation -System -Disable CFG ",
+            "Undo":  " Set-ProcessMitigation -System -Enable CFG "
+        }
+    },
+    "ext_aslr": {
+        "Category": "EXTREMO", "Tier": 2, "Reboot": true,
+        "Name": "Mandatory ASLR OFF", "Desc": "Apaga randomizado de memoria del sistema. Expone a exploits de buffer overflow",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " $m=Get-LWCache 'procmit' { try{Get-ProcessMitigation -System -EA Stop}catch{$null} }; if(-not $m){$false}else{$m.Aslr.ForceRelocateImages -eq 'OFF'} ",
+            "Apply": " Set-ProcessMitigation -System -Disable ForceRelocateImages ",
+            "Undo":  " Set-ProcessMitigation -System -Enable ForceRelocateImages "
+        }
+    },
+    "ext_hypervisor": {
+        "Category": "EXTREMO", "Tier": 2, "Reboot": true,
+        "Name": "Hypervisor OFF (mata VBS/CredGuard de raiz)", "Desc": "+3-8% FPS si usas Hyper-V/WSL2/Sandbox. ROMPE WSL2, Docker, Windows Sandbox, Hyper-V y Credential Guard. Reversible. REINICIO",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " ((Get-LWCache 'bcd' { bcdedit /enum '{current}' | Out-String }) -match 'hypervisorlaunchtype\\s+Off') ",
+            "Apply": "bcdedit /set hypervisorlaunchtype off | Out-Null",
+            "Undo":  "bcdedit /set hypervisorlaunchtype auto | Out-Null"
+        }
+    },
+    "ext_dep": {
+        "Category": "EXTREMO", "Tier": 2, "Reboot": true,
+        "Name": "DEP/NX OFF (placebo, ~0 FPS)", "Desc": "Desactiva Data Execution Prevention. Ganancia FPS ~0 en hardware moderno. Reduce proteccion anti-exploit. REINICIO",
+        "Requires": {}, "Recommended": false,
+        "Script": {
+            "Test":  " ((Get-LWCache 'bcd' { bcdedit /enum '{current}' | Out-String }) -match 'nx\\s+AlwaysOff') ",
+            "Apply": "bcdedit /set nx AlwaysOff | Out-Null",
+            "Undo":  "bcdedit /set nx OptIn | Out-Null"
+        }
+    },
+    "svc_telemetry": {
+        "Category": "SERVICIOS", "Tier": 0, "Reboot": false,
+        "Name": "Telemetria OFF", "Desc": "DiagTrack, dmwappushservice, WerSvc",
+        "Requires": {}, "Recommended": false,
+        "Service": [
+            { "Name": "DiagTrack",        "StartupType": "disabled", "OriginalType": "auto" },
+            { "Name": "dmwappushservice", "StartupType": "disabled", "OriginalType": "demand" },
+            { "Name": "WerSvc",           "StartupType": "disabled", "OriginalType": "demand" }
+        ]
+    },
+    "svc_obsolete": {
+        "Category": "SERVICIOS", "Tier": 0, "Reboot": false,
+        "Name": "Servicios obsoletos OFF", "Desc": "RetailDemo, MapsBroker, Fax (SKU-safe)",
+        "Requires": {}, "Recommended": false,
+        "Service": [
+            { "Name": "RetailDemo",  "StartupType": "disabled", "OriginalType": "demand" },
+            { "Name": "MapsBroker",  "StartupType": "disabled", "OriginalType": "demand" },
+            { "Name": "Fax",         "StartupType": "disabled", "OriginalType": "demand" }
+        ]
+    },
+    "svc_sysmain": {
+        "Category": "SERVICIOS", "Tier": 1, "Reboot": false,
+        "Name": "Precarga/diagnostico OFF", "Desc": "SysMain, PcaSvc, DPS (con SSD, precarga aporta poco)",
+        "Requires": {}, "Recommended": false,
+        "Service": [
+            { "Name": "SysMain", "StartupType": "disabled", "OriginalType": "auto" },
+            { "Name": "PcaSvc",  "StartupType": "disabled", "OriginalType": "auto" },
+            { "Name": "DPS",     "StartupType": "disabled", "OriginalType": "auto" }
+        ]
+    },
+    "svc_remotereg": {
+        "Category": "SERVICIOS", "Tier": 0, "Reboot": false,
+        "Name": "RemoteRegistry OFF (seguridad)", "Desc": "Hardening: siempre lo deja disabled (no es reversible por seguridad)",
+        "Requires": {}, "Recommended": false, "Unidirectional": true,
+        "Service": [
+            { "Name": "RemoteRegistry", "StartupType": "disabled", "OriginalType": "disabled" }
+        ]
     }
 }
