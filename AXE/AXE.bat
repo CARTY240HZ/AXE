@@ -19,12 +19,12 @@ if %errorlevel% neq 0 (
 )
 
 :: Quitar Mark-of-the-Web del .ps1 por si se descargo
-powershell -NoProfile -Command "Unblock-File -Path '%~dp0AXE.ps1' -ErrorAction SilentlyContinue"
+powershell -NoProfile -Command "Unblock-File -Path '%~dp0dist\AXE.ps1' -ErrorAction SilentlyContinue"
 
 :: Si hay argumentos, reenviarlos al .ps1 (modo CLI). Si no, abre GUI (admin ya concedido).
 set "AXEARGS=%*"
 if "%AXEARGS%"=="" (
-    powershell -NoProfile -ExecutionPolicy RemoteSigned -STA -File "%~dp0AXE.ps1"
+    powershell -NoProfile -ExecutionPolicy RemoteSigned -STA -File "%~dp0dist\AXE.ps1"
 ) else (
-    powershell -NoProfile -ExecutionPolicy RemoteSigned -STA -File "%~dp0AXE.ps1" %AXEARGS%
+    powershell -NoProfile -ExecutionPolicy RemoteSigned -STA -File "%~dp0dist\AXE.ps1" %AXEARGS%
 )

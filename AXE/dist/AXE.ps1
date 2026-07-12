@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 6.0.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-12 20:54:27Z
+# Build UTC: 2026-07-12 20:58:19Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
