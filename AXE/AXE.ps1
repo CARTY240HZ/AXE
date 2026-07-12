@@ -4,7 +4,7 @@
 #
 # Motor UNICO consolidado. Corrige todos los hallazgos del audit:
 #   C1  Backup/restore de startup robusto + Restore-Autorun
-#   A1  Invoke-AXEMasterRevert limpia residuos v1 (SmartScreen/NoConnectedUser/hypervisor)
+#   A1  Master revert limpia residuos v1 (SmartScreen/NoConnectedUser/hypervisor)
 #   A2  Un valor canonico por tweak; fuentes unificadas
 #   M1  Reverts que no revertian -> eliminados o documentados como unidireccionales
 #   M4  Punto de restauracion en runspace (GUI no se congela)
@@ -33,6 +33,7 @@ $script:AXEData   = Join-Path $script:AXERoot 'AXE'
 $script:AXEBackup = Join-Path $script:AXEData 'Backups'
 $script:AXELog    = Join-Path $script:AXEData ("axe_log_{0}.log" -f (Get-Date -Format 'yyyy-MM-dd'))
 $script:RunBak   = Join-Path $script:AXEData 'startup_disabled.json'
+$script:StateBak = Join-Path $script:AXEData 'tweak_state.json'   # snapshot revert: estado previo real por tweak
 # Migracion de datos legacy: si existe <root>/LWSuite/ (motor v4 pre-rebrand) y aun no hay
 # <root>/AXE/, moverlo entero (Backups, logs, startup_disabled.json). Idempotente.
 $legacy = Join-Path $script:AXERoot 'LWSuite'
@@ -87,14 +88,50 @@ function Get-AXEHardware {
 # =====================================================
 # REGION 3 - HELPERS (registro / servicio / backup)
 # =====================================================
+# --- SNAPSHOT REVERT: captura del estado previo REAL por tweak (H3) ---
+# Los 4 primitivos de escritura (Set-RD/Set-RS/Del-RV/Set-SvcStart) graban el valor
+# ANTERIOR de cada clave/servicio que tocan, la PRIMERA vez que se aplica el tweak.
+# Revert/Master restauran ese valor exacto (o lo borran si no existia) en vez de un
+# default de fabrica hardcodeado. Solo aplica a tweaks 100% registro/servicio; los que
+# usan bcdedit/powercfg/ProcessMitigation/DNS caen a su Revert scriptblock (Test-SnapEligible).
+$script:capTweak = $null    # id del tweak en captura (o $null)
+$script:capBuf   = @{}      # id -> [ordered]@{ "P|N" = record }
+function Test-SnapEligible($tw){
+    $s = "$($tw.Apply)`n$($tw.Revert)"
+    foreach($t in 'bcdedit','powercfg','Set-ProcessMitigation','Set-DnsClient'){ if($s -match [regex]::Escape($t)){ return $false } }
+    return $true
+}
+function Push-RegBackup($p,$n){
+    if(-not $script:capTweak){ return }
+    if(-not $script:capBuf.ContainsKey($script:capTweak)){ $script:capBuf[$script:capTweak]=[ordered]@{} }
+    $key="$p|$n"
+    if($script:capBuf[$script:capTweak].Contains($key)){ return }   # solo primera vez
+    $rec=@{T='reg'; P=$p; N=$n; Had=$false}
+    try {
+        $it=Get-Item -LiteralPath $p -ErrorAction Stop
+        if($it.GetValueNames() -contains $n){ $rec.Had=$true; $rec.V=$it.GetValue($n); $rec.K=$it.GetValueKind($n).ToString() }
+    } catch {}
+    $script:capBuf[$script:capTweak][$key]=$rec
+}
+function Push-SvcBackup($n){
+    if(-not $script:capTweak){ return }
+    if(-not $script:capBuf.ContainsKey($script:capTweak)){ $script:capBuf[$script:capTweak]=[ordered]@{} }
+    $key="svc|$n"
+    if($script:capBuf[$script:capTweak].Contains($key)){ return }
+    $st=Get-SvcStart $n
+    $map=@{Automatic='auto'; Manual='demand'; Disabled='disabled'; Boot='boot'; System='system'}
+    $tok=if($st -and $map.ContainsKey("$st")){ $map["$st"] } else { $null }
+    $script:capBuf[$script:capTweak][$key]=@{T='svc'; N=$n; Start=$tok}
+}
 function Get-RV($p,$n){ try { (Get-ItemProperty -Path $p -Name $n -ErrorAction Stop).$n } catch { $null } }
-function Set-RD($p,$n,$v){ if(-not(Test-Path $p)){ New-Item -Path $p -Force | Out-Null }; New-ItemProperty -Path $p -Name $n -Value $v -PropertyType DWord -Force | Out-Null }
-function Set-RS($p,$n,$v){ if(-not(Test-Path $p)){ New-Item -Path $p -Force | Out-Null }; New-ItemProperty -Path $p -Name $n -Value $v -PropertyType String -Force | Out-Null }
-function Del-RV($p,$n){ Remove-ItemProperty -Path $p -Name $n -ErrorAction SilentlyContinue }
+function Set-RD($p,$n,$v){ Push-RegBackup $p $n; if(-not(Test-Path $p)){ New-Item -Path $p -Force -EA Stop | Out-Null }; New-ItemProperty -Path $p -Name $n -Value $v -PropertyType DWord -Force -EA Stop | Out-Null }
+function Set-RS($p,$n,$v){ Push-RegBackup $p $n; if(-not(Test-Path $p)){ New-Item -Path $p -Force -EA Stop | Out-Null }; New-ItemProperty -Path $p -Name $n -Value $v -PropertyType String -Force -EA Stop | Out-Null }
+function Del-RV($p,$n){ Push-RegBackup $p $n; Remove-ItemProperty -Path $p -Name $n -ErrorAction SilentlyContinue }
 function Test-Svc($n){ [bool](Get-Service $n -ErrorAction SilentlyContinue) }
 function Get-SvcStart($n){ try { (Get-Service $n -ErrorAction Stop).StartType } catch { $null } }
 function Set-SvcStart($n,$m){
     if(-not(Test-Svc $n)){ Write-AXELog "Servicio '$n' no existe en este SKU, omitido" 'WARN'; return }
+    Push-SvcBackup $n
     & sc.exe config $n start= $m | Out-Null
     if($LASTEXITCODE -ne 0){ throw "sc config $n start=$m fallo (code $LASTEXITCODE)" }
 }
@@ -103,6 +140,51 @@ function Backup-RegKey($hive,$file){
     if(Test-Path $dest){ return }   # NO destructivo: solo la primera vez
     & reg.exe export $hive $dest /y *>$null
     if($LASTEXITCODE -eq 0){ Write-AXELog "Backup: $file" }
+}
+# --- Persistencia del snapshot (sobrevive reinicios) ---
+function Read-StateBak {
+    if(-not(Test-Path $script:StateBak)){ return @{} }
+    try {
+        $raw=Get-Content $script:StateBak -Raw -Encoding UTF8
+        if([string]::IsNullOrWhiteSpace($raw)){ return @{} }
+        $o=$raw | ConvertFrom-Json -ErrorAction Stop
+        $h=@{}; foreach($pr in $o.PSObject.Properties){ $h[$pr.Name]=$pr.Value }
+        return $h
+    } catch {
+        Write-AXELog "tweak_state.json ilegible: $($_.Exception.Message). Renombrado a .corrupt" 'ERR'
+        try { Move-Item $script:StateBak "$($script:StateBak).corrupt" -Force -EA Stop } catch {}
+        return @{}
+    }
+}
+function Save-StateBak($h){ ($h | ConvertTo-Json -Depth 6) | Set-Content $script:StateBak -Encoding UTF8 }
+function Commit-TweakState($id){
+    # Vuelca capBuf[id] al store. Solo si el id NO existe ya (preserva la captura ORIGINAL).
+    if(-not $script:capBuf.ContainsKey($id)){ return }
+    $recs=@($script:capBuf[$id].Values); $script:capBuf.Remove($id)
+    if($recs.Count -eq 0){ return }
+    $store=Read-StateBak
+    if($store.ContainsKey($id)){ return }   # ya teniamos el estado original; no pisar
+    $store[$id]=$recs; Save-StateBak $store
+}
+function Remove-TweakState($id){ $store=Read-StateBak; if($store.ContainsKey($id)){ $store.Remove($id); Save-StateBak $store } }
+function Restore-TweakState($id){
+    # Restaura el estado previo REAL capturado. Devuelve $true si habia snapshot.
+    $store=Read-StateBak
+    if(-not $store.ContainsKey($id)){ return $false }
+    $recs=@($store[$id])
+    for($i=$recs.Count-1; $i -ge 0; $i--){
+        $r=$recs[$i]
+        try {
+            if($r.T -eq 'reg'){
+                if($r.Had){
+                    if(-not(Test-Path $r.P)){ New-Item -Path $r.P -Force -EA Stop | Out-Null }
+                    New-ItemProperty -Path $r.P -Name $r.N -Value $r.V -PropertyType $r.K -Force -EA Stop | Out-Null
+                } else { Remove-ItemProperty -Path $r.P -Name $r.N -ErrorAction SilentlyContinue }
+            } elseif($r.T -eq 'svc'){ if($r.Start){ & sc.exe config $r.N start= $r.Start | Out-Null } }
+        } catch { Write-AXELog "Restore ${id}: fallo en $($r.P)\$($r.N): $($_.Exception.Message)" 'ERR' }
+    }
+    Remove-TweakState $id
+    return $true
 }
 
 # ---- CACHEO DE TESTS ----
@@ -211,7 +293,11 @@ function Repair-StartupBackup {
                 }
             }
         }
-    } catch {}
+    } catch {
+        Write-AXELog "startup_disabled.json corrupto: $($_.Exception.Message). Renombrado a .corrupt" 'ERR'
+        try { Move-Item $script:RunBak "$($script:RunBak).corrupt" -Force -EA Stop } catch {}
+        return 0
+    }
     if($clean.Count -eq 0){ return 0 }
     $clean.ToArray() | ConvertTo-Json -Depth 5 | Set-Content $script:RunBak -Encoding UTF8
     return $clean.Count
@@ -270,6 +356,14 @@ Add-Tweak @{Id='lat_irq_gpu';Cat='LATENCIA';Tier=1;Reboot=$true;Name='IRQ priori
  Test={ $g=Get-AXEHwCache 'pnp:disp' { Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' } }; if(-not $g){return $true}; $ok=$true; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\Affinity Policy"; if((Get-RV $p 'DevicePriority') -ne 3){$ok=$false} }; $ok };
  Apply={ $g=Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' }; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\Affinity Policy"; Set-RD $p 'DevicePriority' 3 } };
  Revert={ $g=Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' }; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\Affinity Policy"; Del-RV $p 'DevicePriority' } }}
+Add-Tweak @{Id='lat_msi_gpu';Cat='LATENCIA';Tier=1;Reboot=$true;Name='MSI mode en GPU';Desc='Message Signaled Interrupts en la GPU: baja DPC latency (REINICIO)';Requires=@{};
+ Test={ $g=Get-AXEHwCache 'pnp:disp' { Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' } }; if(-not $g){return $true}; $ok=$true; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"; if((Get-RV $p 'MSISupported') -ne 1){$ok=$false} }; $ok };
+ Apply={ $g=Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' }; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"; Set-RD $p 'MSISupported' 1 } };
+ Revert={ $g=Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' }; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"; Del-RV $p 'MSISupported' } }}
+Add-Tweak @{Id='lat_timerres';Cat='LATENCIA';Tier=1;Reboot=$true;Name='Timer resolution global (Win11)';Desc='El request de alta resolucion del juego aplica a TODO el sistema (baja DPC). Win11 lo aisla por-proceso por defecto (REINICIO)';Requires=@{WinVer=@(11)};
+ Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'GlobalTimerResolutionRequests') -eq 1};
+ Apply={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'GlobalTimerResolutionRequests' 1};
+ Revert={Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'GlobalTimerResolutionRequests'}}
 
 # --- GPU (Tier 1) ---
 Add-Tweak @{Id='gpu_hags';Cat='GPU';Tier=1;Reboot=$true;Name='HAGS (scheduling por hardware)';Desc='GPU gestiona su cola, menos latencia (REINICIO)';Requires=@{};
@@ -456,7 +550,7 @@ Add-Tweak @{Id='ext_tamper';Cat='EXTREMO';Tier=2;Reboot=$false;Name='Tamper Prot
 
 # Core Isolation / VBS / HVCI OFF: ~5-10% FPS (Tom's Hardware 2024-2026). Requiere ext_tamper antes.
 Add-Tweak @{Id='ext_vbs';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Core Isolation / Memory Integrity (VBS+HVCI) OFF';Desc='+5-10% FPS. Apaga VBS, HVCI y Credential Guard. Requiere Tamper Protection OFF primero';Requires=@{};
- Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled') -eq 0 -and (Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity') -eq 0 -and (Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LsaCfgFlags') -ne 1};
+ Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled') -eq 0 -and (Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity') -eq 0 -and (Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LsaCfgFlags') -in @($null,0)};
  Apply={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled' 0; Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity' 0; Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LsaCfgFlags' 0};
  Revert={Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled'; Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity'; Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LsaCfgFlags'}}
 
@@ -564,10 +658,6 @@ $script:DEBLOAT = @(
     @{Pkg='Microsoft.Copilot';Name='Copilot (app)'}
 )
 function Get-DebloatInstalled($pkg){ [bool](Get-AppxPackage -Name $pkg -EA SilentlyContinue) }
-function Remove-Debloat($pkg){
-    $p=Get-AppxPackage -Name $pkg -EA SilentlyContinue
-    if($p){ $p | Remove-AppxPackage -EA SilentlyContinue; Write-AXELog "Quitada app: $pkg" } else { Write-AXELog "No instalada: $pkg" }
-}
 
 $script:DNSPROFILES = @(
     @{Name='Cloudflare (1.1.1.1)';V4=@('1.1.1.1','1.0.0.1')}
@@ -576,13 +666,6 @@ $script:DNSPROFILES = @(
     @{Name='Quad9 (seguridad)';V4=@('9.9.9.9','149.112.112.112')}
     @{Name='Automatico (DHCP)';V4=$null}
 )
-function Set-AXEDns($v4){
-    if(-not $script:HW.NicName){ Write-AXELog 'Sin adaptador activo detectado' 'WARN'; return }
-    if($null -eq $v4){ Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ResetServerAddresses; Write-AXELog "DNS -> automatico (DHCP)" }
-    else { Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ServerAddresses $v4; Write-AXELog "DNS -> $($v4 -join ', ')" }
-    Clear-DnsClientCache
-}
-
 # =====================================================
 # REGION 8 - ASISTENTE IA LOCAL (sin API, state-aware)
 # =====================================================
@@ -653,8 +736,7 @@ function Invoke-AXEAssistant($q){
 # REGION 9 - MASTER REVERT  (FIX A1: limpia residuos v1)
 # =====================================================
 # A3: cola (limpieza residuos v1 + restore startup). Extraido para que la GUI pueda
-# drenar el loop de reverts ASYNC (sin congelar) y correr esta cola al final. CLI y
-# el Invoke-AXEMasterRevert completo la siguen usando igual.
+# drenar el loop de reverts ASYNC (sin congelar) y correr esta cola al final.
 function Invoke-AXEMasterRevertTail {
     # SmartScreen (v1 lo apagaba; v2 lo quito de apply pero no limpiaba en revert)
     $ssKey='HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
@@ -671,18 +753,6 @@ function Invoke-AXEMasterRevertTail {
     # Restaurar startup si hay backup
     Restore-Autorun | Out-Null
     Write-AXELog '=== MASTER REVERT completado. Reinicia el PC. ==='
-}
-function Invoke-AXEMasterRevert {
-    Write-AXELog '=== MASTER REVERT: revirtiendo TODO a fabrica ==='
-    # 1. Revertir cada tweak del catalogo
-    $rev=0
-    foreach($tw in $script:CAT){
-        if(Get-BlockReason $tw){ continue }
-        try { & $tw.Revert; $rev++ } catch { Write-AXELog "No pude revertir $($tw.Name): $($_.Exception.Message)" 'ERR' }
-    }
-    Write-AXELog "Revertidos $rev tweaks del catalogo."
-    # 2+3. limpieza residuos v1 + restore startup
-    Invoke-AXEMasterRevertTail
 }
 
 # =====================================================
@@ -712,6 +782,92 @@ function Import-AXEProfile($file){
         } catch { $errors++; Write-AXELog "Error importando $($tw.Id): $($_.Exception.Message)" 'ERR' }
     }
     Write-AXELog "Perfil importado: $applied aplicados, $errors errores. Reinicia si hubo cambios."
+}
+
+# =====================================================
+# REGION 10b - PERFILES POR-JUEGO (power-plan-per-game, live-safe)
+# Detecta el juego corriendo -> cambia el plan de energia -> restaura al cerrar.
+# Lever REAL en vivo (la freq policy cambia al instante). NO toca el proceso del juego
+# (0 riesgo anticheat) ni aplica tweaks de registro (esos son reboot / solo-al-arrancar).
+# =====================================================
+$script:ProfilesBak = Join-Path $script:AXEData 'game_profiles.json'
+$script:profActive   = $null    # nombre del perfil actualmente aplicado
+$script:profPrevPlan = $null    # GUID del plan que estaba activo antes de aplicar (para restaurar)
+
+function Read-Profiles {
+    if(-not(Test-Path $script:ProfilesBak)){ return @() }
+    $raw = Get-Content $script:ProfilesBak -Raw -Encoding UTF8
+    if([string]::IsNullOrWhiteSpace($raw)){ return @() }
+    try { return @($raw | ConvertFrom-Json -ErrorAction Stop) } catch { return @() }
+}
+function Save-Profiles($list) {
+    $arr = @($list)
+    # forzar '[]' cuando esta vacio: si no, ConvertTo-Json no emite nada y Set-Content
+    # no llega a escribir (dejaria el fichero anterior intacto = borrado que no borra).
+    $json = if($arr.Count -eq 0){ '[]' } else { ConvertTo-Json -InputObject $arr -Depth 5 }
+    Set-Content -Path $script:ProfilesBak -Value $json -Encoding UTF8
+}
+function Add-GameProfile($name,$exe,$plan,$planName) {
+    $exe = ($exe -replace '\.exe$','')   # normaliza: guardamos el nombre de proceso sin extension
+    $list = [System.Collections.ArrayList]@(Read-Profiles | Where-Object { $_.Name -ne $name })
+    [void]$list.Add([pscustomobject]@{Name=$name; Exe=$exe; Plan=$plan; PlanName=$planName})
+    Save-Profiles $list.ToArray()
+    return $list.Count
+}
+function Remove-GameProfile($name) {
+    Save-Profiles (@(Read-Profiles | Where-Object { $_.Name -ne $name }))
+}
+# ---- power plans (locale-agnostico: el GUID se extrae por regex) ----
+function Get-PowerPlans {
+    $out = New-Object System.Collections.ArrayList
+    foreach($line in (powercfg /list 2>$null)){
+        if($line -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}).*\(([^)]+)\)'){
+            [void]$out.Add([pscustomobject]@{Guid=$matches[1]; Name=$matches[2].Trim()})
+        }
+    }
+    $out
+}
+function Get-ActivePlan {
+    $s = (powercfg /getactivescheme 2>$null | Out-String)
+    if($s -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})'){ return $matches[1] }
+    return $null
+}
+function Set-ActivePlan($guid) {
+    if([string]::IsNullOrWhiteSpace($guid)){ return $false }
+    powercfg /setactive $guid 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+function Test-GameRunning($exe) {
+    if([string]::IsNullOrWhiteSpace($exe)){ return $false }
+    [bool](Get-Process -Name ($exe -replace '\.exe$','') -EA SilentlyContinue)
+}
+function Apply-GameProfile($p) {
+    if($script:profActive -eq $p.Name){ return }   # idempotente
+    $script:profPrevPlan = Get-ActivePlan
+    if(Set-ActivePlan $p.Plan){
+        $script:profActive = $p.Name
+        Write-AXELog "Perfil '$($p.Name)' ON -> plan '$($p.PlanName)' (juego: $($p.Exe))."
+    } else { Write-AXELog "Perfil '$($p.Name)': no pude cambiar el plan de energia." 'WARN' }
+}
+function Revert-GameProfile {
+    if(-not $script:profActive){ return }
+    $name = $script:profActive
+    if($script:profPrevPlan){ Set-ActivePlan $script:profPrevPlan | Out-Null }
+    Write-AXELog "Perfil '$name' OFF -> plan restaurado (juego cerrado)."
+    $script:profActive = $null; $script:profPrevPlan = $null
+}
+# Un tick del monitor: aplica el perfil del juego que corre, o revierte si su juego cerro.
+# Puro (sin timer) => testeable headless. Devuelve el nombre del perfil activo o $null.
+function Tick-GameProfiles {
+    if($script:busy){ return $script:profActive }   # no colisiona con APLICAR/MASTER/jobs
+    $profs = Read-Profiles
+    if($script:profActive){
+        $ap = $profs | Where-Object { $_.Name -eq $script:profActive } | Select-Object -First 1
+        if(-not $ap -or -not (Test-GameRunning $ap.Exe)){ Revert-GameProfile }
+        return $script:profActive
+    }
+    foreach($p in $profs){ if(Test-GameRunning $p.Exe){ Apply-GameProfile $p; break } }
+    return $script:profActive
 }
 
 # =====================================================
@@ -788,7 +944,7 @@ if($SelfTest){
     }
     # S9: helpers basicos existen (no codigo muerto / funciones rotas)
     $checks++
-    foreach($fn in 'Get-RV','Set-RD','Set-RS','Del-RV','Test-Svc','Get-SvcStart','Set-SvcStart','Backup-RegKey','Get-BlockReason','Read-StartupBackup','Restore-Autorun','Repair-StartupBackup','Invoke-AXEMasterRevert','Invoke-AXEMasterRevertTail'){
+    foreach($fn in 'Get-RV','Set-RD','Set-RS','Del-RV','Test-Svc','Get-SvcStart','Set-SvcStart','Backup-RegKey','Get-BlockReason','Read-StartupBackup','Restore-Autorun','Repair-StartupBackup','Invoke-AXEMasterRevertTail'){
         if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S9: funcion requerida '$fn' no definida") }
     }
     # S10: WinVer (si un tweak lo usa, debe ser array de enteros 10/11)
@@ -804,6 +960,29 @@ if($SelfTest){
     # S11: masa critica actualizada (el catalogo crece con cada fusion)
     $checks++
     if($script:CAT.Count -lt 60){ [void]$fails.Add("S11: catalogo con $($script:CAT.Count) tweaks (<60) - posible carga incompleta") }
+
+    # S12: perfiles por-juego (region 10b). Round-trip Add/Remove en store temporal
+    # (no toca el store real) + power plans se enumeran + plan activo es un GUID.
+    $checks++
+    $realBak = $script:ProfilesBak
+    try {
+        $script:ProfilesBak = Join-Path $script:AXEData ('proftest_{0}.json' -f [guid]::NewGuid())
+        if((Read-Profiles).Count -ne 0){ [void]$fails.Add('S12: store temporal no arranca vacio') }
+        [void](Add-GameProfile 'test' 'cs2.exe' '381b4222-f694-41f0-9685-ff5bb260df2e' 'Equilibrado')
+        $r = Read-Profiles
+        if($r.Count -ne 1 -or $r[0].Exe -ne 'cs2' -or $r[0].Name -ne 'test'){ [void]$fails.Add('S12: Add/Read perfil no round-trip') }
+        Remove-GameProfile 'test'
+        if((Read-Profiles).Count -ne 0){ [void]$fails.Add('S12: Remove perfil no vacia el store') }
+        Remove-Item $script:ProfilesBak -Force -EA SilentlyContinue
+    } catch { [void]$fails.Add("S12: perfiles lanzaron excepcion: $($_.Exception.Message)") }
+    finally { $script:ProfilesBak = $realBak }
+    # S12b: funciones de plan de energia presentes y coherentes
+    $checks++
+    foreach($fn in 'Get-PowerPlans','Get-ActivePlan','Set-ActivePlan','Test-GameRunning','Tick-GameProfiles'){
+        if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S12b: funcion '$fn' no definida") }
+    }
+    $ap = Get-ActivePlan
+    if($ap -and $ap -notmatch '^[0-9a-fA-F-]{36}$'){ [void]$fails.Add("S12b: plan activo no es GUID: $ap") }
 
     Write-Host "========================================="
     Write-Host " AXE v5 - SELF TEST"
@@ -905,7 +1084,7 @@ $xaml = @'
     <SolidColorBrush x:Key="Fg"       Color="#ECECF0"/>
     <SolidColorBrush x:Key="Muted"    Color="#9A9AA6"/>
     <SolidColorBrush x:Key="Accent"   Color="#2DD4BF"/>
-    <SolidColorBrush x:Key="AccentHi" Color="#3AE7D0"/>
+    <SolidColorBrush x:Key="OnAccent" Color="#0B0B0D"/>
     <SolidColorBrush x:Key="Green"    Color="#4ADE80"/>
     <SolidColorBrush x:Key="Amber"    Color="#FBBF24"/>
     <SolidColorBrush x:Key="Red"      Color="#F87171"/>
@@ -972,7 +1151,7 @@ $xaml = @'
 
     <!-- Boton pastilla (color via Background) -->
     <Style x:Key="Pill" TargetType="Button">
-      <Setter Property="Foreground" Value="White"/>
+      <Setter Property="Foreground" Value="{StaticResource OnAccent}"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
@@ -1030,7 +1209,7 @@ $xaml = @'
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
                 <Setter TargetName="B" Property="Background" Value="{StaticResource Red}"/>
-                <Setter Property="Foreground" Value="White"/>
+                <Setter Property="Foreground" Value="{StaticResource OnAccent}"/>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False"><Setter TargetName="B" Property="Opacity" Value="0.40"/></Trigger>
             </ControlTemplate.Triggers>
@@ -1166,7 +1345,23 @@ $xaml = @'
       <!-- NAV -->
       <Border Grid.Column="0" Background="{StaticResource Surface}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
         <DockPanel Margin="0,10,0,0">
-          <TextBox x:Name="SearchBox" DockPanel.Dock="Top" Style="{StaticResource Input}" Margin="10,0,10,8" Text="Buscar..."/>
+          <Grid DockPanel.Dock="Top" Margin="10,0,10,8">
+            <TextBox x:Name="SearchBox" Style="{StaticResource Input}" TabIndex="1" AutomationProperties.Name="Buscar tweaks por nombre o descripcion"/>
+            <!-- H12: watermark real (overlay), no texto-literal-como-valor -->
+            <TextBlock Text="Buscar..." Foreground="{StaticResource Muted}" IsHitTestVisible="False"
+                       VerticalAlignment="Center" Margin="11,0,0,0" FontSize="13">
+              <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                  <Setter Property="Visibility" Value="Collapsed"/>
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding Text.Length, ElementName=SearchBox}" Value="0">
+                      <Setter Property="Visibility" Value="Visible"/>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </TextBlock.Style>
+            </TextBlock>
+          </Grid>
           <Border DockPanel.Dock="Bottom" Background="{StaticResource Surface}" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="16,9,10,12">
             <StackPanel>
               <TextBlock Text="TIER" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/>
@@ -1205,14 +1400,14 @@ $xaml = @'
       <Grid>
         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
         <WrapPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button x:Name="BtnRestore" Style="{StaticResource PillGhost}" Content="Punto restauracion"/>
-          <Button x:Name="BtnPreset"  Style="{StaticResource PillGhost}" Content="Preset gaming"/>
-          <Button x:Name="BtnRead"    Style="{StaticResource PillGhost}" Content="Leer estado"/>
-          <ProgressBar x:Name="ApplyBar" Style="{StaticResource Slim}" Width="150" Minimum="0" Maximum="100" Value="0" VerticalAlignment="Center" Margin="4,0,0,0" Visibility="Collapsed"/>
+          <Button x:Name="BtnRestore" Style="{StaticResource PillGhost}" Content="Punto restauracion" TabIndex="10" AutomationProperties.Name="Crear punto de restauracion del sistema"/>
+          <Button x:Name="BtnPreset"  Style="{StaticResource PillGhost}" Content="Preset gaming" TabIndex="11" AutomationProperties.Name="Marcar preset gaming (Tier 0 y 1)"/>
+          <Button x:Name="BtnRead"    Style="{StaticResource PillGhost}" Content="Leer estado" TabIndex="12" AutomationProperties.Name="Leer estado real de los tweaks"/>
+          <ProgressBar x:Name="ApplyBar" Style="{StaticResource Slim}" Width="150" Minimum="0" Maximum="100" Value="0" VerticalAlignment="Center" Margin="4,0,0,0" Visibility="Collapsed" AutomationProperties.Name="Progreso de aplicacion"/>
         </WrapPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal">
-          <Button x:Name="BtnMaster" Style="{StaticResource PillDanger}" Content="Master revert"/>
-          <Button x:Name="BtnApply"  Style="{StaticResource Pill}" Background="{StaticResource Accent}" Content="APLICAR cambios" MinWidth="152" Margin="8,0,0,0"/>
+          <Button x:Name="BtnMaster" Style="{StaticResource PillDanger}" Content="Master revert" TabIndex="13" AutomationProperties.Name="Revertir todos los tweaks a fabrica"/>
+          <Button x:Name="BtnApply"  Style="{StaticResource Pill}" Background="{StaticResource Accent}" Content="APLICAR cambios" MinWidth="152" Margin="8,0,0,0" TabIndex="14" AutomationProperties.Name="Aplicar los cambios marcados"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -1311,11 +1506,11 @@ $script:glyphs = @{
     'CPU'=[char]0xE950; 'LATENCIA'=[char]0xE945; 'GPU'=[char]0xE7F4; 'RED'=[char]0xE774;
     'MEMORIA'=[char]0xE964; 'SISTEMA'=[char]0xE770; 'RENDIMIENTO'=[char]0xE9D9; 'SERVICIOS'=[char]0xE90F;
     'PRIVACIDAD'=[char]0xE72E; 'APPS'=[char]0xE71D; 'EXTREMO'=[char]0xE7BA;
-    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A
+    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC
 }
 $script:tweakCats = New-Object System.Collections.ArrayList
 foreach($tw in $script:CAT){ if(-not $script:tweakCats.Contains($tw.Cat)){ [void]$script:tweakCats.Add($tw.Cat) } }
-$script:actionCats = @('LIMPIEZA','DEBLOAT','DNS','STARTUP','ASISTENTE IA')
+$script:actionCats = @('LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
 # Badge "Recomendado" = senal curada (no todo Tier<2): mejores ganancias seguras y universales
 $script:RECOMMENDED = @('cpu_mmcss','cpu_prio','lat_mouse','sys_gamedvr','sys_fse','rend_gamemode','rend_visualfx','rend_mpo','gpu_hags','net_throttle','net_nagle','priv_recall','mem_lastaccess')
 
@@ -1416,7 +1611,10 @@ Build-TweakViews
 $script:jobPS=$null
 function Start-AXEJob {
     param([scriptblock]$Work,[string[]]$JobArgs=@(),$Button)
-    if($script:jobPS){ Write-AXELog 'Otra tarea de fondo en curso, espera a que termine.' 'WARN'; return }
+    # H10: mutex unico con APLICAR/MASTER. $script:busy cubre tambien Limpieza/DNS/Debloat/
+    # Startup para que ninguna tarea de fondo mute el sistema mientras corre otra operacion.
+    if($script:busy -or $script:jobPS){ Write-AXELog 'Otra operacion en curso, espera a que termine.' 'WARN'; return }
+    $script:busy=$true
     if($Button){ $script:jobBtn=$Button; $Button.IsEnabled=$false } else { $script:jobBtn=$null }
     $ps=[PowerShell]::Create(); [void]$ps.AddScript($Work)
     foreach($a in $JobArgs){ [void]$ps.AddArgument($a) }
@@ -1434,6 +1632,7 @@ function Start-AXEJob {
             Write-AXELog ("$line" -replace '^(ERROR|ERR|WARN)\s*','') $lvl
         }
         if($script:jobBtn){ $script:jobBtn.IsEnabled=$true; $script:jobBtn=$null }
+        $script:busy=$false   # H10: libera el mutex al completar la tarea
     })
     $script:jobTimer.Start()
 }
@@ -1525,10 +1724,96 @@ function Build-ActionView($catName){
             }
             $row=New-Object System.Windows.Controls.StackPanel; $row.Orientation='Horizontal'; $row.Margin=New-Object System.Windows.Thickness(0,10,0,0)
             $bDis=New-ActionButton 'Desactivar' 'Amber'
-            $bDis.Add_Click({ $n=0; foreach($cb in $script:startupChecks){ if($cb.IsChecked){ Disable-Autorun $cb.Tag; $n++ } }; Write-AXELog "$n autorun(s) desactivado(s)." })
+            $bDis.Add_Click({
+                if($script:busy){ Write-AXELog 'Otra operacion en curso, espera a que termine.' 'WARN'; return }   # H10/H11 mutex
+                $n=0; foreach($cb in $script:startupChecks){ if($cb.IsChecked){ Disable-Autorun $cb.Tag; $n++ } }
+                Write-AXELog "$n autorun(s) desactivado(s)."
+            })
             $bRes=New-ActionButton 'Restaurar backup' 'Green'
-            $bRes.Add_Click({ Restore-Autorun | Out-Null })
+            $bRes.Add_Click({
+                if($script:busy){ Write-AXELog 'Otra operacion en curso, espera a que termine.' 'WARN'; return }   # H10/H11 mutex
+                Restore-Autorun | Out-Null
+            })
             [void]$row.Children.Add($bDis); [void]$row.Children.Add($bRes); [void]$panel.Children.Add($row)
+        }
+        'PERFILES' {
+            # --- fila monitor automatico ---
+            $mon=New-Object System.Windows.Controls.StackPanel; $mon.Orientation='Horizontal'; $mon.Margin=New-Object System.Windows.Thickness(0,0,0,6)
+            $script:profMonTog=New-Object System.Windows.Controls.CheckBox; $script:profMonTog.Style=$win.FindResource('ToggleSwitch'); $script:profMonTog.VerticalAlignment='Center'
+            [System.Windows.Automation.AutomationProperties]::SetName($script:profMonTog,'Monitor automatico de perfiles por juego')
+            $monLbl=New-Object System.Windows.Controls.TextBlock; $monLbl.Text='Monitor automatico'; $monLbl.Foreground=New-AXEBrush 'Fg'; $monLbl.FontWeight='SemiBold'; $monLbl.VerticalAlignment='Center'; $monLbl.Margin=New-Object System.Windows.Thickness(10,0,0,0)
+            [void]$mon.Children.Add($script:profMonTog); [void]$mon.Children.Add($monLbl); [void]$panel.Children.Add($mon)
+            $info=New-Object System.Windows.Controls.TextBlock; $info.Text='Monitor ON: al abrir un juego con perfil, AXE cambia su plan de energia; al cerrarlo lo restaura. No toca el proceso del juego (0 riesgo anticheat).'; $info.Foreground=New-AXEBrush 'Muted'; $info.FontSize=12; $info.TextWrapping='Wrap'; $info.Margin=New-Object System.Windows.Thickness(0,0,0,12)
+            [void]$panel.Children.Add($info)
+            $script:profMonTog.Add_Checked({
+                if(-not $script:profTimer){
+                    $script:profTimer=New-Object System.Windows.Threading.DispatcherTimer
+                    $script:profTimer.Interval=[TimeSpan]::FromSeconds(4)
+                    $script:profTimer.Add_Tick({ try { Tick-GameProfiles | Out-Null } catch { Write-AXELog "Monitor perfiles: $($_.Exception.Message)" 'ERR' } })
+                }
+                $script:profTimer.Start(); Write-AXELog 'Monitor de perfiles ON (revisa cada 4s).'
+            })
+            $script:profMonTog.Add_Unchecked({ if($script:profTimer){ $script:profTimer.Stop() }; Revert-GameProfile; Write-AXELog 'Monitor de perfiles OFF.' })
+
+            # --- lista de perfiles existentes ---
+            $listPanel=New-Object System.Windows.Controls.StackPanel; $listPanel.Margin=New-Object System.Windows.Thickness(0,0,0,10); [void]$panel.Children.Add($listPanel)
+            $script:profRefreshList={
+                $listPanel.Children.Clear()
+                $profs=@(Read-Profiles)
+                if($profs.Count -eq 0){
+                    $e=New-Object System.Windows.Controls.TextBlock; $e.Text='Sin perfiles todavia. Crea uno abajo.'; $e.Foreground=New-AXEBrush 'Muted'; $e.FontSize=12; [void]$listPanel.Children.Add($e); return
+                }
+                foreach($p in $profs){
+                    $card=New-Object System.Windows.Controls.Border; $card.Background=New-AXEBrush 'Surface'; $card.BorderBrush=New-AXEBrush 'Line'; $card.BorderThickness=New-Object System.Windows.Thickness(1); $card.CornerRadius=New-Object System.Windows.CornerRadius(8); $card.Padding=New-Object System.Windows.Thickness(14,10,14,10); $card.Margin=New-Object System.Windows.Thickness(0,0,0,6)
+                    $g=New-Object System.Windows.Controls.Grid
+                    $c0=New-Object System.Windows.Controls.ColumnDefinition; $c0.Width='*'; $c1=New-Object System.Windows.Controls.ColumnDefinition; $c1.Width='Auto'
+                    [void]$g.ColumnDefinitions.Add($c0); [void]$g.ColumnDefinitions.Add($c1)
+                    $t=New-Object System.Windows.Controls.TextBlock; $t.Text="$($p.Name)    [$($p.Exe)]    ->  $($p.PlanName)"; $t.Foreground=New-AXEBrush 'Fg'; $t.VerticalAlignment='Center'; $t.TextWrapping='Wrap'
+                    [System.Windows.Controls.Grid]::SetColumn($t,0); [void]$g.Children.Add($t)
+                    $bb=New-Object System.Windows.Controls.StackPanel; $bb.Orientation='Horizontal'; [System.Windows.Controls.Grid]::SetColumn($bb,1)
+                    $ba=New-Object System.Windows.Controls.Button; $ba.Style=$win.FindResource('Pill'); $ba.Background=New-AXEBrush 'Accent'; $ba.Content='Aplicar'; $ba.Height=28; $ba.Padding=New-Object System.Windows.Thickness(12,0); $ba.Margin=New-Object System.Windows.Thickness(0,0,6,0); $ba.Tag=$p
+                    [System.Windows.Automation.AutomationProperties]::SetName($ba,"Aplicar perfil $($p.Name) ahora")
+                    $ba.Add_Click({ param($s,$e) if($script:busy){ Write-AXELog 'Otra operacion en curso, espera.' 'WARN'; return }; Apply-GameProfile $s.Tag })
+                    $bd=New-Object System.Windows.Controls.Button; $bd.Style=$win.FindResource('PillDanger'); $bd.Content='Borrar'; $bd.Height=28; $bd.Padding=New-Object System.Windows.Thickness(12,0); $bd.Tag=$p.Name
+                    [System.Windows.Automation.AutomationProperties]::SetName($bd,"Borrar perfil $($p.Name)")
+                    $bd.Add_Click({ param($s,$e) if($script:profActive -eq $s.Tag){ Revert-GameProfile }; Remove-GameProfile $s.Tag; & $script:profRefreshList; Write-AXELog "Perfil '$($s.Tag)' borrado." })
+                    [void]$bb.Children.Add($ba); [void]$bb.Children.Add($bd); [void]$g.Children.Add($bb)
+                    $card.Child=$g; [void]$listPanel.Children.Add($card)
+                }
+            }
+
+            # --- formulario de alta ---
+            $form=New-Object System.Windows.Controls.Border; $form.Background=New-AXEBrush 'Surface'; $form.BorderBrush=New-AXEBrush 'Line'; $form.BorderThickness=New-Object System.Windows.Thickness(1); $form.CornerRadius=New-Object System.Windows.CornerRadius(8); $form.Padding=New-Object System.Windows.Thickness(14)
+            $fp=New-Object System.Windows.Controls.StackPanel
+            $ft=New-Object System.Windows.Controls.TextBlock; $ft.Text='Nuevo perfil'; $ft.FontWeight='SemiBold'; $ft.Foreground=New-AXEBrush 'Fg'; $ft.Margin=New-Object System.Windows.Thickness(0,0,0,8); [void]$fp.Children.Add($ft)
+            $nameBox=New-Object System.Windows.Controls.TextBox; $nameBox.Style=$win.FindResource('Input'); $nameBox.Margin=New-Object System.Windows.Thickness(0,0,0,6)
+            [System.Windows.Automation.AutomationProperties]::SetName($nameBox,'Nombre del perfil'); [void]$fp.Children.Add($nameBox)
+            $nameHint=New-Object System.Windows.Controls.TextBlock; $nameHint.Text='Nombre del perfil (ej: CS2 gaming)'; $nameHint.Foreground=New-AXEBrush 'Muted'; $nameHint.FontSize=11; $nameHint.Margin=New-Object System.Windows.Thickness(2,0,0,8); [void]$fp.Children.Add($nameHint)
+            $procRow=New-Object System.Windows.Controls.Grid; $pr0=New-Object System.Windows.Controls.ColumnDefinition; $pr0.Width='*'; $pr1=New-Object System.Windows.Controls.ColumnDefinition; $pr1.Width='Auto'; [void]$procRow.ColumnDefinitions.Add($pr0); [void]$procRow.ColumnDefinitions.Add($pr1); $procRow.Margin=New-Object System.Windows.Thickness(0,0,0,6)
+            $procCombo=New-Object System.Windows.Controls.ComboBox; $procCombo.IsEditable=$true; $procCombo.Margin=New-Object System.Windows.Thickness(0,0,6,0)
+            [System.Windows.Automation.AutomationProperties]::SetName($procCombo,'Proceso del juego'); [System.Windows.Controls.Grid]::SetColumn($procCombo,0); [void]$procRow.Children.Add($procCombo)
+            $procBtn=New-Object System.Windows.Controls.Button; $procBtn.Style=$win.FindResource('PillGhost'); $procBtn.Content='Refrescar'; $procBtn.Height=32; [System.Windows.Controls.Grid]::SetColumn($procBtn,1); [void]$procRow.Children.Add($procBtn); [void]$fp.Children.Add($procRow)
+            $procHint=New-Object System.Windows.Controls.TextBlock; $procHint.Text='Proceso del juego (elige de la lista o escribe, sin .exe). Abre el juego y pulsa Refrescar.'; $procHint.Foreground=New-AXEBrush 'Muted'; $procHint.FontSize=11; $procHint.TextWrapping='Wrap'; $procHint.Margin=New-Object System.Windows.Thickness(2,0,0,8); [void]$fp.Children.Add($procHint)
+            $planCombo=New-Object System.Windows.Controls.ComboBox; $planCombo.Margin=New-Object System.Windows.Thickness(0,0,0,6)
+            [System.Windows.Automation.AutomationProperties]::SetName($planCombo,'Plan de energia'); [void]$fp.Children.Add($planCombo)
+            $planHint=New-Object System.Windows.Controls.TextBlock; $planHint.Text='Plan de energia a activar mientras el juego corre.'; $planHint.Foreground=New-AXEBrush 'Muted'; $planHint.FontSize=11; $planHint.Margin=New-Object System.Windows.Thickness(2,0,0,10); [void]$fp.Children.Add($planHint)
+            $saveBtn=New-Object System.Windows.Controls.Button; $saveBtn.Style=$win.FindResource('Pill'); $saveBtn.Background=New-AXEBrush 'Accent'; $saveBtn.Content='Guardar perfil'; $saveBtn.HorizontalAlignment='Left'
+            [System.Windows.Automation.AutomationProperties]::SetName($saveBtn,'Guardar perfil'); [void]$fp.Children.Add($saveBtn)
+            $form.Child=$fp; [void]$panel.Children.Add($form)
+
+            # rellenar combos + lista
+            $fillProcs={ $procCombo.Items.Clear(); foreach($pn in @(Get-Process -EA SilentlyContinue | Where-Object { $_.MainWindowTitle } | Select-Object -ExpandProperty ProcessName -Unique | Sort-Object)){ [void]$procCombo.Items.Add($pn) } }
+            $fillPlans={ $planCombo.Items.Clear(); foreach($pl in (Get-PowerPlans)){ $it=New-Object System.Windows.Controls.ComboBoxItem; $it.Content=$pl.Name; $it.Tag=$pl.Guid; [void]$planCombo.Items.Add($it) }; if($planCombo.Items.Count -gt 0){ $planCombo.SelectedIndex=0 } }
+            $procBtn.Add_Click($fillProcs)
+            $saveBtn.Add_Click({ param($s,$e)
+                $nm=$nameBox.Text.Trim(); $ex=[string]$procCombo.Text; if([string]::IsNullOrWhiteSpace($ex) -and $procCombo.SelectedItem){ $ex=[string]$procCombo.SelectedItem }
+                $pi=$planCombo.SelectedItem
+                if([string]::IsNullOrWhiteSpace($nm) -or [string]::IsNullOrWhiteSpace($ex) -or -not $pi){ Write-AXELog 'Rellena nombre, proceso y plan.' 'WARN'; return }
+                [void](Add-GameProfile $nm $ex $pi.Tag ([string]$pi.Content))
+                $nameBox.Clear(); Write-AXELog "Perfil '$nm' guardado ($ex -> $($pi.Content))."
+                & $script:profRefreshList
+            })
+            & $fillProcs; & $fillPlans; & $script:profRefreshList
         }
         'ASISTENTE IA' {
             $script:aiOut=New-Object System.Windows.Controls.TextBox; $script:aiOut.IsReadOnly=$true; $script:aiOut.Background=New-AXEBrush 'Surface'; $script:aiOut.Foreground=New-AXEBrush 'Fg'
@@ -1544,10 +1829,10 @@ function Build-ActionView($catName){
             [System.Windows.Controls.Grid]::SetColumn($ask,1); [void]$inRow.Children.Add($ask)
             $ana=New-Object System.Windows.Controls.Button; $ana.Style=$win.FindResource('Pill'); $ana.Background=New-AXEBrush 'Purple'; $ana.Content='Analizar'; $ana.Margin=New-Object System.Windows.Thickness(0)
             [System.Windows.Controls.Grid]::SetColumn($ana,2); [void]$inRow.Children.Add($ana)
-            $script:aiDoAsk={ $qtext=$script:aiIn.Text; if([string]::IsNullOrWhiteSpace($qtext)){return}; $script:aiOut.AppendText(">> $qtext`r`n"); $script:aiOut.AppendText((Invoke-AXEAssistant $qtext)+"`r`n`r`n"); $script:aiOut.ScrollToEnd(); $script:aiIn.Clear() }
+            $script:aiDoAsk={ if($script:busy){ $script:aiOut.AppendText(">> (operacion en curso; espera a que termine)`r`n"); $script:aiOut.ScrollToEnd(); return }; $qtext=$script:aiIn.Text; if([string]::IsNullOrWhiteSpace($qtext)){return}; $script:aiOut.AppendText(">> $qtext`r`n"); $script:aiOut.AppendText((Invoke-AXEAssistant $qtext)+"`r`n`r`n"); $script:aiOut.ScrollToEnd(); $script:aiIn.Clear() }
             $ask.Add_Click($script:aiDoAsk)
             $script:aiIn.Add_KeyDown({ param($s,$e) if($e.Key -eq 'Return'){ & $script:aiDoAsk; $e.Handled=$true } })
-            $ana.Add_Click({ $script:aiOut.AppendText(">> Analisis del sistema`r`n"); $script:aiOut.AppendText(((Get-AXERecommendations) -join "`r`n")+"`r`n`r`n"); $script:aiOut.ScrollToEnd() })
+            $ana.Add_Click({ if($script:busy){ $script:aiOut.AppendText(">> (operacion en curso; espera a que termine)`r`n"); $script:aiOut.ScrollToEnd(); return }; $script:aiOut.AppendText(">> Analisis del sistema`r`n"); $script:aiOut.AppendText(((Get-AXERecommendations) -join "`r`n")+"`r`n`r`n"); $script:aiOut.ScrollToEnd() })
             [void]$panel.Children.Add($script:aiOut); [void]$panel.Children.Add($inRow)
         }
     }
@@ -1575,7 +1860,7 @@ function Switch-View($catName){
     foreach($v in $script:views.Values){ $v.Visibility='Collapsed' }
     $ContentTitle.Text=$catName; $script:activeCat=$catName
     if($catName -in $script:actionCats){
-        $ContentSub.Text = switch($catName){ 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
+        $ContentSub.Text = switch($catName){ 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
         if(-not $script:views.ContainsKey($catName)){ Build-ActionView $catName | Out-Null }
         $script:views[$catName].Visibility='Visible'; return
     }
@@ -1668,6 +1953,15 @@ function Start-AXEHardwareLoad {
         try { $res=$script:hwPS.EndInvoke($script:hwHandle); $script:HW=@($res)[0] }
         catch { Write-AXELog "Deteccion HW fallo: $($_.Exception.Message)" 'ERR' }
         $script:hwPS.Dispose(); $script:hwPS=$null
+        # H7: sin HW fiable el gating por hardware no se puede evaluar. Fail-safe:
+        # deshabilita APLICAR/PRESET/MASTER para no aplicar tweaks a ciegas. "Leer
+        # estado" reintenta la deteccion.
+        if(-not $script:HW){
+            Write-AXELog 'No pude detectar el hardware. APLICAR deshabilitado por seguridad (el gating por HW no es fiable). Pulsa "Leer estado" para reintentar.' 'ERR'
+            foreach($b in @($BtnApply,$BtnPreset,$BtnMaster)){ $b.IsEnabled=$false }
+            return
+        }
+        foreach($b in @($BtnApply,$BtnPreset,$BtnMaster)){ $b.IsEnabled=$true }
         Build-HwChips
         Apply-AXEGating
         $nBlk=0; foreach($tw in $script:CAT){ if(Get-BlockReason $tw){ $nBlk++ } }
@@ -1678,10 +1972,10 @@ function Start-AXEHardwareLoad {
 }
 
 # ---- 12.13 buscador ----
-$SearchBox.Add_GotFocus({ if($SearchBox.Text -eq 'Buscar...'){ $SearchBox.Text='' } })
-$SearchBox.Add_LostFocus({ if([string]::IsNullOrWhiteSpace($SearchBox.Text)){ $SearchBox.Text='Buscar...' } })
+# H12: el placeholder es un overlay XAML (watermark real). SearchBox.Text es SIEMPRE
+# la query real (vacio = sin filtro); ya no hay hacks de GotFocus/LostFocus.
 $SearchBox.Add_TextChanged({
-    $q=$SearchBox.Text.ToLower(); if($q -eq 'buscar...'){ $q='' }
+    $q=$SearchBox.Text.ToLower()
     $cat=$script:activeCat
     if(-not $cat -or ($cat -in $script:actionCats)){ return }   # busca solo en categorias de tweaks
     foreach($e in $script:rows[$cat]){
@@ -1695,7 +1989,10 @@ $SearchBox.Add_TextChanged({
 })
 
 # ---- 12.14 acciones principales ----
-$BtnRead.Add_Click({ Write-AXELog 'Leyendo estado real...'; Refresh-States -Then { Write-AXELog 'Estado actualizado.' } })
+$BtnRead.Add_Click({
+    if(-not $script:HW){ Write-AXELog 'Reintentando deteccion de hardware...'; Start-AXEHardwareLoad; return }   # H7: retry
+    Write-AXELog 'Leyendo estado real...'; Refresh-States -Then { Write-AXELog 'Estado actualizado.' }
+})
 
 $BtnPreset.Add_Click({
     foreach($catName in $script:tweakCats){
@@ -1726,7 +2023,7 @@ $BtnMaster.Add_Click({
         $budget=3
         while($budget -gt 0 -and $script:mrQueue.Count -gt 0){
             $tw=$script:mrQueue.Dequeue(); $budget--
-            try { & $tw.Revert; $script:mrRev++ } catch { Write-AXELog "No pude revertir $($tw.Name): $($_.Exception.Message)" 'ERR' }
+            try { if((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id)){ } else { & $tw.Revert }; $script:mrRev++ } catch { Write-AXELog "No pude revertir $($tw.Name): $($_.Exception.Message)" 'ERR' }
             $script:mrDone++
         }
         if($script:mrTotal -gt 0){ $ApplyBar.Value=[int](($script:mrDone/$script:mrTotal)*100) }
@@ -1741,6 +2038,23 @@ $BtnMaster.Add_Click({
     })
     $script:mrTimer.Start()
 })
+
+# H2: hay un punto de restauracion reciente (ultimas 24h)? Query no-mutante, seguro.
+# CIM root/default SystemRestore funciona en PS 5.1 y pwsh 7. Cualquier fallo => $false
+# (asi el Apply ofrece crear uno; nunca asume que existe).
+function Test-RecentRestorePoint {
+    try {
+        $pts = Get-CimInstance -Namespace 'root/default' -ClassName SystemRestore -EA Stop
+        if(-not $pts){ return $false }
+        $cut = (Get-Date).AddHours(-24)
+        foreach($p in $pts){
+            $ct = $p.CreationTime
+            if($ct -is [string]){ try { $ct = [Management.ManagementDateTimeConverter]::ToDateTime($ct) } catch { $ct = $null } }
+            if($ct -and $ct -ge $cut){ return $true }
+        }
+        return $false
+    } catch { return $false }
+}
 
 # Apply sin freeze: DispatcherTimer procesa 1 tweak/tick
 $BtnApply.Add_Click({
@@ -1765,6 +2079,13 @@ $BtnApply.Add_Click({
         $r=[System.Windows.MessageBox]::Show("Vas a ACTIVAR tweaks EXTREMO (Tier 2) que DESACTIVAN protecciones de seguridad reales (Tamper Protection, VBS/HVCI, CFG/ASLR, Spectre). Solo en PC dedicada a gaming. Continuar?",'RIESGO DE SEGURIDAD','YesNo','Warning')
         if($r -ne 'Yes'){ Write-AXELog 'Aplicacion cancelada por el usuario (gate Tier 2).' 'WARN'; return }
     }
+    # H2: exigir punto de restauracion (opt-out). Si no hay uno reciente, ofrecer crearlo.
+    if(-not (Test-RecentRestorePoint)){
+        $rp=[System.Windows.MessageBox]::Show("No detecto un punto de restauracion reciente (ultimas 24h). Se recomienda crear uno ANTES de aplicar cambios.`n`nSi = crear ahora (vuelve a pulsar APLICAR cuando termine)`nNo = aplicar SIN punto de restauracion`nCancelar = no hacer nada",'Sin punto de restauracion','YesNoCancel','Warning')
+        if($rp -eq 'Cancel'){ Write-AXELog 'Aplicacion cancelada (sin punto de restauracion).' 'WARN'; return }
+        if($rp -eq 'Yes'){ Write-AXELog 'Creando punto de restauracion primero. Vuelve a pulsar APLICAR al terminar.'; & $script:doRestorePoint; return }
+        Write-AXELog 'Aplicando SIN punto de restauracion (opt-out del usuario).' 'WARN'
+    }
     $script:busy=$true
     foreach($b in @($BtnApply,$BtnPreset,$BtnMaster,$BtnRead)){ $b.IsEnabled=$false }
     $ApplyBar.Visibility='Visible'; $ApplyBar.Value=0
@@ -1785,7 +2106,14 @@ $BtnApply.Add_Click({
         }
         $item=$script:applyQueue.Dequeue(); $tw=$item.Tw
         try {
-            if($item.Want){ & $tw.Apply; Write-AXELog "APLICADO : $($tw.Name)" } else { & $tw.Revert; Write-AXELog "REVERTIDO: $($tw.Name)" }
+            if($item.Want){
+                if(Test-SnapEligible $tw){ $script:capTweak=$tw.Id }
+                try { & $tw.Apply } finally { $script:capTweak=$null }
+                Commit-TweakState $tw.Id
+                Write-AXELog "APLICADO : $($tw.Name)"
+            } else {
+                if((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id)){ Write-AXELog "REVERTIDO (estado previo): $($tw.Name)" } else { & $tw.Revert; Write-AXELog "REVERTIDO: $($tw.Name)" }
+            }
             $ok=[bool](& $tw.Test)
             if($ok -ne $item.Want){ Write-AXELog "  ! verificacion no coincide en $($tw.Name)" 'WARN' }
             $script:changed++; if($tw.Reboot){ $script:reboot=$true }
@@ -1795,8 +2123,9 @@ $BtnApply.Add_Click({
     $script:applyTimer.Start()
 })
 
-# Punto de restauracion en runspace (no congela) - portado a WPF
-$BtnRestore.Add_Click({
+# Punto de restauracion en runspace (no congela) - portado a WPF.
+# Extraido a scriptblock para reutilizarlo desde el gate de APLICAR (H2).
+$script:doRestorePoint = {
     if($script:rsPS){ return }
     $BtnRestore.IsEnabled=$false; Write-AXELog 'Creando punto de restauracion en segundo plano...'
     $ps=[PowerShell]::Create()
@@ -1826,7 +2155,8 @@ $BtnRestore.Add_Click({
         }
     })
     $t.Start()
-})
+}
+$BtnRestore.Add_Click($script:doRestorePoint)
 
 # ---- 12.15 init ----
 $n = Repair-StartupBackup
@@ -1878,11 +2208,30 @@ if($env:AXE_GUITEST -eq '1'){
         if(-not ($jobStarted -and $jobDone)){ $allOk=$false }
     } catch { Write-Host "Background job    : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
 
-    # regresion A3: split de Master revert (tail extraido). Solo verifica ESTRUCTURA:
-    # ambas funciones definidas. NO se ejecuta (revertiria los tweaks reales del sistema).
-    $mrOk = [bool](Get-Command Invoke-AXEMasterRevert -EA SilentlyContinue) -and [bool](Get-Command Invoke-AXEMasterRevertTail -EA SilentlyContinue)
-    Write-Host "Master revert     : tail+full definidos=$mrOk (esperado True)"
+    # regresion H10: mutex unico. Con $script:busy=$true, Start-AXEJob DEBE rechazar
+    # (no arranca runspace) para no mutar el sistema mientras corre APLICAR/MASTER.
+    try {
+        $script:busy=$true
+        Start-AXEJob -Work { 'NO_DEBE_CORRER' } -Button $null
+        $refused=(-not $script:jobPS)
+        $script:busy=$false
+        Write-Host "Job mutex (H10)   : rechazado con busy=$refused (esperado True)"
+        if(-not $refused){ $allOk=$false }
+    } catch { $script:busy=$false; Write-Host "Job mutex (H10)   : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
+
+    # regresion A3: Master revert (cola tail extraida). Solo verifica ESTRUCTURA:
+    # la funcion tail definida. NO se ejecuta (revertiria los tweaks reales del sistema).
+    $mrOk = [bool](Get-Command Invoke-AXEMasterRevertTail -EA SilentlyContinue)
+    Write-Host "Master revert     : tail definido=$mrOk (esperado True)"
     if(-not $mrOk){ $allOk=$false }
+
+    # regresion H2: gate de punto de restauracion. Verifica que el query es no-mutante
+    # y devuelve bool sin lanzar, y que el scriptblock reutilizable existe.
+    $rpFnOk=[bool](Get-Command Test-RecentRestorePoint -EA SilentlyContinue)
+    $rpBool=$false; try { $rpBool=((Test-RecentRestorePoint) -is [bool]) } catch {}
+    $rpSbOk=($script:doRestorePoint -is [scriptblock])
+    Write-Host "RestorePoint gate : fn=$rpFnOk retornaBool=$rpBool scriptblock=$rpSbOk (esperado True x3)"
+    if(-not ($rpFnOk -and $rpBool -and $rpSbOk)){ $allOk=$false }
 
     foreach($catName in $script:tweakCats){
         $rowCount=$script:rows[$catName].Count
@@ -1895,6 +2244,15 @@ if($env:AXE_GUITEST -eq '1'){
     # forzar construccion de vistas de accion
     foreach($catName in $script:actionCats){ Build-ActionView $catName | Out-Null }
     Write-Host "Vistas accion     : construidas"
+    # regresion PERFILES: la vista cablea el toggle de monitor + refresh de lista, y
+    # Tick-GameProfiles no lanza sin juego corriendo (debe devolver el perfil activo o null).
+    try {
+        $pvOk = ($null -ne $script:profMonTog) -and ($script:profRefreshList -is [scriptblock])
+        $tickNull = $null; try { $tickNull = Tick-GameProfiles } catch { $pvOk=$false }
+        Write-Host "Perfiles view     : toggle+refresh=$pvOk tickActivo='$tickNull' (esperado True/vacio)"
+        if(-not $pvOk){ $allOk=$false }
+        if($null -ne $tickNull){ $allOk=$false }   # sin juego corriendo no debe activar nada
+    } catch { Write-Host "Perfiles view     : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: ejercer handler ASISTENTE (bug de scope $out/$doAsk null)
     try {
         $before=$script:aiOut.Text.Length
@@ -1933,7 +2291,6 @@ if($env:AXE_GUITEST -eq '1'){
         $paths=@($LogoCanvas.Children)
         $accent=$paths | Where-Object { $_.Fill -is [System.Windows.Media.SolidColorBrush] -and $_.Fill.Color.ToString() -eq '#FF2DD4BF' }
         $surface=$paths | Where-Object { $_.Fill -is [System.Windows.Media.SolidColorBrush] -and $_.Fill.Color.ToString() -eq '#FF26262B' }
-        $script:logoPathCount=$paths.Count; $script:logoAccent=$accent.Count; $script:logoSurface=$surface.Count
         $logoOk=($paths.Count -eq 6) -and ($accent.Count -eq 2) -and ($surface.Count -eq 4)
         Write-Host ("Logo AXE          : paths={0} accent={1} surface={2} (esperado 6/2/4)" -f $paths.Count,$accent.Count,$surface.Count)
         if(-not $logoOk){ $allOk=$false }
@@ -1975,4 +2332,16 @@ if($env:AXE_GUISHOW -eq '1'){
         $win.Dispatcher.InvokeAsync([action]{ $win.Close() },[System.Windows.Threading.DispatcherPriority]::Background) | Out-Null
     })
 }
+# H4: al cerrar, drena runspaces + timers vivos (evita fuga de handles/hilos si el
+# usuario cierra con una tarea de fondo en curso). Stop antes de Dispose por si el
+# PowerShell sigue ejecutando (Checkpoint-Computer, HW load, tarea de limpieza).
+$win.Add_Closed({
+    foreach($t in @($script:hwTimer,$script:jobTimer,$script:rsTimer,$script:applyTimer,$script:mrTimer,$script:profTimer)){
+        if($t){ try { $t.Stop() } catch {} }
+    }
+    foreach($psRef in @($script:hwPS,$script:jobPS,$script:rsPS)){
+        if($psRef){ try { $psRef.Stop() } catch {}; try { $psRef.Dispose() } catch {} }
+    }
+    $script:hwPS=$null; $script:jobPS=$null; $script:rsPS=$null
+})
 [void]$win.ShowDialog()
