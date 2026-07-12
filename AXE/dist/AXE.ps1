@@ -1,10 +1,10 @@
 # ================================================================
 # AXE 6.0.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-12 20:44:18Z
-# Modules: zz-monolith.ps1
+# Build UTC: 2026-07-12 20:54:27Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
-# >>>>> MODULE: zz-monolith.ps1 >>>>>
+# >>>>> MODULE: 00-header.ps1 >>>>>
 #Requires -Version 5.1
 # =====================================================
 # AXE v5 - Elite Windows Optimizer (single source of truth)
@@ -32,6 +32,9 @@ param(
     [string]$Import
 )
 
+
+
+# >>>>> MODULE: 05-core.ps1 >>>>>
 # =====================================================
 # REGION 1 - PATHS & LOGGING  (headless, sin UI)
 # =====================================================
@@ -92,6 +95,9 @@ function Get-AXEHardware {
     }
 }
 
+
+
+# >>>>> MODULE: 10-reg-helpers.ps1 >>>>>
 # =====================================================
 # REGION 3 - HELPERS (registro / servicio / backup)
 # =====================================================
@@ -221,6 +227,9 @@ function Get-AXEHwCache {
     return $v
 }
 
+
+
+# >>>>> MODULE: 15-startup.ps1 >>>>>
 # =====================================================
 # REGION 4 - STARTUP BACKUP/RESTORE  (FIX C1)
 # Array tipado + serializacion robusta + Restore-Autorun (antes inexistente)
@@ -310,6 +319,9 @@ function Repair-StartupBackup {
     return $clean.Count
 }
 
+
+
+# >>>>> MODULE: 20-tweaks.ps1 >>>>>
 # =====================================================
 # REGION 5 - CATALOGO DE TWEAKS  (fuente unica de verdad)
 # Tier: 0=Seguro 1=Elite 2=EXTREMO(opt-in)
@@ -629,6 +641,9 @@ function Get-BlockReason($tw){
     return $null
 }
 
+
+
+# >>>>> MODULE: 22-catalogs.ps1 >>>>>
 # =====================================================
 # REGION 7 - ACCIONES (limpieza, debloat, DNS)
 # =====================================================
@@ -673,6 +688,9 @@ $script:DNSPROFILES = @(
     @{Name='Quad9 (seguridad)';V4=@('9.9.9.9','149.112.112.112')}
     @{Name='Automatico (DHCP)';V4=$null}
 )
+
+
+# >>>>> MODULE: 25-assistant.ps1 >>>>>
 # =====================================================
 # REGION 8 - ASISTENTE IA LOCAL (sin API, state-aware)
 # =====================================================
@@ -739,6 +757,9 @@ function Invoke-AXEAssistant($q){
     return "Temas: que aplico, input lag, fps, red, seguridad, portatil, ram, extremo, servicios, limpieza, debloat, startup."
 }
 
+
+
+# >>>>> MODULE: 28-revert-export.ps1 >>>>>
 # =====================================================
 # REGION 9 - MASTER REVERT  (FIX A1: limpia residuos v1)
 # =====================================================
@@ -791,6 +812,9 @@ function Import-AXEProfile($file){
     Write-AXELog "Perfil importado: $applied aplicados, $errors errores. Reinicia si hubo cambios."
 }
 
+
+
+# >>>>> MODULE: 30-profiles.ps1 >>>>>
 # =====================================================
 # REGION 10b - PERFILES POR-JUEGO (power-plan-per-game, live-safe)
 # Detecta el juego corriendo -> cambia el plan de energia -> restaura al cerrar.
@@ -877,6 +901,9 @@ function Tick-GameProfiles {
     return $script:profActive
 }
 
+
+
+# >>>>> MODULE: 45-cli.ps1 >>>>>
 # =====================================================
 # REGION 11 - MODOS CLI (headless)
 # =====================================================
@@ -1024,6 +1051,9 @@ if($Import){
     exit 0
 }
 
+
+
+# >>>>> MODULE: 50-xaml.ps1 >>>>>
 # =====================================================
 # REGION 12 - GUI WPF FLUENT (rediseno elite, tema dark Win11)
 # Reemplaza la GUI WinForms. Motor (regiones 1-11) intacto.
@@ -1481,6 +1511,9 @@ $win.Add_SourceInitialized({
     Set-AXEWindowChrome $h
 })
 
+
+
+# >>>>> MODULE: 52-gui-build.ps1 >>>>>
 # ---- 12.6 helpers UI ----
 function New-AXEBrush($key){ $win.FindResource($key) }
 function New-Chip($glyph,$text){
@@ -1644,6 +1677,9 @@ function Start-AXEJob {
     $script:jobTimer.Start()
 }
 
+
+
+# >>>>> MODULE: 55-gui-actions.ps1 >>>>>
 # ---- 12.10 vistas de accion ----
 function New-ActionButton($text,$brushKey){
     $b=New-Object System.Windows.Controls.Button; $b.Style=$win.FindResource('Pill')
@@ -1846,6 +1882,9 @@ function Build-ActionView($catName){
     $panel
 }
 
+
+
+# >>>>> MODULE: 57-gui-handlers.ps1 >>>>>
 # ---- 12.11 navegacion ----
 function Add-NavHeader($text){
     $t=New-Object System.Windows.Controls.TextBlock; $t.Text=$text; $t.FontSize=11; $t.FontWeight='Bold'; $t.Foreground=New-AXEBrush 'Muted'
@@ -2176,6 +2215,9 @@ Start-AXEHardwareLoad
 $firstCat = $script:tweakCats | Select-Object -First 1
 if($firstCat){ $script:navBtns[$firstCat].IsChecked=$true }
 
+
+
+# >>>>> MODULE: 60-gui-selftest.ps1 >>>>>
 # ---- 12.16 GUITEST: assert + render PNG, sin ShowDialog ----
 if($env:AXE_GUITEST -eq '1'){
     Write-Host "== AXE v5 WPF - LAYOUT TEST =="
@@ -2342,6 +2384,9 @@ if($env:AXE_GUISHOW -eq '1'){
 # H4: al cerrar, drena runspaces + timers vivos (evita fuga de handles/hilos si el
 # usuario cierra con una tarea de fondo en curso). Stop antes de Dispose por si el
 # PowerShell sigue ejecutando (Checkpoint-Computer, HW load, tarea de limpieza).
+
+
+# >>>>> MODULE: 99-main.ps1 >>>>>
 $win.Add_Closed({
     foreach($t in @($script:hwTimer,$script:jobTimer,$script:rsTimer,$script:applyTimer,$script:mrTimer,$script:profTimer)){
         if($t){ try { $t.Stop() } catch {} }
