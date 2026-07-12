@@ -48,4 +48,23 @@ Describe 'Catalog schema' {
             }
         }
     }
+
+    It 'Every Script entry has Test, Apply, AND Undo (reversibility)' {
+        foreach($prop in $script:cat.PSObject.Properties){
+            $tw = $prop.Value
+            if($tw.PSObject.Properties.Name -contains 'Script'){
+                $tw.Script.PSObject.Properties.Name | Should -Contain 'Test'  -Because $prop.Name
+                $tw.Script.PSObject.Properties.Name | Should -Contain 'Apply' -Because $prop.Name
+                $tw.Script.PSObject.Properties.Name | Should -Contain 'Undo'  -Because $prop.Name
+            }
+        }
+    }
+
+    It 'svc_remotereg is the only unidirectional tweak' {
+        $unidir = @()
+        foreach($prop in $script:cat.PSObject.Properties){
+            if($prop.Value.PSObject.Properties.Name -contains 'Unidirectional' -and $prop.Value.Unidirectional){ $unidir += $prop.Name }
+        }
+        $unidir | Should -Be @('svc_remotereg')
+    }
 }
