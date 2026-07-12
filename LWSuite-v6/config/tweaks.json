@@ -1,0 +1,1006 @@
+{
+    "cpu_prio": {
+        "Category": "CPU",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Prioridad ventana activa",
+        "Desc": "Win32PrioritySeparation=38 : el juego en foco manda",
+        "Requires": {},
+        "Recommended": true,
+        "Backup": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl",
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl",
+                "Name": "Win32PrioritySeparation",
+                "Value": 38,
+                "Type": "DWord",
+                "OriginalValue": 2
+            }
+        ]
+    },
+    "cpu_mmcss": {
+        "Category": "CPU",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Liberar CPU multimedia",
+        "Desc": "SystemResponsiveness=0",
+        "Requires": {},
+        "Recommended": true,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+                "Name": "SystemResponsiveness",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 20
+            }
+        ]
+    },
+    "cpu_pthr": {
+        "Category": "CPU",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Power Throttling OFF",
+        "Desc": "Sin limite de frecuencia",
+        "Requires": { "AC": true },
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power\\PowerThrottling",
+                "Name": "PowerThrottlingOff",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "cpu_fth": {
+        "Category": "CPU",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "FTH OFF (micro-tirones)",
+        "Desc": "Desactiva Fault Tolerant Heap",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Microsoft\\FTH",
+                "Name": "Enabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 1
+            }
+        ]
+    },
+    "lat_mouse": {
+        "Category": "LATENCIA",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Aceleracion de raton OFF",
+        "Desc": "Movimiento 1:1, sin curva de Windows",
+        "Requires": {},
+        "Recommended": true,
+        "Registry": [
+            {
+                "Path": "HKCU:\\Control Panel\\Mouse",
+                "Name": "MouseSpeed",
+                "Value": "0",
+                "Type": "String",
+                "OriginalValue": "1"
+            },
+            {
+                "Path": "HKCU:\\Control Panel\\Mouse",
+                "Name": "MouseThreshold1",
+                "Value": "0",
+                "Type": "String",
+                "OriginalValue": "6"
+            },
+            {
+                "Path": "HKCU:\\Control Panel\\Mouse",
+                "Name": "MouseThreshold2",
+                "Value": "0",
+                "Type": "String",
+                "OriginalValue": "10"
+            }
+        ]
+    },
+    "lat_faststart": {
+        "Category": "LATENCIA",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Fast Startup OFF",
+        "Desc": "Arranque limpio, menos estados corruptos",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power",
+                "Name": "HiberbootEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 1
+            }
+        ]
+    },
+    "gpu_hags": {
+        "Category": "GPU",
+        "Tier": 1,
+        "Reboot": true,
+        "Name": "HAGS (scheduling por hardware)",
+        "Desc": "GPU gestiona su cola, menos latencia (REINICIO)",
+        "Requires": {},
+        "Recommended": true,
+        "Backup": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+                "Name": "HwSchMode",
+                "Value": 2,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "gpu_mmcss": {
+        "Category": "GPU",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Prioridad MMCSS juegos",
+        "Desc": "GPU Priority 8 / Priority 6 / High",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+                "Name": "GPU Priority",
+                "Value": 8,
+                "Type": "DWord",
+                "OriginalValue": 8
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+                "Name": "Priority",
+                "Value": 6,
+                "Type": "DWord",
+                "OriginalValue": 2
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+                "Name": "Scheduling Category",
+                "Value": "High",
+                "Type": "String",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+                "Name": "SFIO Priority",
+                "Value": "High",
+                "Type": "String",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+                "Name": "Background Only",
+                "Value": "False",
+                "Type": "String",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "gpu_tdr": {
+        "Category": "GPU",
+        "Tier": 1,
+        "Reboot": true,
+        "Name": "TDR delay ampliado",
+        "Desc": "Menos cuelgues de driver bajo carga (REINICIO)",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+                "Name": "TdrDelay",
+                "Value": 10,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "gpu_vrr": {
+        "Category": "GPU",
+        "Tier": 1,
+        "Reboot": true,
+        "Name": "Optimizaciones para juegos con ventana",
+        "Desc": "VRR + optimizaciones de ventana (REINICIO)",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+                "Name": "VRROptimizeEnable",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "net_throttle": {
+        "Category": "RED",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Network Throttling OFF",
+        "Desc": "Sin limite de paquetes con multimedia",
+        "Requires": {},
+        "Recommended": true,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+                "Name": "NetworkThrottlingIndex",
+                "Value": 4294967295,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "net_qos": {
+        "Category": "RED",
+        "Tier": 1,
+        "Reboot": true,
+        "Name": "QoS sin reserva de banda",
+        "Desc": "NonBestEffortLimit=0 (REINICIO)",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Psched",
+                "Name": "NonBestEffortLimit",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "mem_pagingexec": {
+        "Category": "MEMORIA",
+        "Tier": 1,
+        "Reboot": true,
+        "Name": "Kernel siempre en RAM",
+        "Desc": "DisablePagingExecutive=1 (necesita RAM holgada) (REINICIO)",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management",
+                "Name": "DisablePagingExecutive",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": 0
+            }
+        ]
+    },
+    "mem_ntfsmem": {
+        "Category": "MEMORIA",
+        "Tier": 1,
+        "Reboot": true,
+        "Name": "Cache de metadatos NTFS alta",
+        "Desc": "NtfsMemoryUsage=2 (REINICIO)",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem",
+                "Name": "NtfsMemoryUsage",
+                "Value": 2,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "sys_gamedvr": {
+        "Category": "SISTEMA",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Game DVR OFF",
+        "Desc": "Sin grabacion de fondo = mas FPS",
+        "Requires": {},
+        "Recommended": true,
+        "Registry": [
+            {
+                "Path": "HKCU:\\System\\GameConfigStore",
+                "Name": "GameDVR_Enabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 1
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
+                "Name": "AllowGameDVR",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "sys_fse": {
+        "Category": "SISTEMA",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Fullscreen exclusivo (FSE)",
+        "Desc": "GameDVR_FSEBehavior=2",
+        "Requires": {},
+        "Recommended": true,
+        "Registry": [
+            {
+                "Path": "HKCU:\\System\\GameConfigStore",
+                "Name": "GameDVR_FSEBehavior",
+                "Value": 2,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "sys_gamebar": {
+        "Category": "SISTEMA",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "GameBar minimizada",
+        "Desc": "Sin panel de inicio ni overlay Nexus",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKCU:\\Software\\Microsoft\\GameBar",
+                "Name": "ShowStartupPanel",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 1
+            },
+            {
+                "Path": "HKCU:\\Software\\Microsoft\\GameBar",
+                "Name": "UseNexusForGameBarEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 1
+            }
+        ]
+    },
+    "sys_do": {
+        "Category": "SISTEMA",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Delivery Optimization P2P OFF",
+        "Desc": "No compartes updates con otros PCs",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeliveryOptimization",
+                "Name": "DODownloadMode",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "sys_bing": {
+        "Category": "SISTEMA",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Busqueda sin Bing",
+        "Desc": "Menu inicio sin resultados web",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Search",
+                "Name": "BingSearchEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "sys_longpaths": {
+        "Category": "SISTEMA",
+        "Tier": 0,
+        "Reboot": true,
+        "Name": "Rutas largas ON",
+        "Desc": "Soporta rutas >260 caracteres (REINICIO)",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem",
+                "Name": "LongPathsEnabled",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": 0
+            }
+        ]
+    },
+    "sys_autoend": {
+        "Category": "SISTEMA",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "AutoEndTasks ON",
+        "Desc": "Apagado mas rapido con apps colgadas",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKCU:\\Control Panel\\Desktop",
+                "Name": "AutoEndTasks",
+                "Value": "1",
+                "Type": "String",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "sys_menudelay": {
+        "Category": "SISTEMA",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Menus instantaneos",
+        "Desc": "MenuShowDelay 0",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKCU:\\Control Panel\\Desktop",
+                "Name": "MenuShowDelay",
+                "Value": "0",
+                "Type": "String",
+                "OriginalValue": "400"
+            }
+        ]
+    },
+    "sys_startdelay": {
+        "Category": "SISTEMA",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Sin retardo de apps al inicio",
+        "Desc": "StartupDelayInMSec=0",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize",
+                "Name": "StartupDelayInMSec",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "rend_gamemode": {
+        "Category": "RENDIMIENTO",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Game Mode ON",
+        "Desc": "Prioriza recursos al juego en primer plano",
+        "Requires": {},
+        "Recommended": true,
+        "Registry": [
+            {
+                "Path": "HKCU:\\Software\\Microsoft\\GameBar",
+                "Name": "AutoGameModeEnabled",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": 0
+            },
+            {
+                "Path": "HKCU:\\Software\\Microsoft\\GameBar",
+                "Name": "AllowAutoGameMode",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "rend_visualfx": {
+        "Category": "RENDIMIENTO",
+        "Tier": 1,
+        "Reboot": false,
+        "Name": "Efectos visuales: rendimiento",
+        "Desc": "Quita animaciones/sombras",
+        "Requires": {},
+        "Recommended": true,
+        "Registry": [
+            {
+                "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects",
+                "Name": "VisualFXSetting",
+                "Value": 2,
+                "Type": "DWord",
+                "OriginalValue": 0
+            }
+        ]
+    },
+    "rend_mpo": {
+        "Category": "RENDIMIENTO",
+        "Tier": 1,
+        "Reboot": true,
+        "Name": "MPO OFF (arregla stutter/flicker)",
+        "Desc": "Desactiva Multi-Plane Overlay del DWM (REINICIO)",
+        "Requires": {},
+        "Recommended": true,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\Dwm",
+                "Name": "OverlayTestMode",
+                "Value": 5,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "rend_prefetch": {
+        "Category": "RENDIMIENTO",
+        "Tier": 1,
+        "Reboot": true,
+        "Name": "Prefetch/Superfetch OFF",
+        "Desc": "Con SSD la precarga aporta poco (REINICIO)",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters",
+                "Name": "EnablePrefetcher",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 3
+            },
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters",
+                "Name": "EnableSuperfetch",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 3
+            }
+        ]
+    },
+    "priv_telemetry": {
+        "Category": "PRIVACIDAD",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Telemetria minima",
+        "Desc": "AllowTelemetry=0 por politica",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection",
+                "Name": "AllowTelemetry",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "priv_ads": {
+        "Category": "PRIVACIDAD",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Anuncios personalizados OFF",
+        "Desc": "Sin ID de publicidad",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo",
+                "Name": "Enabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 1
+            }
+        ]
+    },
+    "priv_tips": {
+        "Category": "PRIVACIDAD",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Sugerencias del menu OFF",
+        "Desc": "Sin recomendaciones en inicio/config",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+                "Name": "SystemPaneSuggestionsEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 1
+            }
+        ]
+    },
+    "priv_cortana": {
+        "Category": "PRIVACIDAD",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Cortana OFF",
+        "Desc": "Sin busquedas automaticas con internet",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Search",
+                "Name": "AllowCortana",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "priv_copilot": {
+        "Category": "PRIVACIDAD",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Copilot OFF",
+        "Desc": "Desactiva la IA de la barra de tareas",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsCopilot",
+                "Name": "TurnOffWindowsCopilot",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "priv_activity": {
+        "Category": "PRIVACIDAD",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Historial de actividad OFF",
+        "Desc": "Windows no guarda que programas usas",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+                "Name": "PublishUserActivities",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "priv_recall": {
+        "Category": "PRIVACIDAD",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Recall OFF",
+        "Desc": "Bloquea la IA que captura tu pantalla",
+        "Requires": {},
+        "Recommended": true,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI",
+                "Name": "AllowRecallEnablement",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "app_chrome": {
+        "Category": "APPS",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Telemetria Chrome OFF",
+        "Desc": "Metrics, cleanup reporting y feedback a Google",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Google\\Chrome",
+                "Name": "MetricsReportingEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Google\\Chrome",
+                "Name": "ChromeCleanupReportingEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Google\\Chrome",
+                "Name": "ChromeCleanupEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Google\\Chrome",
+                "Name": "UserFeedbackAllowed",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Google\\Chrome",
+                "Name": "DeviceMetricsReportingEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "app_edge": {
+        "Category": "APPS",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Telemetria Edge OFF",
+        "Desc": "Sidebar, personalizacion, metrics y feedback de Edge",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                "Name": "HubsSidebarEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                "Name": "PersonalizationReportingEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                "Name": "UserFeedbackAllowed",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                "Name": "MetricsReportingEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                "Name": "Edge3PSerpTelemetryEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                "Name": "SpotlightExperiencesAndRecommendationsEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                "Name": "DefaultBrowserSettingsCampaignEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                "Name": "ComposeInlineEnabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "app_firefox": {
+        "Category": "APPS",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Telemetria Firefox OFF",
+        "Desc": "Telemetria + agente navegador por defecto",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Mozilla\\Firefox",
+                "Name": "DisableTelemetry",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Mozilla\\Firefox",
+                "Name": "DisableDefaultBrowserAgent",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "app_office": {
+        "Category": "APPS",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Telemetria Office OFF",
+        "Desc": "ClientTelemetry, OSM upload y QM (15.0 y 16.0)",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKCU:\\SOFTWARE\\Microsoft\\Office\\16.0\\Common\\ClientTelemetry",
+                "Name": "DisableTelemetry",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKCU:\\SOFTWARE\\Microsoft\\Office\\Common\\ClientTelemetry",
+                "Name": "DisableTelemetry",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKCU:\\SOFTWARE\\Policies\\Microsoft\\Office\\16.0\\OSM",
+                "Name": "EnableUpload",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKCU:\\SOFTWARE\\Microsoft\\Office\\16.0\\Common",
+                "Name": "QMEnable",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "app_vs": {
+        "Category": "APPS",
+        "Tier": 0,
+        "Reboot": false,
+        "Name": "Telemetria Visual Studio OFF",
+        "Desc": "Telemetry TurnOffSwitch + SQM opt-out (14/15/16)",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKCU:\\Software\\Microsoft\\VisualStudio\\Telemetry",
+                "Name": "TurnOffSwitch",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\VisualStudio\\Feedback",
+                "Name": "DisableFeedbackDialog",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\VisualStudio\\SQM",
+                "Name": "OptIn",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "ext_tamper": {
+        "Category": "EXTREMO",
+        "Tier": 2,
+        "Reboot": false,
+        "Name": "Tamper Protection OFF",
+        "Desc": "Prerequisito: deja persistir los cambios de VBS/CFG/ASLR. Apaga la proteccion anti-modificacion de Defender",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows Defender\\Features",
+                "Name": "TamperProtection",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 1
+            }
+        ]
+    },
+    "ext_vbs": {
+        "Category": "EXTREMO",
+        "Tier": 2,
+        "Reboot": true,
+        "Name": "Core Isolation / Memory Integrity (VBS+HVCI) OFF",
+        "Desc": "+5-10% FPS. Apaga VBS, HVCI y Credential Guard. Requiere Tamper Protection OFF primero",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity",
+                "Name": "Enabled",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",
+                "Name": "EnableVirtualizationBasedSecurity",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa",
+                "Name": "LsaCfgFlags",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "ext_driverblock": {
+        "Category": "EXTREMO",
+        "Tier": 2,
+        "Reboot": true,
+        "Name": "Vulnerable Driver Blocklist OFF",
+        "Desc": "Permite drivers bloqueados por Microsoft (overlays, inyectores). Riesgo: drivers vulnerables cargan",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\CI\\Config",
+                "Name": "VulnerableDriverBlocklistEnable",
+                "Value": 0,
+                "Type": "DWord",
+                "OriginalValue": 1
+            }
+        ]
+    },
+    "ext_mitig": {
+        "Category": "EXTREMO",
+        "Tier": 2,
+        "Reboot": true,
+        "Name": "Mitigaciones Spectre/Meltdown OFF",
+        "Desc": "PIERDES proteccion CVE-2017-5715/5754",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management",
+                "Name": "FeatureSettingsOverride",
+                "Value": 3,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            },
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management",
+                "Name": "FeatureSettingsOverrideMask",
+                "Value": 3,
+                "Type": "DWord",
+                "OriginalValue": "__REMOVE__"
+            }
+        ]
+    },
+    "ext_sehop": {
+        "Category": "EXTREMO",
+        "Tier": 2,
+        "Reboot": true,
+        "Name": "SEHOP OFF (placebo, ~0 FPS)",
+        "Desc": "Desactiva Structured Exception Handling Overwrite Protection. Ganancia FPS ~0. Reduce proteccion anti-exploit. REINICIO",
+        "Requires": {},
+        "Recommended": false,
+        "Registry": [
+            {
+                "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\kernel",
+                "Name": "DisableExceptionChainValidation",
+                "Value": 1,
+                "Type": "DWord",
+                "OriginalValue": 0
+            }
+        ]
+    }
+}
