@@ -288,19 +288,7 @@ $script:doRestorePoint = {
     if($script:rsPS){ return }
     $BtnRestore.IsEnabled=$false; Write-AXELog 'Creando punto de restauracion en segundo plano...'
     $ps=[PowerShell]::Create()
-    [void]$ps.AddScript({
-        param($desc)
-        $ac = Get-CimInstance Win32_SystemDriver -EA SilentlyContinue | Where-Object { $_.State -eq 'Running' -and $_.Name -match 'EasyAntiCheat|BEDaisy|BattlEye|vgk' }
-        if($ac){ return "ANTICHEAT: '$($ac.Name -join ', ')' bloquea VSS. Cierra el juego/launcher y reintenta." }
-        foreach($sv in 'VSS','swprv'){ $s=Get-Service $sv -EA SilentlyContinue; if($s -and $s.StartType -eq 'Disabled'){ & sc.exe config $sv start= demand | Out-Null } }
-        Start-Service VSS -EA SilentlyContinue
-        Enable-ComputerRestore -Drive 'C:\' -EA SilentlyContinue
-        $rp='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
-        New-ItemProperty -Path $rp -Name SystemRestorePointCreationFrequency -Value 0 -PropertyType DWord -Force | Out-Null
-        try { Checkpoint-Computer -Description $desc -RestorePointType MODIFY_SETTINGS; 'OK: punto CREADO.' }
-        catch { "ERROR: $($_.Exception.Message)" }
-        finally { Remove-ItemProperty -Path $rp -Name SystemRestorePointCreationFrequency -EA SilentlyContinue }
-    })
+    [void]$ps.AddScript($script:RestorePointScript.ToString())   # fuente unica en 34-safety.ps1
     [void]$ps.AddArgument('AXE v5')
     $script:rsPS=$ps; $script:rsHandle=$ps.BeginInvoke()
     $t=New-Object System.Windows.Threading.DispatcherTimer; $t.Interval=[TimeSpan]::FromSeconds(1); $script:rsTimer=$t

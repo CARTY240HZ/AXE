@@ -28,6 +28,7 @@ foreach($m in $modules){ Write-Host ("  {0,-28} {1,5} lineas" -f $m.Name,(Get-Co
 if($Sign){ Set-AuthenticodeSignature -FilePath $out -Certificate (Get-Item "Cert:\CurrentUser\My\$Sign") | Out-Null; Write-Host "Firmado ($Sign)" }
 if($NoTest){ return }
 Write-Host "`n=== TEST GATE ==="
+$env:AXE_NOSR='1'   # no crear puntos de restauracion reales en el gate
 $st = & pwsh -NoProfile -File $out -SelfTest 2>&1
 $stExit = $LASTEXITCODE
 $stStr = ($st | Out-String)

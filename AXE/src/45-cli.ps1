@@ -145,6 +145,14 @@ if($SelfTest){
         if($scNa.Total -lt 0 -or $scNa.Total -gt 100){ [void]$fails.Add("S16: Total(n/a) fuera de rango: $($scNa.Total)") }
     } catch { [void]$fails.Add("S16: Get-AXEScore lanzo: $($_.Exception.Message)") }
 
+    # S17: restore point con AXE_NOSR=1 devuelve fallback sin lanzar ni crear punto
+    $checks++
+    try {
+        $env:AXE_NOSR='1'
+        $rp = New-AXERestorePoint 'selftest'
+        if($rp.Status -ne 'fallback'){ [void]$fails.Add("S17: con AXE_NOSR esperaba 'fallback', got '$($rp.Status)'") }
+    } catch { [void]$fails.Add("S17: New-AXERestorePoint lanzo: $($_.Exception.Message)") }
+
     Write-Host "========================================="
     Write-Host " AXE v5 - SELF TEST"
     Write-Host "========================================="
