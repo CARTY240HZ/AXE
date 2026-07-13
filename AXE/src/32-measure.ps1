@@ -72,3 +72,30 @@ function Measure-AXEJitter {
         }
     } catch { $null }
 }
+
+function Get-AXESnapshot {
+    # Snapshot honesto. Cada campo en su try/catch -> 'n/a', nunca aborta.
+    # Timer + cobertura son instantaneos (UI-thread OK); el jitter (1s) es el unico
+    # que la GUI empuja a un runspace (ver 57-gui-handlers). En CLI corre inline.
+    param([int]$JitterMs=1000)
+    $timer='n/a'; try { $t=Get-AXETimerResolution; if($t){ $timer=$t } } catch {}
+    $jit='n/a';   try { $j=Measure-AXEJitter -DurationMs $JitterMs; if($j){ $jit=$j } } catch {}
+    $on='n/a'; $app='n/a'
+    try {
+        $onN=0; $appN=0
+        foreach($tw in $script:CAT){
+            if($tw.Tier -notin 0,1){ continue }        # cobertura = Tier 0/1 (seguros/elite)
+            if(Get-BlockReason $tw){ continue }          # no aplicable en este HW
+            $appN++
+            if(Test-TweakSafe $tw){ $onN++ }
+        }
+        $on=$onN; $app=$appN
+    } catch {}
+    [pscustomobject]@{
+        Timestamp        = (Get-Date).ToUniversalTime().ToString('u')
+        Timer            = $timer
+        Jitter           = $jit
+        TweaksOn         = $on
+        TweaksApplicable = $app
+    }
+}

@@ -126,6 +126,15 @@ if($SelfTest){
         if($jt.Samples -le 0 -or $jt.P999Ms -lt 0 -or $jt.MaxMs -lt 0){ [void]$fails.Add("S14: Measure-AXEJitter stats invalidas (n=$($jt.Samples))") }
     } catch { [void]$fails.Add("S14: Measure-AXEJitter lanzo: $($_.Exception.Message)") }
 
+    # S15: snapshot devuelve los 5 campos y no lanza (jitter corto)
+    $checks++
+    try {
+        $sn = Get-AXESnapshot -JitterMs 50
+        foreach($f in 'Timestamp','Timer','Jitter','TweaksOn','TweaksApplicable'){
+            if(-not $sn.PSObject.Properties[$f]){ [void]$fails.Add("S15: snapshot falta campo '$f'") }
+        }
+    } catch { [void]$fails.Add("S15: Get-AXESnapshot lanzo: $($_.Exception.Message)") }
+
     Write-Host "========================================="
     Write-Host " AXE v5 - SELF TEST"
     Write-Host "========================================="
