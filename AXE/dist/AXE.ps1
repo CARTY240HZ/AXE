@@ -1,7 +1,7 @@
-# ================================================================
-# AXE 6.0.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-12 20:58:19Z
-# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
+﻿# ================================================================
+# AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
+# Build UTC: 2026-07-13 09:07:17Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 32-measure.ps1, 34-safety.ps1, 36-report.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
@@ -29,7 +29,10 @@ param(
     [switch]$SelfTest,
     [switch]$List,
     [string]$Export,
-    [string]$Import
+    [string]$Import,
+    [switch]$Measure,
+    [switch]$Score,
+    [string]$Report
 )
 
 
@@ -552,7 +555,7 @@ Add-Tweak @{Id='app_vs';Cat='APPS';Tier=0;Reboot=$false;Name='Telemetria Visual 
  Revert={Del-RV 'HKCU:\Software\Microsoft\VisualStudio\Telemetry' 'TurnOffSwitch'; Del-RV 'HKLM:\SOFTWARE\Policies\Microsoft\VisualStudio\Feedback' 'DisableFeedbackDialog'; Del-RV 'HKLM:\SOFTWARE\Policies\Microsoft\VisualStudio\SQM' 'OptIn'}}
 
 # --- EXTREMO (Tier 2, opt-in, degrada seguridad real) ---
-# NOTA DE INGENIERIA - lo que NO entra y por qué (investigacion 2026):
+# NOTA DE INGENIERIA - lo que NO entra y por quÃ© (investigacion 2026):
 #  - DisableAntiSpyware (Defender OFF completo): Microsoft lo ignora en 24H2/25H2
 #    (build 26200+). La clave existe pero no desactiva Defender; se reactiva solo.
 #    Meterlo seria un tweak ROTO por diseno: el usuario cree que funciona y no hace nada.
@@ -903,6 +906,274 @@ function Tick-GameProfiles {
 
 
 
+# >>>>> MODULE: 32-measure.ps1 >>>>>
+# =====================================================
+# REGION 8b - MEDICION (Trust & Proof): timer resolution + jitter proxy + score
+# =====================================================
+# Capa nativa: P/Invoke NtQueryTimerResolution + busy-loop de jitter en C# compilado
+# (el loop debe ser nativo; un loop PowerShell mediria el interprete, no el scheduler).
+# Cargada UNA vez al init del modulo en el hilo principal; los runspaces de fondo ven
+# el tipo (mismo AppDomain). C# compat-safe (csc 5.1 + Roslyn 7): C# 5, sin record.
+if(-not ('AXE.Native' -as [type])){
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Diagnostics;
+namespace AXE {
+  public static class Native {
+    [DllImport("ntdll.dll", SetLastError=true)]
+    public static extern int NtQueryTimerResolution(out uint Min, out uint Max, out uint Current);
+
+    // Devuelve {samples, meanMs, maxMs, p999Ms, stalls1ms}. Histograma acotado (memoria O(1)).
+    public static double[] SampleJitter(int durationMs) {
+      double freq = (double)Stopwatch.Frequency;
+      double toMs = 1000.0 / freq;
+      long endTicks = Stopwatch.GetTimestamp() + (long)(freq * durationMs / 1000.0);
+      int B = 2000; double bw = 0.05;            // 2000 buckets x 0.05ms = 0..100ms
+      long[] hist = new long[B];
+      long n = 0; double sum = 0.0, max = 0.0; long stalls = 0;
+      long prev = Stopwatch.GetTimestamp();
+      while (true) {
+        long now = Stopwatch.GetTimestamp();
+        double gapMs = (now - prev) * toMs;
+        prev = now;
+        n++; sum += gapMs; if (gapMs > max) max = gapMs; if (gapMs > 1.0) stalls++;
+        int bi = (int)(gapMs / bw); if (bi < 0) bi = 0; if (bi >= B) bi = B - 1;
+        hist[bi]++;
+        if (now >= endTicks) break;
+      }
+      double p999 = 0.0; long target = (long)Math.Ceiling(0.999 * n); long cum = 0;
+      for (int i = 0; i < B; i++) { cum += hist[i]; if (cum >= target) { p999 = (i + 1) * bw; break; } }
+      double mean = n > 0 ? sum / n : 0.0;
+      return new double[] { (double)n, mean, max, p999, (double)stalls };
+    }
+  }
+}
+'@
+}
+
+function Get-AXETimerResolution {
+    # NtQueryTimerResolution devuelve unidades de 100ns. Current/10000 = ms. Menor = mejor.
+    try {
+        $min=0; $max=0; $cur=0
+        $rc = [AXE.Native]::NtQueryTimerResolution([ref]$min,[ref]$max,[ref]$cur)
+        if($rc -ne 0){ return $null }
+        [pscustomobject]@{
+            CurrentMs = [math]::Round($cur/10000.0,4)
+            MinMs     = [math]::Round($min/10000.0,4)   # peor (mayor numero)
+            MaxMs     = [math]::Round($max/10000.0,4)   # mejor posible (menor numero)
+        }
+    } catch { $null }
+}
+
+function Measure-AXEJitter {
+    # PROXY de latencia (no atribuible a driver concreto). El busy-loop corre en C#
+    # nativo; en la GUI se invoca [AXE.Native]::SampleJitter en un runspace de fondo.
+    param([int]$DurationMs=1000)
+    try {
+        $r = [AXE.Native]::SampleJitter([int]$DurationMs)
+        [pscustomobject]@{
+            Samples   = [int]$r[0]
+            MeanMs    = [math]::Round($r[1],4)
+            MaxMs     = [math]::Round($r[2],4)
+            P999Ms    = [math]::Round($r[3],4)
+            Stalls1ms = [int]$r[4]
+        }
+    } catch { $null }
+}
+
+function Get-AXESnapshot {
+    # Snapshot honesto. Cada campo en su try/catch -> 'n/a', nunca aborta.
+    # Timer + cobertura son instantaneos (UI-thread OK); el jitter (1s) es el unico
+    # que la GUI empuja a un runspace (ver 57-gui-handlers). En CLI corre inline.
+    param([int]$JitterMs=1000)
+    $timer='n/a'; try { $t=Get-AXETimerResolution; if($t){ $timer=$t } } catch {}
+    $jit='n/a';   try { $j=Measure-AXEJitter -DurationMs $JitterMs; if($j){ $jit=$j } } catch {}
+    $on='n/a'; $app='n/a'
+    try {
+        $onN=0; $appN=0
+        foreach($tw in $script:CAT){
+            if($tw.Tier -notin 0,1){ continue }        # cobertura = Tier 0/1 (seguros/elite)
+            if(Get-BlockReason $tw){ continue }          # no aplicable en este HW
+            $appN++
+            if(Test-TweakSafe $tw){ $onN++ }
+        }
+        $on=$onN; $app=$appN
+    } catch {}
+    [pscustomobject]@{
+        Timestamp        = (Get-Date).ToUniversalTime().ToString('u')
+        Timer            = $timer
+        Jitter           = $jit
+        TweaksOn         = $on
+        TweaksApplicable = $app
+    }
+}
+
+function Get-AXEBand {
+    # Interpolacion lineal por tramos: $pairs = @(@(x0,y0),@(x1,y1),...) x ASCENDENTE.
+    # Devuelve y clamped al rango de los extremos.
+    param([double]$x,[object[]]$pairs)
+    if($x -le $pairs[0][0]){ return [double]$pairs[0][1] }
+    $last=$pairs.Count-1
+    if($x -ge $pairs[$last][0]){ return [double]$pairs[$last][1] }
+    for($i=0;$i -lt $last;$i++){
+        $x0=[double]$pairs[$i][0]; $y0=[double]$pairs[$i][1]
+        $x1=[double]$pairs[$i+1][0]; $y1=[double]$pairs[$i+1][1]
+        if($x -ge $x0 -and $x -le $x1){
+            $f=($x-$x0)/($x1-$x0); return $y0 + $f*($y1-$y0)
+        }
+    }
+    return [double]$pairs[$last][1]
+}
+function Get-AXEScore {
+    param($snap,[pscustomobject]$prev=$null)
+    $lines=New-Object System.Collections.ArrayList
+    $naCount=0
+
+    # Timer 30: mejor (menor ms) = mas puntos
+    if($snap.Timer -is [string]){ $timer='n/a'; $naCount++; [void]$lines.Add('Timer     : n/a') }
+    else {
+        $timer=[int][math]::Round((Get-AXEBand ([double]$snap.Timer.CurrentMs) @(@(0.5,30),@(1.0,20),@(5.0,8),@(15.6,0))))
+        [void]$lines.Add(("Timer     : {0,3}/30  ({1}ms)" -f $timer,$snap.Timer.CurrentMs))
+    }
+    # Jitter 35: menor P99.9 = mas puntos
+    if($snap.Jitter -is [string]){ $jit='n/a'; $naCount++; [void]$lines.Add('Jitter    : n/a') }
+    else {
+        $jit=[int][math]::Round((Get-AXEBand ([double]$snap.Jitter.P999Ms) @(@(0.3,35),@(1.0,20),@(2.0,8),@(5.0,0))))
+        [void]$lines.Add(("Jitter    : {0,3}/35  (P99.9 {1}ms, proxy)" -f $jit,$snap.Jitter.P999Ms))
+    }
+    # Cobertura 25: fraccion Tier0/1 aplicables activas. Guarda div/0.
+    if($snap.TweaksApplicable -is [string] -or [int]$snap.TweaksApplicable -eq 0){
+        $cov='n/a'; $naCount++; [void]$lines.Add('Cobertura : n/a')
+    } else {
+        $cov=[int][math]::Round(25.0 * ([int]$snap.TweaksOn / [int]$snap.TweaksApplicable))
+        [void]$lines.Add(("Cobertura : {0,3}/25  ({1}/{2} Tier0/1)" -f $cov,$snap.TweaksOn,$snap.TweaksApplicable))
+    }
+    # Idle 10: sin regresion de jitter vs prev (10 si no hay prev). Deadband via 36-report.
+    $idle=10
+    if($prev -and $prev.Jitter -isnot [string] -and $snap.Jitter -isnot [string]){
+        $pv=[double]$prev.Jitter.P999Ms; $cv=[double]$snap.Jitter.P999Ms
+        $band=[math]::Max(0.1,$pv*0.10)
+        if($cv -gt ($pv + $band)){
+            $worse=[math]::Min(1.0, ($cv-$pv)/[math]::Max($pv,0.1))
+            $idle=[int][math]::Round(10*(1-$worse))
+        }
+    }
+    [void]$lines.Add(("Idle      : {0,3}/10" -f $idle))
+
+    $total=0
+    foreach($c in @($timer,$jit,$cov,$idle)){ if($c -isnot [string]){ $total+=[int]$c } }
+    if($total -lt 0){ $total=0 }; if($total -gt 100){ $total=100 }
+    if($naCount -gt 0){ [void]$lines.Add("(score parcial: $($naCount) componente(s) n/a)") }
+
+    [pscustomobject]@{
+        Total=$total; Timer=$timer; Jitter=$jit; Coverage=$cov; Idle=$idle
+        Breakdown=($lines -join "`r`n")
+    }
+}
+
+
+# >>>>> MODULE: 34-safety.ps1 >>>>>
+# =====================================================
+# REGION 8c - SEGURIDAD: punto de restauracion best-effort (fuente unica)
+# =====================================================
+# El cuerpo del checkpoint vive AQUI una sola vez. Lo reusan:
+#   - New-AXERestorePoint (headless / CLI, in-process)
+#   - $script:doRestorePoint (GUI: lo inyecta en un runspace de fondo; 57-gui-handlers)
+# Es AUTOCONTENIDO (no llama funciones de sesion) para poder correr dentro del runspace.
+$script:RestorePointScript = {
+    param($desc)
+    $ac = Get-CimInstance Win32_SystemDriver -EA SilentlyContinue | Where-Object { $_.State -eq 'Running' -and $_.Name -match 'EasyAntiCheat|BEDaisy|BattlEye|vgk' }
+    if($ac){ return "ANTICHEAT: '$($ac.Name -join ', ')' bloquea VSS. Cierra el juego/launcher y reintenta." }
+    foreach($sv in 'VSS','swprv'){ $s=Get-Service $sv -EA SilentlyContinue; if($s -and $s.StartType -eq 'Disabled'){ & sc.exe config $sv start= demand | Out-Null } }
+    Start-Service VSS -EA SilentlyContinue
+    Enable-ComputerRestore -Drive 'C:\' -EA SilentlyContinue
+    $rp='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
+    New-ItemProperty -Path $rp -Name SystemRestorePointCreationFrequency -Value 0 -PropertyType DWord -Force | Out-Null
+    try { Checkpoint-Computer -Description $desc -RestorePointType MODIFY_SETTINGS; 'OK: punto CREADO.' }
+    catch { "ERROR: $($_.Exception.Message)" }
+    finally { Remove-ItemProperty -Path $rp -Name SystemRestorePointCreationFrequency -EA SilentlyContinue }
+}
+
+function New-AXERestorePoint {
+    # Best-effort, NUNCA lanza. Devuelve {Status; Message}. Ejecucion in-process (CLI/wrap).
+    # La GUI usa el runspace (no congela) via $script:doRestorePoint.
+    param([string]$Desc='AXE optimizacion')
+    if($env:AXE_NOSR){ return [pscustomobject]@{ Status='fallback'; Message='SR omitido (AXE_NOSR / modo test)' } }
+    try {
+        $out = & $script:RestorePointScript $Desc
+        $line = @($out)[-1]
+        if("$line" -match '^OK'){ return [pscustomobject]@{ Status='ok'; Message="$line" } }
+        # anticheat / SR deshabilitado / throttle -> fallback: apoyate en las redes existentes
+        return [pscustomobject]@{ Status='fallback'; Message="$line  (usa backups .reg + Export como red)" }
+    } catch {
+        return [pscustomobject]@{ Status='error'; Message=$_.Exception.Message }
+    }
+}
+
+
+# >>>>> MODULE: 36-report.ps1 >>>>>
+# =====================================================
+# REGION 8d - REPORTE: delta antes/despues + export JSON (Trust & Proof)
+# =====================================================
+function Format-AXEMetric($v){ if($v -is [string]){ 'n/a' } else { "$v" } }
+
+function Get-AXEDeltaTag {
+    # Deadband anti-ruido: |delta| < max(0.1, 10% del previo) => "igual".
+    # $better = 'down' si menor es mejor (timer/jitter). Devuelve mejora|igual|regresion.
+    param([double]$before,[double]$after,[string]$better='down')
+    $band=[math]::Max(0.1,[math]::Abs($before)*0.10)
+    $d=$after-$before
+    if([math]::Abs($d) -lt $band){ return 'igual' }
+    if($better -eq 'down'){ if($d -lt 0){'mejora'}else{'regresion'} }
+    else { if($d -gt 0){'mejora'}else{'regresion'} }
+}
+
+function New-AXEReport {
+    # String multi-linea, runspace-safe. Campos n/a nunca calculan delta falso.
+    param($snap0,$snap1,$scoreBefore,$scoreAfter)
+    $L=New-Object System.Collections.ArrayList
+    [void]$L.Add('=== AXE REPORTE (Trust & Proof) ===')
+    # Timer
+    if($snap0.Timer -is [string] -or $snap1.Timer -is [string]){
+        [void]$L.Add(("Timer          : {0} -> {1}" -f (Format-AXEMetric $snap0.Timer),(Format-AXEMetric $snap1.Timer)))
+    } else {
+        $tag=Get-AXEDeltaTag ([double]$snap0.Timer.CurrentMs) ([double]$snap1.Timer.CurrentMs) 'down'
+        [void]$L.Add(("Timer          : {0}ms -> {1}ms   ({2})" -f $snap0.Timer.CurrentMs,$snap1.Timer.CurrentMs,$tag))
+    }
+    # Jitter P99.9 (proxy)
+    if($snap0.Jitter -is [string] -or $snap1.Jitter -is [string]){
+        [void]$L.Add(("Jitter P99.9   : {0} -> {1}  (proxy)" -f (Format-AXEMetric $snap0.Jitter),(Format-AXEMetric $snap1.Jitter)))
+    } else {
+        $tag=Get-AXEDeltaTag ([double]$snap0.Jitter.P999Ms) ([double]$snap1.Jitter.P999Ms) 'down'
+        [void]$L.Add(("Jitter P99.9   : {0}ms -> {1}ms   ({2}, proxy no por-driver)" -f $snap0.Jitter.P999Ms,$snap1.Jitter.P999Ms,$tag))
+    }
+    # Cobertura
+    [void]$L.Add(("Cobertura T0/1 : {0}/{1} -> {2}/{3}" -f (Format-AXEMetric $snap0.TweaksOn),(Format-AXEMetric $snap0.TweaksApplicable),(Format-AXEMetric $snap1.TweaksOn),(Format-AXEMetric $snap1.TweaksApplicable)))
+    # Score
+    $delta=$scoreAfter.Total-$scoreBefore.Total
+    $sign=if($delta -ge 0){"+$delta"}else{"$delta"}
+    [void]$L.Add(("AXE Score      : {0} -> {1}   ({2})" -f $scoreBefore.Total,$scoreAfter.Total,$sign))
+    [void]$L.Add('--- desglose (despues) ---')
+    [void]$L.Add($scoreAfter.Breakdown)
+    [void]$L.Add('Deadband: timer exacto; jitter |d|<max(0.1ms,10%) = igual.')
+    ($L -join "`r`n")
+}
+
+function Export-AXEReport {
+    param($snap0,$snap1,$file)
+    $obj=[pscustomobject]@{
+        timestamp   = (Get-Date).ToUniversalTime().ToString('u')
+        snap0       = $snap0
+        snap1       = $snap1
+        scoreBefore = (Get-AXEScore $snap0)
+        scoreAfter  = (Get-AXEScore $snap1 $snap0)
+    }
+    $obj | ConvertTo-Json -Depth 6 | Set-Content $file -Encoding UTF8
+    "Reporte exportado: $file"
+}
+
+
 # >>>>> MODULE: 45-cli.ps1 >>>>>
 # =====================================================
 # REGION 11 - MODOS CLI (headless)
@@ -911,7 +1182,7 @@ function Tick-GameProfiles {
 #     GUI se DEFIERE a un runspace de fondo (Start-AXEHardwareLoad, region 12) para que
 #     la ventana no espere ~3.7s de CIM (Win32_Processor + Get-NetAdapter pagan cold-init WMI).
 $script:HW = $null
-if($SelfTest -or $List -or $Export -or $Import){
+if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report){
     try { $script:HW = Get-AXEHardware } catch { $script:HW = $null }
 }
 
@@ -1018,6 +1289,60 @@ if($SelfTest){
     $ap = Get-ActivePlan
     if($ap -and $ap -notmatch '^[0-9a-fA-F-]{36}$'){ [void]$fails.Add("S12b: plan activo no es GUID: $ap") }
 
+    # S13: timer resolution medible (o null sin lanzar)
+    $checks++
+    try {
+        $tr = Get-AXETimerResolution
+        if($tr -ne $null -and ($tr.CurrentMs -isnot [double] -and $tr.CurrentMs -isnot [int] -and $tr.CurrentMs -isnot [decimal])){ [void]$fails.Add("S13: Get-AXETimerResolution.CurrentMs no numerico") }
+    } catch { [void]$fails.Add("S13: Get-AXETimerResolution lanzo: $($_.Exception.Message)") }
+
+    # S14: jitter sampler (duracion corta) devuelve stats numericas rapido
+    $checks++
+    try {
+        $jt = Measure-AXEJitter -DurationMs 50
+        if($jt.Samples -le 0 -or $jt.P999Ms -lt 0 -or $jt.MaxMs -lt 0){ [void]$fails.Add("S14: Measure-AXEJitter stats invalidas (n=$($jt.Samples))") }
+    } catch { [void]$fails.Add("S14: Measure-AXEJitter lanzo: $($_.Exception.Message)") }
+
+    # S15: snapshot devuelve los 5 campos y no lanza (jitter corto)
+    $checks++
+    try {
+        $sn = Get-AXESnapshot -JitterMs 50
+        foreach($f in 'Timestamp','Timer','Jitter','TweaksOn','TweaksApplicable'){
+            if(-not $sn.PSObject.Properties[$f]){ [void]$fails.Add("S15: snapshot falta campo '$f'") }
+        }
+    } catch { [void]$fails.Add("S15: Get-AXESnapshot lanzo: $($_.Exception.Message)") }
+
+    # S16: score en [0,100] con snapshot real y con snapshot n/a (parcial), sin lanzar
+    $checks++
+    try {
+        $scReal = Get-AXEScore (Get-AXESnapshot -JitterMs 50)
+        if($scReal.Total -lt 0 -or $scReal.Total -gt 100){ [void]$fails.Add("S16: Total fuera de rango: $($scReal.Total)") }
+        $naSnap=[pscustomobject]@{Timestamp='x';Timer='n/a';Jitter='n/a';TweaksOn='n/a';TweaksApplicable='n/a'}
+        $scNa = Get-AXEScore $naSnap
+        if($scNa.Total -lt 0 -or $scNa.Total -gt 100){ [void]$fails.Add("S16: Total(n/a) fuera de rango: $($scNa.Total)") }
+    } catch { [void]$fails.Add("S16: Get-AXEScore lanzo: $($_.Exception.Message)") }
+
+    # S17: restore point con AXE_NOSR=1 devuelve fallback sin lanzar ni crear punto
+    $checks++
+    try {
+        $env:AXE_NOSR='1'
+        $rp = New-AXERestorePoint 'selftest'
+        if($rp.Status -ne 'fallback'){ [void]$fails.Add("S17: con AXE_NOSR esperaba 'fallback', got '$($rp.Status)'") }
+    } catch { [void]$fails.Add("S17: New-AXERestorePoint lanzo: $($_.Exception.Message)") }
+
+    # S18: reporte string no vacio + export JSON parseable (roundtrip en temp)
+    $checks++
+    try {
+        $s0=Get-AXESnapshot -JitterMs 50; $s1=Get-AXESnapshot -JitterMs 50
+        $rep=New-AXEReport $s0 $s1 (Get-AXEScore $s0) (Get-AXEScore $s1 $s0)
+        if([string]::IsNullOrWhiteSpace($rep)){ [void]$fails.Add('S18: New-AXEReport vacio') }
+        $tmp=Join-Path $script:AXEData ('reptest_{0}.json' -f [guid]::NewGuid())
+        Export-AXEReport $s0 $s1 $tmp
+        $back=Get-Content $tmp -Raw -Encoding UTF8 | ConvertFrom-Json
+        if(-not $back.scoreAfter){ [void]$fails.Add('S18: export JSON sin scoreAfter') }
+        Remove-Item $tmp -Force -EA SilentlyContinue
+    } catch { [void]$fails.Add("S18: report/export lanzo: $($_.Exception.Message)") }
+
     Write-Host "========================================="
     Write-Host " AXE v5 - SELF TEST"
     Write-Host "========================================="
@@ -1048,6 +1373,26 @@ if($Export){
 }
 if($Import){
     Import-AXEProfile $Import
+    exit 0
+}
+if($Measure){
+    $snap=Get-AXESnapshot
+    $sc=Get-AXEScore $snap
+    Write-Host "== AXE MEDICION =="
+    Write-Host $sc.Breakdown
+    Write-Host ("AXE Score : {0}/100" -f $sc.Total)
+    Write-Host 'Jitter = proxy de latencia (no atribuible a driver concreto).'
+    exit 0
+}
+if($Score){
+    $sc=Get-AXEScore (Get-AXESnapshot)
+    Write-Host ("AXE Score : {0}/100" -f $sc.Total)
+    Write-Host $sc.Breakdown
+    exit 0
+}
+if($Report){
+    $s0=Get-AXESnapshot; $s1=Get-AXESnapshot
+    Write-Host (Export-AXEReport $s0 $s1 $Report)
     exit 0
 }
 
@@ -1546,11 +1891,11 @@ $script:glyphs = @{
     'CPU'=[char]0xE950; 'LATENCIA'=[char]0xE945; 'GPU'=[char]0xE7F4; 'RED'=[char]0xE774;
     'MEMORIA'=[char]0xE964; 'SISTEMA'=[char]0xE770; 'RENDIMIENTO'=[char]0xE9D9; 'SERVICIOS'=[char]0xE90F;
     'PRIVACIDAD'=[char]0xE72E; 'APPS'=[char]0xE71D; 'EXTREMO'=[char]0xE7BA;
-    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC
+    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2
 }
 $script:tweakCats = New-Object System.Collections.ArrayList
 foreach($tw in $script:CAT){ if(-not $script:tweakCats.Contains($tw.Cat)){ [void]$script:tweakCats.Add($tw.Cat) } }
-$script:actionCats = @('LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
+$script:actionCats = @('MEDICION','LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
 # Badge "Recomendado" = senal curada (no todo Tier<2): mejores ganancias seguras y universales
 $script:RECOMMENDED = @('cpu_mmcss','cpu_prio','lat_mouse','sys_gamedvr','sys_fse','rend_gamemode','rend_visualfx','rend_mpo','gpu_hags','net_throttle','net_nagle','priv_recall','mem_lastaccess')
 
@@ -1878,6 +2223,24 @@ function Build-ActionView($catName){
             $ana.Add_Click({ if($script:busy){ $script:aiOut.AppendText(">> (operacion en curso; espera a que termine)`r`n"); $script:aiOut.ScrollToEnd(); return }; $script:aiOut.AppendText(">> Analisis del sistema`r`n"); $script:aiOut.AppendText(((Get-AXERecommendations) -join "`r`n")+"`r`n`r`n"); $script:aiOut.ScrollToEnd() })
             [void]$panel.Children.Add($script:aiOut); [void]$panel.Children.Add($inRow)
         }
+        'MEDICION' {
+            # Numero grande del score
+            $scoreRow=New-Object System.Windows.Controls.StackPanel; $scoreRow.Orientation='Horizontal'; $scoreRow.Margin=New-Object System.Windows.Thickness(0,0,0,4)
+            $script:scoreLbl=New-Object System.Windows.Controls.TextBlock; $script:scoreLbl.Text='--'; $script:scoreLbl.FontSize=48; $script:scoreLbl.FontWeight='Bold'; $script:scoreLbl.Foreground=New-AXEBrush 'Accent'; $script:scoreLbl.VerticalAlignment='Center'
+            $of=New-Object System.Windows.Controls.TextBlock; $of.Text='/100  AXE Score'; $of.Foreground=New-AXEBrush 'Muted'; $of.FontSize=15; $of.VerticalAlignment='Bottom'; $of.Margin=New-Object System.Windows.Thickness(8,0,0,10)
+            [void]$scoreRow.Children.Add($script:scoreLbl); [void]$scoreRow.Children.Add($of); [void]$panel.Children.Add($scoreRow)
+            # Desglose
+            $script:scoreBreak=New-Object System.Windows.Controls.TextBlock; $script:scoreBreak.Text='Pulsa "Medir ahora" para calcular.'; $script:scoreBreak.Foreground=New-AXEBrush 'Fg'; $script:scoreBreak.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:scoreBreak.FontSize=12; $script:scoreBreak.TextWrapping='Wrap'; $script:scoreBreak.Margin=New-Object System.Windows.Thickness(0,0,0,10)
+            [void]$panel.Children.Add($script:scoreBreak)
+            # Boton Medir ahora
+            $script:measureBtn=New-ActionButton 'Medir ahora' 'Accent'
+            $script:measureBtn.Add_Click({ Invoke-AXEMeasure -JitterMs 1000 })
+            [void]$panel.Children.Add($script:measureBtn)
+            # Reporte / delta
+            $script:measureOut=New-Object System.Windows.Controls.TextBox; $script:measureOut.IsReadOnly=$true; $script:measureOut.Background=New-AXEBrush 'Surface'; $script:measureOut.Foreground=New-AXEBrush 'Fg'; $script:measureOut.BorderBrush=New-AXEBrush 'Line'; $script:measureOut.BorderThickness=New-Object System.Windows.Thickness(1); $script:measureOut.Padding=New-Object System.Windows.Thickness(12,8,12,8); $script:measureOut.Height=260; $script:measureOut.TextWrapping='Wrap'; $script:measureOut.VerticalScrollBarVisibility='Auto'; $script:measureOut.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:measureOut.FontSize=12
+            $script:measureOut.Text="Medicion local, 0 dependencias. El jitter es un PROXY de latencia (no atribuible a driver concreto)."
+            [void]$panel.Children.Add($script:measureOut)
+        }
     }
     $panel
 }
@@ -1906,7 +2269,7 @@ function Switch-View($catName){
     foreach($v in $script:views.Values){ $v.Visibility='Collapsed' }
     $ContentTitle.Text=$catName; $script:activeCat=$catName
     if($catName -in $script:actionCats){
-        $ContentSub.Text = switch($catName){ 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
+        $ContentSub.Text = switch($catName){ 'MEDICION'{'Mide latencia/timer y calcula el AXE Score'} 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
         if(-not $script:views.ContainsKey($catName)){ Build-ActionView $catName | Out-Null }
         $script:views[$catName].Visibility='Visible'; return
     }
@@ -2102,6 +2465,47 @@ function Test-RecentRestorePoint {
     } catch { return $false }
 }
 
+# Medicion sin freeze: el busy-loop de jitter (1s) va a un runspace; timer + cobertura
+# se calculan al volver en el UI thread (instantaneos). Reusa el patron de rsPS/timers.
+$script:snapPrev=$null; $script:snapCur=$null; $script:measurePS=$null; $script:measureBtn=$null
+function Invoke-AXEMeasure {
+    param([int]$JitterMs=1000,[scriptblock]$OnDone=$null)
+    if($script:busy -or $script:measurePS){ Write-AXELog 'Otra operacion en curso, espera.' 'WARN'; return }
+    if($script:measureBtn){ $script:measureBtn.IsEnabled=$false }
+    if($script:scoreLbl){ $script:scoreLbl.Text='...' }
+    $ps=[PowerShell]::Create()
+    [void]$ps.AddScript({ param($ms) [AXE.Native]::SampleJitter([int]$ms) })   # tipo visible en el AppDomain
+    [void]$ps.AddArgument([int]$JitterMs)
+    $script:measurePS=$ps; $script:measureHandle=$ps.BeginInvoke()
+    $script:measureTimer=New-Object System.Windows.Threading.DispatcherTimer
+    $script:measureTimer.Interval=[TimeSpan]::FromMilliseconds(150)
+    $script:measureTimer.Add_Tick({
+        if(-not $script:measureHandle.IsCompleted){ return }
+        $script:measureTimer.Stop()
+        try { $r=@($script:measurePS.EndInvoke($script:measureHandle)) } catch { $r=$null }
+        $script:measurePS.Dispose(); $script:measurePS=$null
+        # ensamblar snapshot en el UI thread
+        $jit='n/a'
+        if($r -and $r.Count -ge 5){ $jit=[pscustomobject]@{ Samples=[int]$r[0]; MeanMs=[math]::Round($r[1],4); MaxMs=[math]::Round($r[2],4); P999Ms=[math]::Round($r[3],4); Stalls1ms=[int]$r[4] } }
+        $timer='n/a'; try { $t=Get-AXETimerResolution; if($t){ $timer=$t } } catch {}
+        $on='n/a'; $app='n/a'
+        try { $onN=0;$appN=0; foreach($tw in $script:CAT){ if($tw.Tier -notin 0,1){continue}; if(Get-BlockReason $tw){continue}; $appN++; if(Test-TweakSafe $tw){$onN++} }; $on=$onN; $app=$appN } catch {}
+        $snap=[pscustomobject]@{ Timestamp=(Get-Date).ToUniversalTime().ToString('u'); Timer=$timer; Jitter=$jit; TweaksOn=$on; TweaksApplicable=$app }
+        $script:snapPrev=$script:snapCur; $script:snapCur=$snap
+        $sc=Get-AXEScore $snap $script:snapPrev
+        if($script:scoreLbl){ $script:scoreLbl.Text="$($sc.Total)" }
+        if($script:scoreBreak){ $script:scoreBreak.Text=$sc.Breakdown }
+        if($script:measureOut){
+            if($script:snapPrev){ $script:measureOut.Text=(New-AXEReport $script:snapPrev $snap (Get-AXEScore $script:snapPrev) $sc) }
+            else { $script:measureOut.Text=$sc.Breakdown + "`r`n(mide otra vez para ver delta antes/despues)" }
+        }
+        if($script:measureBtn){ $script:measureBtn.IsEnabled=$true }
+        Write-AXELog "Medicion: AXE Score $($sc.Total)/100."
+        if($OnDone){ try { & $OnDone $snap $sc } catch {} }
+    })
+    $script:measureTimer.Start()
+}
+
 # Apply sin freeze: DispatcherTimer procesa 1 tweak/tick
 $BtnApply.Add_Click({
     if($script:busy){ return }
@@ -2132,6 +2536,7 @@ $BtnApply.Add_Click({
         if($rp -eq 'Yes'){ Write-AXELog 'Creando punto de restauracion primero. Vuelve a pulsar APLICAR al terminar.'; & $script:doRestorePoint; return }
         Write-AXELog 'Aplicando SIN punto de restauracion (opt-out del usuario).' 'WARN'
     }
+    $script:applyPreSnap=$script:snapCur   # baseline: ultima medicion (o $null si no midio aun)
     $script:busy=$true
     foreach($b in @($BtnApply,$BtnPreset,$BtnMaster,$BtnRead)){ $b.IsEnabled=$false }
     $ApplyBar.Visibility='Visible'; $ApplyBar.Value=0
@@ -2147,6 +2552,13 @@ $BtnApply.Add_Click({
             Refresh-States -Then {
                 foreach($b in @($BtnApply,$BtnPreset,$BtnMaster,$BtnRead)){ $b.IsEnabled=$true }
                 $ApplyBar.Visibility='Collapsed'; $script:busy=$false
+                # Trust & Proof: medir despues (no bloquea; jitter en runspace). Si habia
+                # baseline previa, el reporte muestra el delta antes/despues del apply.
+                Invoke-AXEMeasure -JitterMs 1000 -OnDone {
+                    param($snap,$sc)
+                    $pre=$script:applyPreSnap
+                    if($pre -and $script:measureOut){ $script:measureOut.Text=(New-AXEReport $pre $snap (Get-AXEScore $pre) $sc) }
+                }
             }
             return
         }
@@ -2175,19 +2587,7 @@ $script:doRestorePoint = {
     if($script:rsPS){ return }
     $BtnRestore.IsEnabled=$false; Write-AXELog 'Creando punto de restauracion en segundo plano...'
     $ps=[PowerShell]::Create()
-    [void]$ps.AddScript({
-        param($desc)
-        $ac = Get-CimInstance Win32_SystemDriver -EA SilentlyContinue | Where-Object { $_.State -eq 'Running' -and $_.Name -match 'EasyAntiCheat|BEDaisy|BattlEye|vgk' }
-        if($ac){ return "ANTICHEAT: '$($ac.Name -join ', ')' bloquea VSS. Cierra el juego/launcher y reintenta." }
-        foreach($sv in 'VSS','swprv'){ $s=Get-Service $sv -EA SilentlyContinue; if($s -and $s.StartType -eq 'Disabled'){ & sc.exe config $sv start= demand | Out-Null } }
-        Start-Service VSS -EA SilentlyContinue
-        Enable-ComputerRestore -Drive 'C:\' -EA SilentlyContinue
-        $rp='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
-        New-ItemProperty -Path $rp -Name SystemRestorePointCreationFrequency -Value 0 -PropertyType DWord -Force | Out-Null
-        try { Checkpoint-Computer -Description $desc -RestorePointType MODIFY_SETTINGS; 'OK: punto CREADO.' }
-        catch { "ERROR: $($_.Exception.Message)" }
-        finally { Remove-ItemProperty -Path $rp -Name SystemRestorePointCreationFrequency -EA SilentlyContinue }
-    })
+    [void]$ps.AddScript($script:RestorePointScript.ToString())   # fuente unica en 34-safety.ps1
     [void]$ps.AddArgument('AXE v5')
     $script:rsPS=$ps; $script:rsHandle=$ps.BeginInvoke()
     $t=New-Object System.Windows.Threading.DispatcherTimer; $t.Interval=[TimeSpan]::FromSeconds(1); $script:rsTimer=$t
@@ -2311,6 +2711,13 @@ if($env:AXE_GUITEST -eq '1'){
         Write-Host "Asistente handler : output crecio=$grew (esperado True)"
         if(-not $grew){ $allOk=$false }
     } catch { Write-Host "Asistente handler : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
+    # regresion MEDICION: la vista construye score label + boton + reporte, y el helper existe
+    try {
+        Build-ActionView 'MEDICION' | Out-Null
+        $measOk = ($null -ne $script:scoreLbl) -and ($null -ne $script:measureBtn) -and ($null -ne $script:measureOut) -and ([bool](Get-Command Invoke-AXEMeasure -EA SilentlyContinue))
+        Write-Host "Medicion view     : score+boton+reporte+helper=$measOk (esperado True)"
+        if(-not $measOk){ $allOk=$false }
+    } catch { Write-Host "Medicion view     : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: badge recomendado curado (no todo Tier<2)
     $recCount=0
     foreach($catName in $script:tweakCats){ foreach($e in $script:rows[$catName]){ if($script:RECOMMENDED -contains $e.Tw.Id){ $recCount++ } } }
