@@ -91,6 +91,13 @@ if($env:AXE_GUITEST -eq '1'){
         Write-Host "Asistente handler : output crecio=$grew (esperado True)"
         if(-not $grew){ $allOk=$false }
     } catch { Write-Host "Asistente handler : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
+    # regresion MEDICION: la vista construye score label + boton + reporte, y el helper existe
+    try {
+        Build-ActionView 'MEDICION' | Out-Null
+        $measOk = ($null -ne $script:scoreLbl) -and ($null -ne $script:measureBtn) -and ($null -ne $script:measureOut) -and ([bool](Get-Command Invoke-AXEMeasure -EA SilentlyContinue))
+        Write-Host "Medicion view     : score+boton+reporte+helper=$measOk (esperado True)"
+        if(-not $measOk){ $allOk=$false }
+    } catch { Write-Host "Medicion view     : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: badge recomendado curado (no todo Tier<2)
     $recCount=0
     foreach($catName in $script:tweakCats){ foreach($e in $script:rows[$catName]){ if($script:RECOMMENDED -contains $e.Tw.Id){ $recCount++ } } }

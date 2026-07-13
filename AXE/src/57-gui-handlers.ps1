@@ -286,6 +286,7 @@ $BtnApply.Add_Click({
         if($rp -eq 'Yes'){ Write-AXELog 'Creando punto de restauracion primero. Vuelve a pulsar APLICAR al terminar.'; & $script:doRestorePoint; return }
         Write-AXELog 'Aplicando SIN punto de restauracion (opt-out del usuario).' 'WARN'
     }
+    $script:applyPreSnap=$script:snapCur   # baseline: ultima medicion (o $null si no midio aun)
     $script:busy=$true
     foreach($b in @($BtnApply,$BtnPreset,$BtnMaster,$BtnRead)){ $b.IsEnabled=$false }
     $ApplyBar.Visibility='Visible'; $ApplyBar.Value=0
@@ -301,6 +302,13 @@ $BtnApply.Add_Click({
             Refresh-States -Then {
                 foreach($b in @($BtnApply,$BtnPreset,$BtnMaster,$BtnRead)){ $b.IsEnabled=$true }
                 $ApplyBar.Visibility='Collapsed'; $script:busy=$false
+                # Trust & Proof: medir despues (no bloquea; jitter en runspace). Si habia
+                # baseline previa, el reporte muestra el delta antes/despues del apply.
+                Invoke-AXEMeasure -JitterMs 1000 -OnDone {
+                    param($snap,$sc)
+                    $pre=$script:applyPreSnap
+                    if($pre -and $script:measureOut){ $script:measureOut.Text=(New-AXEReport $pre $snap (Get-AXEScore $pre) $sc) }
+                }
             }
             return
         }
