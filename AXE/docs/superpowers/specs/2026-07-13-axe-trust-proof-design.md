@@ -53,16 +53,18 @@ Wiring (edición de módulos existentes):
 NtQueryTimerResolution(out uint Min, out uint Max, out uint Current)  // ntdll, unidades de 100ns
 ```
 
-- `Add-Type` define la firma una sola vez (guarda: `if(-not ('AXE.Native' -as [type]))`).
+- `Add-Type` define la firma una sola vez (guarda: `if(-not ('AXE.Native' -as [type]))`), **cargado al init del módulo en el hilo principal** (no lazy dentro del runspace de fondo → evita race/doble-compilación). El tipo queda en el AppDomain y el runspace lo ve.
 - `Get-AXETimerResolution` → `[pscustomobject]{ CurrentMs; MinMs; MaxMs }` (Current/10000). `$null` si falla.
 - Interpretación: menor = mejor. Default Windows ≈ 15.6ms; objetivo gaming ≤ 1.0ms; ideal 0.5ms.
+- **No requiere admin** → la medición (y el AXE Score) funcionan antes de elevar.
 
-### 3.2 Jitter / stall sampler (proxy honesto, QPC)
+### 3.2 Jitter / stall sampler (proxy honesto, QPC en C# compilado)
 
-- Usa `[System.Diagnostics.Stopwatch]::GetTimestamp()` + `::Frequency` (QPC puro .NET, sin P/Invoke).
-- Tight loop durante `[int]$DurationMs` (default 1000; **50 en modo test**): mide delta entre lecturas QPC sucesivas. Un delta grande = el hilo fue expropiado (DPC/ISR/scheduler) → proxy de latencia.
+- **El loop de muestreo se implementa en C# compilado vía `Add-Type`** (mismo bloque nativo que §3.1), NO en un loop de PowerShell. Motivo: el intérprete PS añade µs y jitter de GC por iteración que dominarían la señal → un loop PS mediría el intérprete, no el scheduler. El método C# hace un busy-loop leyendo `Stopwatch.GetTimestamp()` (QPC), registra el gap entre lecturas sucesivas y devuelve el array de gaps (o stats precalculadas) al llamador PowerShell.
+- Duración `[int]$DurationMs` (default 1000; **50 en modo test**). Un gap grande = el hilo fue expropiado (DPC/ISR/scheduler) → **proxy** de latencia.
 - `Measure-AXEJitter([int]$DurationMs=1000)` → `[pscustomobject]{ Samples; MeanMs; MaxMs; P999Ms; Stalls1ms }`.
-  - `P999Ms` = percentil 99.9 del delta. `Stalls1ms` = cuenta de deltas > 1ms.
+  - `P999Ms` = percentil 99.9 del gap. `Stalls1ms` = cuenta de gaps > 1ms.
+- C# mantenido **compat-safe** (compila bajo csc de PS 5.1 y Roslyn de PS7): sin `record`, sin miembros expression-bodied, sintaxis C# 5.
 - **Etiqueta obligatoria en toda salida**: "proxy de latencia (no atribuible a driver concreto)".
 
 ### 3.3 Snapshot
@@ -85,10 +87,12 @@ Reparto (documentado en `Breakdown` como texto legible, no caja negra):
 | Timer resolution | 30 | ≤0.5ms→30 · 1.0ms→20 · 5ms→8 · ≥15ms→0 (banda lineal) |
 | Jitter (P999) | 35 | <0.3ms→35 · 1ms→20 · 2ms→8 · ≥5ms→0 |
 | Cobertura Tier0/1 | 25 | 25 × (TweaksOn / TweaksApplicable) |
-| Sin regresión idle | 10 | 10 si no hay `prev` o post ≥ pre; resta proporcional si post empeora |
+| Sin regresión idle | 10 | 10 si no hay `prev`; si hay, resta proporcional sólo si `snap.Jitter.P999Ms` empeora más allá del deadband (§5) vs `prev` |
 
+- **Guarda div/0**: si `TweaksApplicable = 0` (todo bloqueado por hardware) → componente cobertura = `n/a` (no 0/0), y se documenta en `Breakdown`.
+- La métrica de regresión idle es **jitter P999** (no el timer, que cambiamos a propósito): penaliza sólo si aplicar empeoró el jitter de forma real (fuera del deadband).
 - Campos `n/a` → ese componente aporta 0 y se marca `n/a` en `Breakdown` (score parcial honesto, nunca inventado).
-- `Total` = suma redondeada, clamp [0,100].
+- `Total` = suma redondeada, clamp [0,100]. Si hay componentes `n/a`, `Breakdown` indica "score parcial (N/100 medibles)".
 
 ---
 
@@ -102,6 +106,8 @@ Flujo:
    - OK → `Status='ok'`.
 3. Catch (SR deshabilitado, o throttle 24h `SystemRestorePointCreationFrequency`, o SKU sin SR) → `Status='fallback'`, message explica y **apunta a las redes que AXE ya tiene**: backups `.reg` por-clave (`Backup-RegKey`) + `Export-AXEProfile`. NO intenta activar SR.
 4. Cualquier otro error → `Status='error'`, message con `$_.Exception.Message`.
+
+**Ejecución**: `Checkpoint-Computer` bloquea 10-60s → corre **dentro del runspace de fondo** (nunca en el hilo UI) con status visible "creando punto de restauración…". Requiere admin (AXE ya está elevado vía `AXE.bat`).
 
 **No bloquea**: el llamador (apply) sigue pase lo que pase; `fallback`/`error` = warning visible, no abort.
 
@@ -119,6 +125,7 @@ Flujo:
   [desglose score...]
   ```
   - Deltas con flecha + etiqueta mejora/igual/regresión. Campos `n/a` se muestran `n/a`, no se calcula delta falso.
+  - **Deadband anti-ruido**: timer resolution se compara exacto; para jitter, un delta con |Δ| < `max(0.1ms, 10% del valor previo)` se etiqueta **"igual"** (no "mejora"/"regresión"). Evita que la varianza run-a-run (freq scaling, fondo) se lea como resultado. El deadband se documenta en el reporte.
 - `Export-AXEReport($snap0, $snap1, $file)` → JSON (`ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8`), espejo de `Export-AXEProfile`. Incluye ambos snapshots + ambos scores + timestamp.
 
 ---
@@ -174,7 +181,11 @@ GUI harness: el panel Score + botón "Medir ahora" presentes en el layout (contr
 | Riesgo | Mitigación |
 |---|---|
 | Jitter sampler congela UI | Corre sólo en runspace de fondo (patrón GUI actual); en test `DurationMs=50` |
-| P/Invoke falla en PS7 vs 5.1 | `Add-Type` con guarda de tipo; firma estándar `ntdll`; test en ambas rutas del gate |
+| Loop PS mide el intérprete, no el scheduler | Sampler en **C# compilado** (Add-Type), busy-loop nativo → proxy honesto |
+| Ruido run-a-run leído como resultado | Deadband en el reporte (§5); timer exacto, jitter con banda |
+| P/Invoke falla en PS7 vs 5.1 | `Add-Type` con guarda de tipo, cargado al init en hilo principal; C# compat-safe (C# 5); test en ambas rutas del gate |
+| Checkpoint-Computer congela UI (10-60s) | Corre en runspace de fondo con status "creando punto…" |
+| Div/0 en cobertura (todo bloqueado) | `TweaksApplicable=0` → componente `n/a`, no 0/0 |
 | Checkpoint-Computer throttle/deshabilitado | best-effort → `fallback`, apunta a redes existentes, no bloquea |
 | Score malinterpretado como benchmark absoluto | `Breakdown` transparente + etiqueta "proxy" en jitter; nunca prometer FPS |
 | Crear restore points en CI | `AXE_NOSR=1` en el gate |
