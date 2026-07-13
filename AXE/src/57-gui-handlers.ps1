@@ -19,7 +19,7 @@ function Switch-View($catName){
     foreach($v in $script:views.Values){ $v.Visibility='Collapsed' }
     $ContentTitle.Text=$catName; $script:activeCat=$catName
     if($catName -in $script:actionCats){
-        $ContentSub.Text = switch($catName){ 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
+        $ContentSub.Text = switch($catName){ 'MEDICION'{'Mide latencia/timer y calcula el AXE Score'} 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
         if(-not $script:views.ContainsKey($catName)){ Build-ActionView $catName | Out-Null }
         $script:views[$catName].Visibility='Visible'; return
     }
@@ -213,6 +213,47 @@ function Test-RecentRestorePoint {
         }
         return $false
     } catch { return $false }
+}
+
+# Medicion sin freeze: el busy-loop de jitter (1s) va a un runspace; timer + cobertura
+# se calculan al volver en el UI thread (instantaneos). Reusa el patron de rsPS/timers.
+$script:snapPrev=$null; $script:snapCur=$null; $script:measurePS=$null; $script:measureBtn=$null
+function Invoke-AXEMeasure {
+    param([int]$JitterMs=1000,[scriptblock]$OnDone=$null)
+    if($script:busy -or $script:measurePS){ Write-AXELog 'Otra operacion en curso, espera.' 'WARN'; return }
+    if($script:measureBtn){ $script:measureBtn.IsEnabled=$false }
+    if($script:scoreLbl){ $script:scoreLbl.Text='...' }
+    $ps=[PowerShell]::Create()
+    [void]$ps.AddScript({ param($ms) [AXE.Native]::SampleJitter([int]$ms) })   # tipo visible en el AppDomain
+    [void]$ps.AddArgument([int]$JitterMs)
+    $script:measurePS=$ps; $script:measureHandle=$ps.BeginInvoke()
+    $script:measureTimer=New-Object System.Windows.Threading.DispatcherTimer
+    $script:measureTimer.Interval=[TimeSpan]::FromMilliseconds(150)
+    $script:measureTimer.Add_Tick({
+        if(-not $script:measureHandle.IsCompleted){ return }
+        $script:measureTimer.Stop()
+        try { $r=@($script:measurePS.EndInvoke($script:measureHandle)) } catch { $r=$null }
+        $script:measurePS.Dispose(); $script:measurePS=$null
+        # ensamblar snapshot en el UI thread
+        $jit='n/a'
+        if($r -and $r.Count -ge 5){ $jit=[pscustomobject]@{ Samples=[int]$r[0]; MeanMs=[math]::Round($r[1],4); MaxMs=[math]::Round($r[2],4); P999Ms=[math]::Round($r[3],4); Stalls1ms=[int]$r[4] } }
+        $timer='n/a'; try { $t=Get-AXETimerResolution; if($t){ $timer=$t } } catch {}
+        $on='n/a'; $app='n/a'
+        try { $onN=0;$appN=0; foreach($tw in $script:CAT){ if($tw.Tier -notin 0,1){continue}; if(Get-BlockReason $tw){continue}; $appN++; if(Test-TweakSafe $tw){$onN++} }; $on=$onN; $app=$appN } catch {}
+        $snap=[pscustomobject]@{ Timestamp=(Get-Date).ToUniversalTime().ToString('u'); Timer=$timer; Jitter=$jit; TweaksOn=$on; TweaksApplicable=$app }
+        $script:snapPrev=$script:snapCur; $script:snapCur=$snap
+        $sc=Get-AXEScore $snap $script:snapPrev
+        if($script:scoreLbl){ $script:scoreLbl.Text="$($sc.Total)" }
+        if($script:scoreBreak){ $script:scoreBreak.Text=$sc.Breakdown }
+        if($script:measureOut){
+            if($script:snapPrev){ $script:measureOut.Text=(New-AXEReport $script:snapPrev $snap (Get-AXEScore $script:snapPrev) $sc) }
+            else { $script:measureOut.Text=$sc.Breakdown + "`r`n(mide otra vez para ver delta antes/despues)" }
+        }
+        if($script:measureBtn){ $script:measureBtn.IsEnabled=$true }
+        Write-AXELog "Medicion: AXE Score $($sc.Total)/100."
+        if($OnDone){ try { & $OnDone $snap $sc } catch {} }
+    })
+    $script:measureTimer.Start()
 }
 
 # Apply sin freeze: DispatcherTimer procesa 1 tweak/tick

@@ -196,6 +196,24 @@ function Build-ActionView($catName){
             $ana.Add_Click({ if($script:busy){ $script:aiOut.AppendText(">> (operacion en curso; espera a que termine)`r`n"); $script:aiOut.ScrollToEnd(); return }; $script:aiOut.AppendText(">> Analisis del sistema`r`n"); $script:aiOut.AppendText(((Get-AXERecommendations) -join "`r`n")+"`r`n`r`n"); $script:aiOut.ScrollToEnd() })
             [void]$panel.Children.Add($script:aiOut); [void]$panel.Children.Add($inRow)
         }
+        'MEDICION' {
+            # Numero grande del score
+            $scoreRow=New-Object System.Windows.Controls.StackPanel; $scoreRow.Orientation='Horizontal'; $scoreRow.Margin=New-Object System.Windows.Thickness(0,0,0,4)
+            $script:scoreLbl=New-Object System.Windows.Controls.TextBlock; $script:scoreLbl.Text='--'; $script:scoreLbl.FontSize=48; $script:scoreLbl.FontWeight='Bold'; $script:scoreLbl.Foreground=New-AXEBrush 'Accent'; $script:scoreLbl.VerticalAlignment='Center'
+            $of=New-Object System.Windows.Controls.TextBlock; $of.Text='/100  AXE Score'; $of.Foreground=New-AXEBrush 'Muted'; $of.FontSize=15; $of.VerticalAlignment='Bottom'; $of.Margin=New-Object System.Windows.Thickness(8,0,0,10)
+            [void]$scoreRow.Children.Add($script:scoreLbl); [void]$scoreRow.Children.Add($of); [void]$panel.Children.Add($scoreRow)
+            # Desglose
+            $script:scoreBreak=New-Object System.Windows.Controls.TextBlock; $script:scoreBreak.Text='Pulsa "Medir ahora" para calcular.'; $script:scoreBreak.Foreground=New-AXEBrush 'Fg'; $script:scoreBreak.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:scoreBreak.FontSize=12; $script:scoreBreak.TextWrapping='Wrap'; $script:scoreBreak.Margin=New-Object System.Windows.Thickness(0,0,0,10)
+            [void]$panel.Children.Add($script:scoreBreak)
+            # Boton Medir ahora
+            $script:measureBtn=New-ActionButton 'Medir ahora' 'Accent'
+            $script:measureBtn.Add_Click({ Invoke-AXEMeasure -JitterMs 1000 })
+            [void]$panel.Children.Add($script:measureBtn)
+            # Reporte / delta
+            $script:measureOut=New-Object System.Windows.Controls.TextBox; $script:measureOut.IsReadOnly=$true; $script:measureOut.Background=New-AXEBrush 'Surface'; $script:measureOut.Foreground=New-AXEBrush 'Fg'; $script:measureOut.BorderBrush=New-AXEBrush 'Line'; $script:measureOut.BorderThickness=New-Object System.Windows.Thickness(1); $script:measureOut.Padding=New-Object System.Windows.Thickness(12,8,12,8); $script:measureOut.Height=260; $script:measureOut.TextWrapping='Wrap'; $script:measureOut.VerticalScrollBarVisibility='Auto'; $script:measureOut.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:measureOut.FontSize=12
+            $script:measureOut.Text="Medicion local, 0 dependencias. El jitter es un PROXY de latencia (no atribuible a driver concreto)."
+            [void]$panel.Children.Add($script:measureOut)
+        }
     }
     $panel
 }
