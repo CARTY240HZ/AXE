@@ -119,6 +119,13 @@ if($SelfTest){
         if($tr -ne $null -and ($tr.CurrentMs -isnot [double] -and $tr.CurrentMs -isnot [int] -and $tr.CurrentMs -isnot [decimal])){ [void]$fails.Add("S13: Get-AXETimerResolution.CurrentMs no numerico") }
     } catch { [void]$fails.Add("S13: Get-AXETimerResolution lanzo: $($_.Exception.Message)") }
 
+    # S14: jitter sampler (duracion corta) devuelve stats numericas rapido
+    $checks++
+    try {
+        $jt = Measure-AXEJitter -DurationMs 50
+        if($jt.Samples -le 0 -or $jt.P999Ms -lt 0 -or $jt.MaxMs -lt 0){ [void]$fails.Add("S14: Measure-AXEJitter stats invalidas (n=$($jt.Samples))") }
+    } catch { [void]$fails.Add("S14: Measure-AXEJitter lanzo: $($_.Exception.Message)") }
+
     Write-Host "========================================="
     Write-Host " AXE v5 - SELF TEST"
     Write-Host "========================================="

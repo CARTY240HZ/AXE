@@ -56,3 +56,19 @@ function Get-AXETimerResolution {
         }
     } catch { $null }
 }
+
+function Measure-AXEJitter {
+    # PROXY de latencia (no atribuible a driver concreto). El busy-loop corre en C#
+    # nativo; en la GUI se invoca [AXE.Native]::SampleJitter en un runspace de fondo.
+    param([int]$DurationMs=1000)
+    try {
+        $r = [AXE.Native]::SampleJitter([int]$DurationMs)
+        [pscustomobject]@{
+            Samples   = [int]$r[0]
+            MeanMs    = [math]::Round($r[1],4)
+            MaxMs     = [math]::Round($r[2],4)
+            P999Ms    = [math]::Round($r[3],4)
+            Stalls1ms = [int]$r[4]
+        }
+    } catch { $null }
+}
