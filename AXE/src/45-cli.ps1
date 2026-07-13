@@ -5,7 +5,7 @@
 #     GUI se DEFIERE a un runspace de fondo (Start-AXEHardwareLoad, region 12) para que
 #     la ventana no espere ~3.7s de CIM (Win32_Processor + Get-NetAdapter pagan cold-init WMI).
 $script:HW = $null
-if($SelfTest -or $List -or $Export -or $Import){
+if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report){
     try { $script:HW = Get-AXEHardware } catch { $script:HW = $null }
 }
 
@@ -196,6 +196,26 @@ if($Export){
 }
 if($Import){
     Import-AXEProfile $Import
+    exit 0
+}
+if($Measure){
+    $snap=Get-AXESnapshot
+    $sc=Get-AXEScore $snap
+    Write-Host "== AXE MEDICION =="
+    Write-Host $sc.Breakdown
+    Write-Host ("AXE Score : {0}/100" -f $sc.Total)
+    Write-Host 'Jitter = proxy de latencia (no atribuible a driver concreto).'
+    exit 0
+}
+if($Score){
+    $sc=Get-AXEScore (Get-AXESnapshot)
+    Write-Host ("AXE Score : {0}/100" -f $sc.Total)
+    Write-Host $sc.Breakdown
+    exit 0
+}
+if($Report){
+    $s0=Get-AXESnapshot; $s1=Get-AXESnapshot
+    Write-Host (Export-AXEReport $s0 $s1 $Report)
     exit 0
 }
 

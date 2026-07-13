@@ -22,6 +22,9 @@ param(
     [switch]$SelfTest,
     [switch]$List,
     [string]$Export,
-    [string]$Import
+    [string]$Import,
+    [switch]$Measure,
+    [switch]$Score,
+    [string]$Report
 )
 
