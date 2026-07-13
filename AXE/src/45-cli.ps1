@@ -153,6 +153,19 @@ if($SelfTest){
         if($rp.Status -ne 'fallback'){ [void]$fails.Add("S17: con AXE_NOSR esperaba 'fallback', got '$($rp.Status)'") }
     } catch { [void]$fails.Add("S17: New-AXERestorePoint lanzo: $($_.Exception.Message)") }
 
+    # S18: reporte string no vacio + export JSON parseable (roundtrip en temp)
+    $checks++
+    try {
+        $s0=Get-AXESnapshot -JitterMs 50; $s1=Get-AXESnapshot -JitterMs 50
+        $rep=New-AXEReport $s0 $s1 (Get-AXEScore $s0) (Get-AXEScore $s1 $s0)
+        if([string]::IsNullOrWhiteSpace($rep)){ [void]$fails.Add('S18: New-AXEReport vacio') }
+        $tmp=Join-Path $script:AXEData ('reptest_{0}.json' -f [guid]::NewGuid())
+        Export-AXEReport $s0 $s1 $tmp
+        $back=Get-Content $tmp -Raw -Encoding UTF8 | ConvertFrom-Json
+        if(-not $back.scoreAfter){ [void]$fails.Add('S18: export JSON sin scoreAfter') }
+        Remove-Item $tmp -Force -EA SilentlyContinue
+    } catch { [void]$fails.Add("S18: report/export lanzo: $($_.Exception.Message)") }
+
     Write-Host "========================================="
     Write-Host " AXE v5 - SELF TEST"
     Write-Host "========================================="
