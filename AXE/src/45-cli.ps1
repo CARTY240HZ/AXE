@@ -135,6 +135,16 @@ if($SelfTest){
         }
     } catch { [void]$fails.Add("S15: Get-AXESnapshot lanzo: $($_.Exception.Message)") }
 
+    # S16: score en [0,100] con snapshot real y con snapshot n/a (parcial), sin lanzar
+    $checks++
+    try {
+        $scReal = Get-AXEScore (Get-AXESnapshot -JitterMs 50)
+        if($scReal.Total -lt 0 -or $scReal.Total -gt 100){ [void]$fails.Add("S16: Total fuera de rango: $($scReal.Total)") }
+        $naSnap=[pscustomobject]@{Timestamp='x';Timer='n/a';Jitter='n/a';TweaksOn='n/a';TweaksApplicable='n/a'}
+        $scNa = Get-AXEScore $naSnap
+        if($scNa.Total -lt 0 -or $scNa.Total -gt 100){ [void]$fails.Add("S16: Total(n/a) fuera de rango: $($scNa.Total)") }
+    } catch { [void]$fails.Add("S16: Get-AXEScore lanzo: $($_.Exception.Message)") }
+
     Write-Host "========================================="
     Write-Host " AXE v5 - SELF TEST"
     Write-Host "========================================="
