@@ -167,7 +167,7 @@ if($SelfTest){
     } catch { [void]$fails.Add("S18: report/export lanzo: $($_.Exception.Message)") }
 
     Write-Host "========================================="
-    Write-Host " AXE v5 - SELF TEST"
+    Write-Host " AXE $($script:AXEVersion) - SELF TEST"
     Write-Host "========================================="
     Write-Host " Catalogo   : $($script:CAT.Count) tweaks"
     Write-Host " Checks     : $checks"
@@ -179,7 +179,7 @@ if($SelfTest){
 }
 
 if($List){
-    Write-Host "== AXE v5 =="
+    Write-Host "== AXE $($script:AXEVersion) =="
     if($script:HW){ Write-Host "HW: $($script:HW.CpuName) | Laptop=$($script:HW.IsLaptop) Hybrid=$($script:HW.IsHybrid) Nvidia=$($script:HW.HasNvidia) Wifi=$($script:HW.IsWifi) AC=$(-not $script:HW.OnBattery)" }
     Write-Host ""
     foreach($tw in $script:CAT){

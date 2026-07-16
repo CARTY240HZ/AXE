@@ -65,6 +65,7 @@ $xaml = @'
     <SolidColorBrush x:Key="Fg"       Color="#ECECF0"/>
     <SolidColorBrush x:Key="Muted"    Color="#9A9AA6"/>
     <SolidColorBrush x:Key="Accent"   Color="#2DD4BF"/>
+    <SolidColorBrush x:Key="AccentDim" Color="#242DD4BF"/>
     <SolidColorBrush x:Key="OnAccent" Color="#0B0B0D"/>
     <SolidColorBrush x:Key="Green"    Color="#4ADE80"/>
     <SolidColorBrush x:Key="Amber"    Color="#FBBF24"/>
@@ -207,21 +208,32 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="RadioButton">
-            <Border x:Name="B" Background="Transparent" BorderBrush="{StaticResource Accent}"
-                    BorderThickness="0" CornerRadius="7" Padding="10,8" Margin="8,1">
-              <Grid>
-                <Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                <TextBlock x:Name="Ico" Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                           FontSize="15" Text="{TemplateBinding Tag}" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                <TextBlock Grid.Column="1" Margin="10,0,0,0" Text="{TemplateBinding Content}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-              </Grid>
-            </Border>
+            <!-- Sel = capa de seleccion (glow teal) que se FUNDE via Opacity; separada de B
+                 para no pelear con el brush de hover (swap de brush congelado no es animable) -->
+            <Grid Margin="8,1">
+              <Border x:Name="Sel" CornerRadius="7" Background="{StaticResource AccentDim}" Opacity="0"/>
+              <Border x:Name="B" Background="Transparent" BorderBrush="{StaticResource Accent}"
+                      BorderThickness="0" CornerRadius="7" Padding="10,8">
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                  <TextBlock x:Name="Ico" Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                             FontSize="15" Text="{TemplateBinding Tag}" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="1" Margin="10,0,0,0" Text="{TemplateBinding Content}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                </Grid>
+              </Border>
+            </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="Background" Value="{StaticResource Surface2}"/></Trigger>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="B" Property="Background" Value="{StaticResource Surface2}"/>
+                <Trigger.EnterActions>
+                  <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="Sel" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.16"/></Storyboard></BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                  <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="Sel" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.16"/></Storyboard></BeginStoryboard>
+                </Trigger.ExitActions>
                 <Setter TargetName="B" Property="BorderThickness" Value="3,0,0,0"/>
                 <Setter TargetName="Ico" Property="Foreground" Value="{StaticResource Accent}"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -239,7 +251,7 @@ $xaml = @'
             <Grid Width="46" Height="24" Background="Transparent">
               <Border x:Name="Track" CornerRadius="12" Background="{StaticResource Surface2}"
                       BorderBrush="{StaticResource Line}" BorderThickness="1"/>
-              <Ellipse x:Name="Thumb" Width="16" Height="16" HorizontalAlignment="Left" Margin="4,0,0,0" Fill="{StaticResource Muted}">
+              <Ellipse x:Name="Thumb" Width="16" Height="16" HorizontalAlignment="Left" Margin="4,0,0,0" Fill="#C4C4CE">
                 <Ellipse.RenderTransform><TranslateTransform x:Name="TT" X="0"/></Ellipse.RenderTransform>
               </Ellipse>
             </Grid>
@@ -304,7 +316,7 @@ $xaml = @'
 
             </Canvas>
           </Viewbox>
-          <TextBlock Text="v5" FontSize="12" Foreground="{StaticResource Muted}" Margin="7,4,0,0" VerticalAlignment="Center"/>
+          <TextBlock x:Name="VerLbl" Text="v6" FontSize="12" Foreground="{StaticResource Muted}" Margin="7,4,0,0" VerticalAlignment="Center"/>
         </StackPanel>
         <StackPanel x:Name="HwChips" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,18,0"/>
         <Border Grid.Column="2" Background="{StaticResource Surface2}" CornerRadius="8" Padding="14,8" VerticalAlignment="Center" MinWidth="172">
@@ -427,6 +439,7 @@ $LogoBox      = $win.FindName('LogoBox')
 $LogoCanvas   = $win.FindName('LogoCanvas')
 $CountLbl     = $win.FindName('CountLbl')
 $StatusBar    = $win.FindName('StatusBar')
+$VerLbl       = $win.FindName('VerLbl'); if($VerLbl){ $VerLbl.Text = "v$($script:AXEVersion)" }
 $ApplyBar     = $win.FindName('ApplyBar')
 $script:LogBox = $win.FindName('LogBox')
 # Sink de log con color por severidad (ERR rojo / WARN ambar / INFO verde) + cap 500 lineas

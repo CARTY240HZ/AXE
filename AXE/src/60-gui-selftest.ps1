@@ -1,6 +1,6 @@
 # ---- 12.16 GUITEST: assert + render PNG, sin ShowDialog ----
 if($env:AXE_GUITEST -eq '1'){
-    Write-Host "== AXE v5 WPF - LAYOUT TEST =="
+    Write-Host "== AXE $($script:AXEVersion) WPF - LAYOUT TEST =="
     Write-Host "NAV items         : $($script:navBtns.Count)"
     Write-Host "Vistas tweaks     : $(($script:tweakCats).Count)"
     $allOk=$true

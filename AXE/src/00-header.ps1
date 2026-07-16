@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 # =====================================================
-# AXE v5 - Elite Windows Optimizer (single source of truth)
+# AXE - Elite Windows Optimizer (single source of truth)
 #
 # Motor UNICO consolidado. Corrige todos los hallazgos del audit:
 #   C1  Backup/restore de startup robusto + Restore-Autorun
@@ -27,4 +27,10 @@ param(
     [switch]$Score,
     [string]$Report
 )
+
+# Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
+# Va DESPUES del param block (regla PS: param() debe ser la primera sentencia).
+# Fallback si el token no se reemplazo (se corre src suelto sin build).
+$script:AXEVersion = '__AXE_VERSION__'
+if($script:AXEVersion -like '*__AXE_VERSION__*'){ $script:AXEVersion = '6.1.0-dev' }
 

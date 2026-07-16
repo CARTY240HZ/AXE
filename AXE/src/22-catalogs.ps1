@@ -13,6 +13,11 @@ Add-Clean @{Name='Cache Windows Update';Desc='Para wuauserv/bits, borra Download
 Add-Clean @{Name='Flush DNS';Desc='Vacia cache de resolucion de nombres';Run={ ipconfig /flushdns | Out-Null; 'Cache DNS vaciada.' }}
 Add-Clean @{Name='Purga working set (RAM)';Desc='Libera RAM en cache de procesos idle';Run={
     $sig='[DllImport("psapi.dll")] public static extern bool EmptyWorkingSet(IntPtr h);'; $t=('LW.WS' -as [type]); if(-not $t){ $t=Add-Type -MemberDefinition $sig -Name WS -Namespace LW -PassThru }; $n=0; Get-Process | ForEach-Object { try{ if($t::EmptyWorkingSet($_.Handle)){$n++} }catch{} }; "Working set purgado en $n procesos." }}
+Add-Clean @{Name='Purga standby list (RAM cacheada)';Desc='Vacia la lista standby (estilo ISLC): quita el hitch de reclamar cache. Util antes/durante el juego';Run={
+    $os=Get-CimInstance Win32_OperatingSystem; $b=[math]::Round($os.FreePhysicalMemory/1MB,2)
+    $rc=[AXE.Native]::PurgeStandby()
+    if($rc -ne 0){ if($rc -eq -4){ "ERROR standby: sin privilegio. Ejecuta AXE como administrador." } else { "ERROR purga standby (codigo $rc)." } }
+    else { $a=[math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1MB,2); "Standby list purgada. RAM libre: $b -> $a GB" } }}
 
 $script:DEBLOAT = @(
     @{Pkg='Microsoft.BingNews';Name='Noticias (Bing)'}

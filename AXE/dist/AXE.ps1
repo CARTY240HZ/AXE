@@ -1,13 +1,13 @@
-﻿# ================================================================
+# ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-13 09:07:17Z
+# Build UTC: 2026-07-16 14:00:43Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 32-measure.ps1, 34-safety.ps1, 36-report.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
 #Requires -Version 5.1
 # =====================================================
-# AXE v5 - Elite Windows Optimizer (single source of truth)
+# AXE - Elite Windows Optimizer (single source of truth)
 #
 # Motor UNICO consolidado. Corrige todos los hallazgos del audit:
 #   C1  Backup/restore de startup robusto + Restore-Autorun
@@ -34,6 +34,12 @@ param(
     [switch]$Score,
     [string]$Report
 )
+
+# Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
+# Va DESPUES del param block (regla PS: param() debe ser la primera sentencia).
+# Fallback si el token no se reemplazo (se corre src suelto sin build).
+$script:AXEVersion = '6.1.0-dev'
+if($script:AXEVersion -like '*6.1.0-dev*'){ $script:AXEVersion = '6.1.0-dev' }
 
 
 
@@ -433,6 +439,9 @@ Add-Tweak @{Id='mem_ntfsmem';Cat='MEMORIA';Tier=1;Reboot=$true;Name='Cache de me
  Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsMemoryUsage') -eq 2};Apply={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsMemoryUsage' 2};Revert={Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsMemoryUsage'}}
 Add-Tweak @{Id='mem_lastaccess';Cat='MEMORIA';Tier=0;Reboot=$false;Name='NTFS last-access OFF';Desc='Menos escrituras de metadatos al leer';Requires=@{};
  Test={ (& fsutil behavior query disablelastaccess) -match 'Disabled|= 1' };Apply={fsutil behavior set disablelastaccess 1 | Out-Null};Revert={fsutil behavior set disablelastaccess 0 | Out-Null}}
+Add-Tweak @{Id='mem_compression';Cat='MEMORIA';Tier=1;Reboot=$false;Name='Compresion de memoria OFF';Desc='Disable-MMAgent -mc: sin compresion de RAM = menos CPU en paginado, menos micro-stutter. OJO: gasta mas RAM, solo con RAM holgada (16GB+)';Requires=@{};
+ Test={ try{ (Get-MMAgent -EA Stop).MemoryCompression -eq $false }catch{ $false } };
+ Apply={ Disable-MMAgent -mc -EA SilentlyContinue };Revert={ Enable-MMAgent -mc -EA SilentlyContinue }}
 
 # --- SISTEMA (Tier 0/1) ---
 Add-Tweak @{Id='sys_gamedvr';Cat='SISTEMA';Tier=1;Reboot=$false;Name='Game DVR OFF';Desc='Sin grabacion de fondo = mas FPS';Requires=@{};
@@ -490,6 +499,10 @@ Add-Tweak @{Id='svc_obsolete';Cat='SERVICIOS';Tier=0;Reboot=$false;Name='Servici
  Test={(Get-SvcStart 'RetailDemo') -eq 'Disabled'};Apply={'RetailDemo','MapsBroker','Fax'|ForEach-Object{Set-SvcStart $_ 'disabled'}};Revert={Set-SvcStart 'RetailDemo' 'demand'; Set-SvcStart 'MapsBroker' 'demand'; Set-SvcStart 'Fax' 'demand'}}
 Add-Tweak @{Id='svc_sysmain';Cat='SERVICIOS';Tier=1;Reboot=$false;Name='Precarga/diagnostico OFF';Desc='SysMain, PcaSvc, DPS (con SSD, precarga aporta poco)';Requires=@{};
  Test={(Get-SvcStart 'SysMain') -eq 'Disabled'};Apply={'SysMain','PcaSvc','DPS'|ForEach-Object{Set-SvcStart $_ 'disabled'}};Revert={'SysMain','PcaSvc','DPS'|ForEach-Object{Set-SvcStart $_ 'auto'}}}
+Add-Tweak @{Id='svc_wsearch';Cat='SERVICIOS';Tier=1;Reboot=$false;Name='Indexacion de busqueda OFF';Desc='WSearch OFF: corta el I/O de disco de fondo del indexador. La busqueda sigue funcionando, solo mas lenta';Requires=@{};
+ Test={(Get-SvcStart 'WSearch') -eq 'Disabled'};
+ Apply={Set-SvcStart 'WSearch' 'disabled'; Stop-Service 'WSearch' -Force -EA SilentlyContinue};
+ Revert={Set-SvcStart 'WSearch' 'auto'; Start-Service 'WSearch' -EA SilentlyContinue}}
 # FIX M1: svc_remotereg = hardening UNIDIRECCIONAL documentado (Apply==Revert a posta; no es un toggle falso)
 Add-Tweak @{Id='svc_remotereg';Cat='SERVICIOS';Tier=0;Reboot=$false;Name='RemoteRegistry OFF (seguridad)';Desc='Hardening: siempre lo deja disabled (no es reversible por seguridad)';Requires=@{};
  Test={(Get-SvcStart 'RemoteRegistry') -eq 'Disabled'};Apply={Set-SvcStart 'RemoteRegistry' 'disabled'};Revert={Set-SvcStart 'RemoteRegistry' 'disabled'}}
@@ -555,7 +568,7 @@ Add-Tweak @{Id='app_vs';Cat='APPS';Tier=0;Reboot=$false;Name='Telemetria Visual 
  Revert={Del-RV 'HKCU:\Software\Microsoft\VisualStudio\Telemetry' 'TurnOffSwitch'; Del-RV 'HKLM:\SOFTWARE\Policies\Microsoft\VisualStudio\Feedback' 'DisableFeedbackDialog'; Del-RV 'HKLM:\SOFTWARE\Policies\Microsoft\VisualStudio\SQM' 'OptIn'}}
 
 # --- EXTREMO (Tier 2, opt-in, degrada seguridad real) ---
-# NOTA DE INGENIERIA - lo que NO entra y por quÃ© (investigacion 2026):
+# NOTA DE INGENIERIA - lo que NO entra y por qué (investigacion 2026):
 #  - DisableAntiSpyware (Defender OFF completo): Microsoft lo ignora en 24H2/25H2
 #    (build 26200+). La clave existe pero no desactiva Defender; se reactiva solo.
 #    Meterlo seria un tweak ROTO por diseno: el usuario cree que funciona y no hace nada.
@@ -662,6 +675,11 @@ Add-Clean @{Name='Cache Windows Update';Desc='Para wuauserv/bits, borra Download
 Add-Clean @{Name='Flush DNS';Desc='Vacia cache de resolucion de nombres';Run={ ipconfig /flushdns | Out-Null; 'Cache DNS vaciada.' }}
 Add-Clean @{Name='Purga working set (RAM)';Desc='Libera RAM en cache de procesos idle';Run={
     $sig='[DllImport("psapi.dll")] public static extern bool EmptyWorkingSet(IntPtr h);'; $t=('LW.WS' -as [type]); if(-not $t){ $t=Add-Type -MemberDefinition $sig -Name WS -Namespace LW -PassThru }; $n=0; Get-Process | ForEach-Object { try{ if($t::EmptyWorkingSet($_.Handle)){$n++} }catch{} }; "Working set purgado en $n procesos." }}
+Add-Clean @{Name='Purga standby list (RAM cacheada)';Desc='Vacia la lista standby (estilo ISLC): quita el hitch de reclamar cache. Util antes/durante el juego';Run={
+    $os=Get-CimInstance Win32_OperatingSystem; $b=[math]::Round($os.FreePhysicalMemory/1MB,2)
+    $rc=[AXE.Native]::PurgeStandby()
+    if($rc -ne 0){ if($rc -eq -4){ "ERROR standby: sin privilegio. Ejecuta AXE como administrador." } else { "ERROR purga standby (codigo $rc)." } }
+    else { $a=[math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1MB,2); "Standby list purgada. RAM libre: $b -> $a GB" } }}
 
 $script:DEBLOAT = @(
     @{Pkg='Microsoft.BingNews';Name='Noticias (Bing)'}
@@ -946,6 +964,45 @@ namespace AXE {
       for (int i = 0; i < B; i++) { cum += hist[i]; if (cum >= target) { p999 = (i + 1) * bw; break; } }
       double mean = n > 0 ? sum / n : 0.0;
       return new double[] { (double)n, mean, max, p999, (double)stalls };
+    }
+
+    // ---- Standby list purge (ISLC-style). Requiere admin (SeProfileSingleProcessPrivilege). ----
+    [DllImport("ntdll.dll")]
+    static extern int NtSetSystemInformation(int InfoClass, IntPtr Info, int Length);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool OpenProcessToken(IntPtr h, uint acc, out IntPtr tok);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool LookupPrivilegeValue(string host, string name, out long luid);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool AdjustTokenPrivileges(IntPtr tok, bool dis, ref TOKEN_PRIVILEGES newst, int len, IntPtr prev, IntPtr rl);
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool CloseHandle(IntPtr h);
+
+    [StructLayout(LayoutKind.Sequential, Pack=4)]
+    struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public long Luid; public uint Attributes; }
+
+    const int SystemMemoryListInformation = 0x50;
+    const int MemoryPurgeStandbyList = 4;
+    const uint TOKEN_ADJUST_PRIVILEGES = 0x20, TOKEN_QUERY = 0x08;
+    const uint SE_PRIVILEGE_ENABLED = 0x2;
+
+    // Vacia la standby list (paginas en cache reclamables). NTSTATUS 0 = OK; negativo propio = fallo de privilegio.
+    public static int PurgeStandby() {
+      IntPtr tok = IntPtr.Zero;
+      if(!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, out tok)) return -1;
+      try {
+        long luid;
+        if(!LookupPrivilegeValue(null, "SeProfileSingleProcessPrivilege", out luid)) return -2;
+        TOKEN_PRIVILEGES tp = new TOKEN_PRIVILEGES();
+        tp.PrivilegeCount = 1; tp.Luid = luid; tp.Attributes = SE_PRIVILEGE_ENABLED;
+        if(!AdjustTokenPrivileges(tok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero)) return -3;
+        if(Marshal.GetLastWin32Error() != 0) return -4;   // ERROR_NOT_ALL_ASSIGNED: sin admin
+        IntPtr p = Marshal.AllocHGlobal(sizeof(int));
+        try { Marshal.WriteInt32(p, MemoryPurgeStandbyList); return NtSetSystemInformation(SystemMemoryListInformation, p, sizeof(int)); }
+        finally { Marshal.FreeHGlobal(p); }
+      } finally { CloseHandle(tok); }
     }
   }
 }
@@ -1344,7 +1401,7 @@ if($SelfTest){
     } catch { [void]$fails.Add("S18: report/export lanzo: $($_.Exception.Message)") }
 
     Write-Host "========================================="
-    Write-Host " AXE v5 - SELF TEST"
+    Write-Host " AXE $($script:AXEVersion) - SELF TEST"
     Write-Host "========================================="
     Write-Host " Catalogo   : $($script:CAT.Count) tweaks"
     Write-Host " Checks     : $checks"
@@ -1356,7 +1413,7 @@ if($SelfTest){
 }
 
 if($List){
-    Write-Host "== AXE v5 =="
+    Write-Host "== AXE $($script:AXEVersion) =="
     if($script:HW){ Write-Host "HW: $($script:HW.CpuName) | Laptop=$($script:HW.IsLaptop) Hybrid=$($script:HW.IsHybrid) Nvidia=$($script:HW.HasNvidia) Wifi=$($script:HW.IsWifi) AC=$(-not $script:HW.OnBattery)" }
     Write-Host ""
     foreach($tw in $script:CAT){
@@ -1466,6 +1523,7 @@ $xaml = @'
     <SolidColorBrush x:Key="Fg"       Color="#ECECF0"/>
     <SolidColorBrush x:Key="Muted"    Color="#9A9AA6"/>
     <SolidColorBrush x:Key="Accent"   Color="#2DD4BF"/>
+    <SolidColorBrush x:Key="AccentDim" Color="#242DD4BF"/>
     <SolidColorBrush x:Key="OnAccent" Color="#0B0B0D"/>
     <SolidColorBrush x:Key="Green"    Color="#4ADE80"/>
     <SolidColorBrush x:Key="Amber"    Color="#FBBF24"/>
@@ -1608,21 +1666,32 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="RadioButton">
-            <Border x:Name="B" Background="Transparent" BorderBrush="{StaticResource Accent}"
-                    BorderThickness="0" CornerRadius="7" Padding="10,8" Margin="8,1">
-              <Grid>
-                <Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                <TextBlock x:Name="Ico" Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                           FontSize="15" Text="{TemplateBinding Tag}" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                <TextBlock Grid.Column="1" Margin="10,0,0,0" Text="{TemplateBinding Content}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-              </Grid>
-            </Border>
+            <!-- Sel = capa de seleccion (glow teal) que se FUNDE via Opacity; separada de B
+                 para no pelear con el brush de hover (swap de brush congelado no es animable) -->
+            <Grid Margin="8,1">
+              <Border x:Name="Sel" CornerRadius="7" Background="{StaticResource AccentDim}" Opacity="0"/>
+              <Border x:Name="B" Background="Transparent" BorderBrush="{StaticResource Accent}"
+                      BorderThickness="0" CornerRadius="7" Padding="10,8">
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                  <TextBlock x:Name="Ico" Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                             FontSize="15" Text="{TemplateBinding Tag}" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="1" Margin="10,0,0,0" Text="{TemplateBinding Content}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                </Grid>
+              </Border>
+            </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="Background" Value="{StaticResource Surface2}"/></Trigger>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="B" Property="Background" Value="{StaticResource Surface2}"/>
+                <Trigger.EnterActions>
+                  <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="Sel" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.16"/></Storyboard></BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                  <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="Sel" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.16"/></Storyboard></BeginStoryboard>
+                </Trigger.ExitActions>
                 <Setter TargetName="B" Property="BorderThickness" Value="3,0,0,0"/>
                 <Setter TargetName="Ico" Property="Foreground" Value="{StaticResource Accent}"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -1640,7 +1709,7 @@ $xaml = @'
             <Grid Width="46" Height="24" Background="Transparent">
               <Border x:Name="Track" CornerRadius="12" Background="{StaticResource Surface2}"
                       BorderBrush="{StaticResource Line}" BorderThickness="1"/>
-              <Ellipse x:Name="Thumb" Width="16" Height="16" HorizontalAlignment="Left" Margin="4,0,0,0" Fill="{StaticResource Muted}">
+              <Ellipse x:Name="Thumb" Width="16" Height="16" HorizontalAlignment="Left" Margin="4,0,0,0" Fill="#C4C4CE">
                 <Ellipse.RenderTransform><TranslateTransform x:Name="TT" X="0"/></Ellipse.RenderTransform>
               </Ellipse>
             </Grid>
@@ -1705,7 +1774,7 @@ $xaml = @'
 
             </Canvas>
           </Viewbox>
-          <TextBlock Text="v5" FontSize="12" Foreground="{StaticResource Muted}" Margin="7,4,0,0" VerticalAlignment="Center"/>
+          <TextBlock x:Name="VerLbl" Text="v6" FontSize="12" Foreground="{StaticResource Muted}" Margin="7,4,0,0" VerticalAlignment="Center"/>
         </StackPanel>
         <StackPanel x:Name="HwChips" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,18,0"/>
         <Border Grid.Column="2" Background="{StaticResource Surface2}" CornerRadius="8" Padding="14,8" VerticalAlignment="Center" MinWidth="172">
@@ -1828,6 +1897,7 @@ $LogoBox      = $win.FindName('LogoBox')
 $LogoCanvas   = $win.FindName('LogoCanvas')
 $CountLbl     = $win.FindName('CountLbl')
 $StatusBar    = $win.FindName('StatusBar')
+$VerLbl       = $win.FindName('VerLbl'); if($VerLbl){ $VerLbl.Text = "v$($script:AXEVersion)" }
 $ApplyBar     = $win.FindName('ApplyBar')
 $script:LogBox = $win.FindName('LogBox')
 # Sink de log con color por severidad (ERR rojo / WARN ambar / INFO verde) + cap 500 lineas
@@ -1893,6 +1963,40 @@ $script:glyphs = @{
     'PRIVACIDAD'=[char]0xE72E; 'APPS'=[char]0xE71D; 'EXTREMO'=[char]0xE7BA;
     'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2
 }
+# Sombra suave compartida (solo se aplica en hover -> 1 card a la vez, sin coste en reposo)
+$script:cardShadow = New-Object System.Windows.Media.Effects.DropShadowEffect
+$script:cardShadow.Color=[System.Windows.Media.Colors]::Black; $script:cardShadow.BlurRadius=20; $script:cardShadow.ShadowDepth=0; $script:cardShadow.Opacity=0.40
+# Brush translucido de un color base (tiles de icono tenidos por tier / badges). alpha 0-255.
+function New-TintBrush($key,$alpha){
+    $c=(New-AXEBrush $key).Color
+    New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromArgb($alpha,$c.R,$c.G,$c.B))
+}
+# ---- helpers de animacion (easing CubicOut, micro-transiciones estilo Fluent) ----
+$script:easeOut = New-Object System.Windows.Media.Animation.CubicEase; $script:easeOut.EasingMode='EaseOut'
+function New-DblAnim($to,$ms){
+    $a=New-Object System.Windows.Media.Animation.DoubleAnimation
+    $a.To=[double]$to; $a.Duration=[System.Windows.Duration][TimeSpan]::FromMilliseconds($ms); $a.EasingFunction=$script:easeOut; $a
+}
+function New-ColorAnim($to,$ms){
+    $a=New-Object System.Windows.Media.Animation.ColorAnimation
+    $a.To=[System.Windows.Media.Color]$to; $a.Duration=[System.Windows.Duration][TimeSpan]::FromMilliseconds($ms); $a.EasingFunction=$script:easeOut; $a
+}
+# Fade-in de un elemento (cambio de vista). Opacity 0 -> 1.
+function Start-AXEFade($el,$ms=170){
+    $el.Opacity=0
+    $el.BeginAnimation([System.Windows.UIElement]::OpacityProperty,(New-DblAnim 1 $ms))
+}
+# Pulso del tile al activar un tweak (scale 1 -> 1.18 -> 1, centrado). Solo en accion del usuario.
+function Pulse-Tile($tile){
+    if($tile.RenderTransform -isnot [System.Windows.Media.ScaleTransform]){
+        $tile.RenderTransformOrigin=New-Object System.Windows.Point(0.5,0.5)
+        $tile.RenderTransform=New-Object System.Windows.Media.ScaleTransform
+    }
+    $a=New-Object System.Windows.Media.Animation.DoubleAnimation
+    $a.To=1.18; $a.Duration=[System.Windows.Duration][TimeSpan]::FromMilliseconds(110); $a.AutoReverse=$true; $a.EasingFunction=$script:easeOut
+    $tile.RenderTransform.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty,$a)
+    $tile.RenderTransform.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty,$a)
+}
 $script:tweakCats = New-Object System.Collections.ArrayList
 foreach($tw in $script:CAT){ if(-not $script:tweakCats.Contains($tw.Cat)){ [void]$script:tweakCats.Add($tw.Cat) } }
 $script:actionCats = @('MEDICION','LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
@@ -1907,61 +2011,81 @@ $script:busy = $false
 
 # ---- 12.8 construir una tarjeta de tweak ----
 function New-TweakCard($tw){
+    $tierKey = switch($tw.Tier){ 0 {'Green'} 1 {'Accent'} 2 {'Red'} }
+    $tierTip = switch($tw.Tier){ 0 {'Tier 0 - Seguro'} 1 {'Tier 1 - Elite'} 2 {'Tier 2 - EXTREMO (baja seguridad)'} }
+    $glyph = $script:glyphs[$tw.Cat]; if(-not $glyph){ $glyph=[char]0xE9D9 }
+
     $card = New-Object System.Windows.Controls.Border
     $card.Background = New-AXEBrush 'Surface'; $card.BorderBrush = New-AXEBrush 'Line'
     $card.BorderThickness = New-Object System.Windows.Thickness(1)
-    $card.CornerRadius = New-Object System.Windows.CornerRadius(8)
-    $card.Padding = New-Object System.Windows.Thickness(14,10,14,10)
+    $card.CornerRadius = New-Object System.Windows.CornerRadius(10)
+    $card.Padding = New-Object System.Windows.Thickness(12,10,14,10)
     $card.Margin = New-Object System.Windows.Thickness(0,0,0,8)
 
     $g = New-Object System.Windows.Controls.Grid
-    $c0=New-Object System.Windows.Controls.ColumnDefinition; $c0.Width='*'
-    $c1=New-Object System.Windows.Controls.ColumnDefinition; $c1.Width='Auto'
-    [void]$g.ColumnDefinitions.Add($c0); [void]$g.ColumnDefinitions.Add($c1)
+    foreach($w in @('Auto','*','Auto')){ $cd=New-Object System.Windows.Controls.ColumnDefinition; $cd.Width=$w; [void]$g.ColumnDefinitions.Add($cd) }
 
-    $left = New-Object System.Windows.Controls.StackPanel
-    # fila nombre + punto de tier
+    # tile de icono tenido por tier (verde=seguro / teal=elite / rojo=extremo) -> escaneable de un vistazo
+    $tile = New-Object System.Windows.Controls.Border
+    $tile.Width=38; $tile.Height=38; $tile.CornerRadius=New-Object System.Windows.CornerRadius(9)
+    $tile.Background = New-TintBrush $tierKey 30
+    $tile.VerticalAlignment='Center'; $tile.Margin=New-Object System.Windows.Thickness(0,0,12,0); $tile.ToolTip=$tierTip
+    $ico = New-Object System.Windows.Controls.TextBlock
+    $ico.Text=$glyph; $ico.FontFamily=New-Object System.Windows.Media.FontFamily('Segoe Fluent Icons, Segoe MDL2 Assets')
+    $ico.FontSize=17; $ico.Foreground=New-AXEBrush $tierKey; $ico.HorizontalAlignment='Center'; $ico.VerticalAlignment='Center'
+    $tile.Child=$ico
+    [System.Windows.Controls.Grid]::SetColumn($tile,0); [void]$g.Children.Add($tile)
+
+    $left = New-Object System.Windows.Controls.StackPanel; $left.VerticalAlignment='Center'
     $nameRow = New-Object System.Windows.Controls.StackPanel; $nameRow.Orientation='Horizontal'
-    $dot = New-Object System.Windows.Shapes.Ellipse; $dot.Width=9; $dot.Height=9; $dot.VerticalAlignment='Center'
-    $dot.Fill = switch($tw.Tier){ 0 {New-AXEBrush 'Green'} 1 {New-AXEBrush 'Accent'} 2 {New-AXEBrush 'Red'} }
-    $tierTip = switch($tw.Tier){ 0 {'Tier 0 - Seguro'} 1 {'Tier 1 - Elite'} 2 {'Tier 2 - EXTREMO (baja seguridad)'} }
-    $dot.ToolTip = $tierTip
     $name = New-Object System.Windows.Controls.TextBlock
-    $name.Text=$tw.Name; $name.FontWeight='SemiBold'; $name.Margin=New-Object System.Windows.Thickness(9,0,0,0); $name.VerticalAlignment='Center'
-    [void]$nameRow.Children.Add($dot); [void]$nameRow.Children.Add($name)
+    $name.Text=$tw.Name; $name.FontWeight='SemiBold'; $name.FontSize=13.5; $name.VerticalAlignment='Center'
+    [void]$nameRow.Children.Add($name)
     $desc = New-Object System.Windows.Controls.TextBlock
-    $desc.Text=$tw.Desc; $desc.Foreground=New-AXEBrush 'Muted'; $desc.TextWrapping='Wrap'; $desc.Margin=New-Object System.Windows.Thickness(18,3,10,0); $desc.FontSize=12
+    $desc.Text=$tw.Desc; $desc.Foreground=New-AXEBrush 'Muted'; $desc.TextWrapping='Wrap'; $desc.Margin=New-Object System.Windows.Thickness(0,2,10,0); $desc.FontSize=12
     [void]$left.Children.Add($nameRow); [void]$left.Children.Add($desc)
-    [System.Windows.Controls.Grid]::SetColumn($left,0); [void]$g.Children.Add($left)
+    [System.Windows.Controls.Grid]::SetColumn($left,1); [void]$g.Children.Add($left)
 
     $tog = New-Object System.Windows.Controls.CheckBox
     $tog.Style = $win.FindResource('ToggleSwitch'); $tog.VerticalAlignment='Center'; $tog.Tag=$tw
     [System.Windows.Automation.AutomationProperties]::SetName($tog,$tw.Name)
-    [System.Windows.Controls.Grid]::SetColumn($tog,1); [void]$g.Children.Add($tog)
+    [System.Windows.Controls.Grid]::SetColumn($tog,2); [void]$g.Children.Add($tog)
 
     $blk = Get-BlockReason $tw
     if($blk){
         $tog.IsEnabled=$false; $desc.Foreground=New-AXEBrush 'Red'; $desc.Text="[BLOQUEADO] $blk"
+        $tile.Background = New-TintBrush 'Red' 30; $ico.Foreground=New-AXEBrush 'Red'; $ico.Text=[char]0xE72E  # candado
     }
     if(-not $blk -and ($script:RECOMMENDED -contains $tw.Id)){
         $recB = New-Object System.Windows.Controls.Border
-        $recB.BorderBrush=New-AXEBrush 'Accent'; $recB.BorderThickness=New-Object System.Windows.Thickness(1)
-        $recB.CornerRadius=New-Object System.Windows.CornerRadius(4); $recB.Padding=New-Object System.Windows.Thickness(5,0,5,1)
-        $recB.Margin=New-Object System.Windows.Thickness(8,0,0,0); $recB.VerticalAlignment='Center'
+        $recB.Background=New-TintBrush 'Accent' 28
+        $recB.CornerRadius=New-Object System.Windows.CornerRadius(5); $recB.Padding=New-Object System.Windows.Thickness(6,1,6,2)
+        $recB.Margin=New-Object System.Windows.Thickness(9,0,0,0); $recB.VerticalAlignment='Center'
         $recT = New-Object System.Windows.Controls.TextBlock
         $recT.Text='Recomendado'; $recT.Foreground=New-AXEBrush 'Accent'; $recT.FontSize=10; $recT.FontWeight='SemiBold'
         $recB.Child=$recT; [void]$nameRow.Children.Add($recB)
     }
-    # Card entera clickable (patron Fluent SettingsCard) + hook de cambios pendientes
+    # Card clickable (patron Fluent SettingsCard) + hover ANIMADO: eleva (lift) + fade de fondo + sombra.
+    # NO toca BorderBrush -> no pisa el borde accent de "cambio pendiente" (Update-AXEPending).
     if(-not $blk){
-        $tog.Add_Click({ Update-AXEPending })
+        $tog.Add_Click({ if($tog.IsChecked){ Pulse-Tile $tile }; Update-AXEPending }.GetNewClosure())
         $card.Cursor='Hand'; $card.Tag=$tog
-        $card.Add_MouseEnter({ param($s,$e) $s.Background = New-AXEBrush 'Surface2' })
-        $card.Add_MouseLeave({ param($s,$e) $s.Background = New-AXEBrush 'Surface' })
-        $card.Add_MouseLeftButtonUp({ param($s,$e)
-            $tg=$s.Tag
-            if($tg -and $tg.IsEnabled -and -not $tg.IsMouseOver){ $tg.IsChecked = -not $tg.IsChecked; Update-AXEPending }
+        # brush propio (animable; el de recursos esta congelado) + transform de elevacion
+        $card.Background = New-Object System.Windows.Media.SolidColorBrush ((New-AXEBrush 'Surface').Color)
+        $card.RenderTransform = New-Object System.Windows.Media.TranslateTransform
+        $card.Add_MouseEnter({ param($s,$e)
+            $s.Effect=$script:cardShadow   # sombra: assign en enter (sin coste en reposo)
+            $s.Background.BeginAnimation([System.Windows.Media.SolidColorBrush]::ColorProperty,(New-ColorAnim (New-AXEBrush 'Surface2').Color 130))
+            $s.RenderTransform.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty,(New-DblAnim -3 130))
         })
+        $card.Add_MouseLeave({ param($s,$e)
+            $s.Effect=$null
+            $s.Background.BeginAnimation([System.Windows.Media.SolidColorBrush]::ColorProperty,(New-ColorAnim (New-AXEBrush 'Surface').Color 150))
+            $s.RenderTransform.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty,(New-DblAnim 0 150))
+        })
+        $card.Add_MouseLeftButtonUp({ param($s,$e)
+            if($tog.IsEnabled -and -not $tog.IsMouseOver){ $tog.IsChecked = -not $tog.IsChecked; if($tog.IsChecked){ Pulse-Tile $tile }; Update-AXEPending }
+        }.GetNewClosure())
     }
     $card.Child=$g
     @{Card=$card; Toggle=$tog; Desc=$desc; Tw=$tw; Blocked=[bool]$blk; Base=$null}
@@ -2036,6 +2160,35 @@ function Build-ActionView($catName){
     [void]$ContentHost.Children.Add($panel); $script:views[$catName]=$panel
     switch($catName){
         'LIMPIEZA' {
+            # --- monitor auto standby (ISLC-style): purga cuando la RAM libre baja del umbral ---
+            $mon=New-Object System.Windows.Controls.StackPanel; $mon.Orientation='Horizontal'; $mon.Margin=New-Object System.Windows.Thickness(0,0,0,4)
+            $sbTog=New-Object System.Windows.Controls.CheckBox; $sbTog.Style=$win.FindResource('ToggleSwitch'); $sbTog.VerticalAlignment='Center'
+            [System.Windows.Automation.AutomationProperties]::SetName($sbTog,'Auto-limpiar standby cuando la RAM libre baja')
+            $sbLbl=New-Object System.Windows.Controls.TextBlock; $sbLbl.Text='Auto-limpiar standby'; $sbLbl.Foreground=New-AXEBrush 'Fg'; $sbLbl.FontWeight='SemiBold'; $sbLbl.VerticalAlignment='Center'; $sbLbl.Margin=New-Object System.Windows.Thickness(10,0,0,0)
+            [void]$mon.Children.Add($sbTog); [void]$mon.Children.Add($sbLbl); [void]$panel.Children.Add($mon)
+            $sbInfo=New-Object System.Windows.Controls.TextBlock; $sbInfo.Text='Monitor ON: cada 5s, si la RAM libre baja del 15%, AXE purga la standby list. Solo mientras AXE este abierto.'; $sbInfo.Foreground=New-AXEBrush 'Muted'; $sbInfo.FontSize=12; $sbInfo.TextWrapping='Wrap'; $sbInfo.Margin=New-Object System.Windows.Thickness(0,0,0,12)
+            [void]$panel.Children.Add($sbInfo)
+            $sbTog.Add_Checked({
+                if(-not $script:sbTimer){
+                    $script:sbTimer=New-Object System.Windows.Threading.DispatcherTimer
+                    $script:sbTimer.Interval=[TimeSpan]::FromSeconds(5)
+                    # ponytail: umbral fijo 15%, chequeo en UI thread (CIM ya caliente por deteccion HW). Config si alguien lo pide.
+                    $script:sbTimer.Add_Tick({
+                        if($script:busy){ return }
+                        try {
+                            $os=Get-CimInstance Win32_OperatingSystem
+                            $freePct=$os.FreePhysicalMemory/$os.TotalVisibleMemorySize
+                            if($freePct -lt 0.15){
+                                $rc=[AXE.Native]::PurgeStandby()
+                                if($rc -eq 0){ Write-AXELog ("Auto-standby: RAM libre {0:P0} < 15%, standby purgada." -f $freePct) }
+                                elseif($rc -eq -4){ Write-AXELog 'Auto-standby: sin privilegio (ejecuta como admin). Monitor detenido.' 'WARN'; $script:sbTimer.Stop() }
+                            }
+                        } catch { Write-AXELog "Auto-standby: $($_.Exception.Message)" 'WARN' }
+                    })
+                }
+                $script:sbTimer.Start(); Write-AXELog 'Monitor standby ON (cada 5s, umbral 15%).'
+            })
+            $sbTog.Add_Unchecked({ if($script:sbTimer){ $script:sbTimer.Stop() }; Write-AXELog 'Monitor standby OFF.' })
             foreach($cl in $script:CLEAN){
                 $card=New-Object System.Windows.Controls.Border; $card.Background=New-AXEBrush 'Surface'; $card.BorderBrush=New-AXEBrush 'Line'
                 $card.BorderThickness=New-Object System.Windows.Thickness(1); $card.CornerRadius=New-Object System.Windows.CornerRadius(8)
@@ -2207,7 +2360,7 @@ function Build-ActionView($catName){
             $script:aiOut=New-Object System.Windows.Controls.TextBox; $script:aiOut.IsReadOnly=$true; $script:aiOut.Background=New-AXEBrush 'Surface'; $script:aiOut.Foreground=New-AXEBrush 'Fg'
             $script:aiOut.BorderBrush=New-AXEBrush 'Line'; $script:aiOut.BorderThickness=New-Object System.Windows.Thickness(1); $script:aiOut.Padding=New-Object System.Windows.Thickness(12,8,12,8)
             $script:aiOut.Height=340; $script:aiOut.TextWrapping='Wrap'; $script:aiOut.VerticalScrollBarVisibility='Auto'; $script:aiOut.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:aiOut.FontSize=12
-            $script:aiOut.Text="Asistente AXE v5 (local, sin API). Pregunta o pulsa ANALIZAR.`r`nTemas: que aplico, input lag, fps, red, seguridad, extremo.`r`n`r`n"
+            $script:aiOut.Text="Asistente AXE $($script:AXEVersion) (local, sin API). Pregunta o pulsa ANALIZAR.`r`nTemas: que aplico, input lag, fps, red, seguridad, extremo.`r`n`r`n"
             $inRow=New-Object System.Windows.Controls.Grid; $inRow.Margin=New-Object System.Windows.Thickness(0,8,0,0)
             $q0=New-Object System.Windows.Controls.ColumnDefinition; $q0.Width='*'; $q1=New-Object System.Windows.Controls.ColumnDefinition; $q1.Width='Auto'; $q2=New-Object System.Windows.Controls.ColumnDefinition; $q2.Width='Auto'
             [void]$inRow.ColumnDefinitions.Add($q0); [void]$inRow.ColumnDefinitions.Add($q1); [void]$inRow.ColumnDefinitions.Add($q2)
@@ -2271,9 +2424,9 @@ function Switch-View($catName){
     if($catName -in $script:actionCats){
         $ContentSub.Text = switch($catName){ 'MEDICION'{'Mide latencia/timer y calcula el AXE Score'} 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
         if(-not $script:views.ContainsKey($catName)){ Build-ActionView $catName | Out-Null }
-        $script:views[$catName].Visibility='Visible'; return
+        $script:views[$catName].Visibility='Visible'; Start-AXEFade $script:views[$catName]; return
     }
-    if($script:views.ContainsKey($catName)){ $script:views[$catName].Visibility='Visible' }
+    if($script:views.ContainsKey($catName)){ $script:views[$catName].Visibility='Visible'; Start-AXEFade $script:views[$catName] }
     Update-AXESubtitle $catName
 }
 # Subtitulo de contexto: N tweaks / activas / bloqueadas
@@ -2405,10 +2558,11 @@ $BtnRead.Add_Click({
 
 $BtnPreset.Add_Click({
     foreach($catName in $script:tweakCats){
-        foreach($e in $script:rows[$catName]){ if(-not $e.Blocked -and $e.Tw.Tier -lt 2){ $e.Toggle.IsChecked=$true } }
+        # net_dns queda FUERA del preset a posta: sobrescribe DNS local/VPN (ver su Desc). Opt-in manual en pestana DNS.
+        foreach($e in $script:rows[$catName]){ if(-not $e.Blocked -and $e.Tw.Tier -lt 2 -and $e.Tw.Id -ne 'net_dns'){ $e.Toggle.IsChecked=$true } }
     }
     Update-AXEPending
-    Write-AXELog 'Preset GAMING marcado (Tier 0+1). EXTREMO no se toca. Pulsa APLICAR.'
+    Write-AXELog 'Preset GAMING marcado (Tier 0+1, excepto DNS manual). EXTREMO no se toca. Pulsa APLICAR.'
 })
 
 # A3: Master revert sin freeze. Antes Invoke-AXEMasterRevert corria ~60 reverts SINCRONOS
@@ -2588,7 +2742,7 @@ $script:doRestorePoint = {
     $BtnRestore.IsEnabled=$false; Write-AXELog 'Creando punto de restauracion en segundo plano...'
     $ps=[PowerShell]::Create()
     [void]$ps.AddScript($script:RestorePointScript.ToString())   # fuente unica en 34-safety.ps1
-    [void]$ps.AddArgument('AXE v5')
+    [void]$ps.AddArgument("AXE $($script:AXEVersion)")
     $script:rsPS=$ps; $script:rsHandle=$ps.BeginInvoke()
     $t=New-Object System.Windows.Threading.DispatcherTimer; $t.Interval=[TimeSpan]::FromSeconds(1); $script:rsTimer=$t
     $t.Add_Tick({
@@ -2607,7 +2761,7 @@ $BtnRestore.Add_Click($script:doRestorePoint)
 # ---- 12.15 init ----
 $n = Repair-StartupBackup
 if($n -gt 0){ Write-AXELog "Startup backup migrado a formato v5: $n entrada(s)." }
-Write-AXELog "AXE v5 lista. Tweaks: $($script:CAT.Count)."
+Write-AXELog "AXE $($script:AXEVersion) lista. Tweaks: $($script:CAT.Count)."
 Write-AXELog 'Recomendado: crea PRIMERO el punto de restauracion.'
 # A4: HW async -> chips + gating + Refresh-States al completar (la ventana ya esta visible)
 Start-AXEHardwareLoad
@@ -2620,7 +2774,7 @@ if($firstCat){ $script:navBtns[$firstCat].IsChecked=$true }
 # >>>>> MODULE: 60-gui-selftest.ps1 >>>>>
 # ---- 12.16 GUITEST: assert + render PNG, sin ShowDialog ----
 if($env:AXE_GUITEST -eq '1'){
-    Write-Host "== AXE v5 WPF - LAYOUT TEST =="
+    Write-Host "== AXE $($script:AXEVersion) WPF - LAYOUT TEST =="
     Write-Host "NAV items         : $($script:navBtns.Count)"
     Write-Host "Vistas tweaks     : $(($script:tweakCats).Count)"
     $allOk=$true
@@ -2795,13 +2949,13 @@ if($env:AXE_GUISHOW -eq '1'){
 
 # >>>>> MODULE: 99-main.ps1 >>>>>
 $win.Add_Closed({
-    foreach($t in @($script:hwTimer,$script:jobTimer,$script:rsTimer,$script:applyTimer,$script:mrTimer,$script:profTimer)){
+    foreach($t in @($script:hwTimer,$script:jobTimer,$script:rsTimer,$script:applyTimer,$script:mrTimer,$script:profTimer,$script:sbTimer,$script:measureTimer,$script:refTimer)){
         if($t){ try { $t.Stop() } catch {} }
     }
-    foreach($psRef in @($script:hwPS,$script:jobPS,$script:rsPS)){
+    foreach($psRef in @($script:hwPS,$script:jobPS,$script:rsPS,$script:measurePS)){
         if($psRef){ try { $psRef.Stop() } catch {}; try { $psRef.Dispose() } catch {} }
     }
-    $script:hwPS=$null; $script:jobPS=$null; $script:rsPS=$null
+    $script:hwPS=$null; $script:jobPS=$null; $script:rsPS=$null; $script:measurePS=$null
 })
 [void]$win.ShowDialog()
 

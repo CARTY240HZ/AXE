@@ -19,10 +19,13 @@ $sb = New-Object System.Text.StringBuilder
 foreach($m in $modules){
     [void]$sb.AppendLine("")
     [void]$sb.AppendLine("# >>>>> MODULE: $($m.Name) >>>>>")
-    [void]$sb.Append((Get-Content $m.FullName -Raw))
+    [void]$sb.Append((Get-Content $m.FullName -Raw -Encoding UTF8))
     [void]$sb.AppendLine("")
 }
-Set-Content -Path $out -Value $sb.ToString() -Encoding UTF8
+# Version canonica: reemplaza el token de 00-header (que va DESPUES del param block,
+# para no romper la regla "param() primero"). Fuente unica = fichero VERSION.
+$built = $sb.ToString() -replace '__AXE_VERSION__', $ver
+Set-Content -Path $out -Value $built -Encoding UTF8
 Write-Host ("BUILT: {0} ({1} lineas, {2} modulos)" -f $out,(Get-Content $out).Count,$modules.Count)
 foreach($m in $modules){ Write-Host ("  {0,-28} {1,5} lineas" -f $m.Name,(Get-Content $m.FullName).Count) }
 if($Sign){ Set-AuthenticodeSignature -FilePath $out -Certificate (Get-Item "Cert:\CurrentUser\My\$Sign") | Out-Null; Write-Host "Firmado ($Sign)" }

@@ -9,6 +9,35 @@ function Build-ActionView($catName){
     [void]$ContentHost.Children.Add($panel); $script:views[$catName]=$panel
     switch($catName){
         'LIMPIEZA' {
+            # --- monitor auto standby (ISLC-style): purga cuando la RAM libre baja del umbral ---
+            $mon=New-Object System.Windows.Controls.StackPanel; $mon.Orientation='Horizontal'; $mon.Margin=New-Object System.Windows.Thickness(0,0,0,4)
+            $sbTog=New-Object System.Windows.Controls.CheckBox; $sbTog.Style=$win.FindResource('ToggleSwitch'); $sbTog.VerticalAlignment='Center'
+            [System.Windows.Automation.AutomationProperties]::SetName($sbTog,'Auto-limpiar standby cuando la RAM libre baja')
+            $sbLbl=New-Object System.Windows.Controls.TextBlock; $sbLbl.Text='Auto-limpiar standby'; $sbLbl.Foreground=New-AXEBrush 'Fg'; $sbLbl.FontWeight='SemiBold'; $sbLbl.VerticalAlignment='Center'; $sbLbl.Margin=New-Object System.Windows.Thickness(10,0,0,0)
+            [void]$mon.Children.Add($sbTog); [void]$mon.Children.Add($sbLbl); [void]$panel.Children.Add($mon)
+            $sbInfo=New-Object System.Windows.Controls.TextBlock; $sbInfo.Text='Monitor ON: cada 5s, si la RAM libre baja del 15%, AXE purga la standby list. Solo mientras AXE este abierto.'; $sbInfo.Foreground=New-AXEBrush 'Muted'; $sbInfo.FontSize=12; $sbInfo.TextWrapping='Wrap'; $sbInfo.Margin=New-Object System.Windows.Thickness(0,0,0,12)
+            [void]$panel.Children.Add($sbInfo)
+            $sbTog.Add_Checked({
+                if(-not $script:sbTimer){
+                    $script:sbTimer=New-Object System.Windows.Threading.DispatcherTimer
+                    $script:sbTimer.Interval=[TimeSpan]::FromSeconds(5)
+                    # ponytail: umbral fijo 15%, chequeo en UI thread (CIM ya caliente por deteccion HW). Config si alguien lo pide.
+                    $script:sbTimer.Add_Tick({
+                        if($script:busy){ return }
+                        try {
+                            $os=Get-CimInstance Win32_OperatingSystem
+                            $freePct=$os.FreePhysicalMemory/$os.TotalVisibleMemorySize
+                            if($freePct -lt 0.15){
+                                $rc=[AXE.Native]::PurgeStandby()
+                                if($rc -eq 0){ Write-AXELog ("Auto-standby: RAM libre {0:P0} < 15%, standby purgada." -f $freePct) }
+                                elseif($rc -eq -4){ Write-AXELog 'Auto-standby: sin privilegio (ejecuta como admin). Monitor detenido.' 'WARN'; $script:sbTimer.Stop() }
+                            }
+                        } catch { Write-AXELog "Auto-standby: $($_.Exception.Message)" 'WARN' }
+                    })
+                }
+                $script:sbTimer.Start(); Write-AXELog 'Monitor standby ON (cada 5s, umbral 15%).'
+            })
+            $sbTog.Add_Unchecked({ if($script:sbTimer){ $script:sbTimer.Stop() }; Write-AXELog 'Monitor standby OFF.' })
             foreach($cl in $script:CLEAN){
                 $card=New-Object System.Windows.Controls.Border; $card.Background=New-AXEBrush 'Surface'; $card.BorderBrush=New-AXEBrush 'Line'
                 $card.BorderThickness=New-Object System.Windows.Thickness(1); $card.CornerRadius=New-Object System.Windows.CornerRadius(8)
@@ -180,7 +209,7 @@ function Build-ActionView($catName){
             $script:aiOut=New-Object System.Windows.Controls.TextBox; $script:aiOut.IsReadOnly=$true; $script:aiOut.Background=New-AXEBrush 'Surface'; $script:aiOut.Foreground=New-AXEBrush 'Fg'
             $script:aiOut.BorderBrush=New-AXEBrush 'Line'; $script:aiOut.BorderThickness=New-Object System.Windows.Thickness(1); $script:aiOut.Padding=New-Object System.Windows.Thickness(12,8,12,8)
             $script:aiOut.Height=340; $script:aiOut.TextWrapping='Wrap'; $script:aiOut.VerticalScrollBarVisibility='Auto'; $script:aiOut.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:aiOut.FontSize=12
-            $script:aiOut.Text="Asistente AXE v5 (local, sin API). Pregunta o pulsa ANALIZAR.`r`nTemas: que aplico, input lag, fps, red, seguridad, extremo.`r`n`r`n"
+            $script:aiOut.Text="Asistente AXE $($script:AXEVersion) (local, sin API). Pregunta o pulsa ANALIZAR.`r`nTemas: que aplico, input lag, fps, red, seguridad, extremo.`r`n`r`n"
             $inRow=New-Object System.Windows.Controls.Grid; $inRow.Margin=New-Object System.Windows.Thickness(0,8,0,0)
             $q0=New-Object System.Windows.Controls.ColumnDefinition; $q0.Width='*'; $q1=New-Object System.Windows.Controls.ColumnDefinition; $q1.Width='Auto'; $q2=New-Object System.Windows.Controls.ColumnDefinition; $q2.Width='Auto'
             [void]$inRow.ColumnDefinitions.Add($q0); [void]$inRow.ColumnDefinitions.Add($q1); [void]$inRow.ColumnDefinitions.Add($q2)

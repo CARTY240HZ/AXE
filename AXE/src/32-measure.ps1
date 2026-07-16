@@ -38,6 +38,45 @@ namespace AXE {
       double mean = n > 0 ? sum / n : 0.0;
       return new double[] { (double)n, mean, max, p999, (double)stalls };
     }
+
+    // ---- Standby list purge (ISLC-style). Requiere admin (SeProfileSingleProcessPrivilege). ----
+    [DllImport("ntdll.dll")]
+    static extern int NtSetSystemInformation(int InfoClass, IntPtr Info, int Length);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool OpenProcessToken(IntPtr h, uint acc, out IntPtr tok);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool LookupPrivilegeValue(string host, string name, out long luid);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool AdjustTokenPrivileges(IntPtr tok, bool dis, ref TOKEN_PRIVILEGES newst, int len, IntPtr prev, IntPtr rl);
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool CloseHandle(IntPtr h);
+
+    [StructLayout(LayoutKind.Sequential, Pack=4)]
+    struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public long Luid; public uint Attributes; }
+
+    const int SystemMemoryListInformation = 0x50;
+    const int MemoryPurgeStandbyList = 4;
+    const uint TOKEN_ADJUST_PRIVILEGES = 0x20, TOKEN_QUERY = 0x08;
+    const uint SE_PRIVILEGE_ENABLED = 0x2;
+
+    // Vacia la standby list (paginas en cache reclamables). NTSTATUS 0 = OK; negativo propio = fallo de privilegio.
+    public static int PurgeStandby() {
+      IntPtr tok = IntPtr.Zero;
+      if(!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, out tok)) return -1;
+      try {
+        long luid;
+        if(!LookupPrivilegeValue(null, "SeProfileSingleProcessPrivilege", out luid)) return -2;
+        TOKEN_PRIVILEGES tp = new TOKEN_PRIVILEGES();
+        tp.PrivilegeCount = 1; tp.Luid = luid; tp.Attributes = SE_PRIVILEGE_ENABLED;
+        if(!AdjustTokenPrivileges(tok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero)) return -3;
+        if(Marshal.GetLastWin32Error() != 0) return -4;   // ERROR_NOT_ALL_ASSIGNED: sin admin
+        IntPtr p = Marshal.AllocHGlobal(sizeof(int));
+        try { Marshal.WriteInt32(p, MemoryPurgeStandbyList); return NtSetSystemInformation(SystemMemoryListInformation, p, sizeof(int)); }
+        finally { Marshal.FreeHGlobal(p); }
+      } finally { CloseHandle(tok); }
+    }
   }
 }
 '@

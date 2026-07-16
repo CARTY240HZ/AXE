@@ -21,9 +21,9 @@ function Switch-View($catName){
     if($catName -in $script:actionCats){
         $ContentSub.Text = switch($catName){ 'MEDICION'{'Mide latencia/timer y calcula el AXE Score'} 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
         if(-not $script:views.ContainsKey($catName)){ Build-ActionView $catName | Out-Null }
-        $script:views[$catName].Visibility='Visible'; return
+        $script:views[$catName].Visibility='Visible'; Start-AXEFade $script:views[$catName]; return
     }
-    if($script:views.ContainsKey($catName)){ $script:views[$catName].Visibility='Visible' }
+    if($script:views.ContainsKey($catName)){ $script:views[$catName].Visibility='Visible'; Start-AXEFade $script:views[$catName] }
     Update-AXESubtitle $catName
 }
 # Subtitulo de contexto: N tweaks / activas / bloqueadas
@@ -155,10 +155,11 @@ $BtnRead.Add_Click({
 
 $BtnPreset.Add_Click({
     foreach($catName in $script:tweakCats){
-        foreach($e in $script:rows[$catName]){ if(-not $e.Blocked -and $e.Tw.Tier -lt 2){ $e.Toggle.IsChecked=$true } }
+        # net_dns queda FUERA del preset a posta: sobrescribe DNS local/VPN (ver su Desc). Opt-in manual en pestana DNS.
+        foreach($e in $script:rows[$catName]){ if(-not $e.Blocked -and $e.Tw.Tier -lt 2 -and $e.Tw.Id -ne 'net_dns'){ $e.Toggle.IsChecked=$true } }
     }
     Update-AXEPending
-    Write-AXELog 'Preset GAMING marcado (Tier 0+1). EXTREMO no se toca. Pulsa APLICAR.'
+    Write-AXELog 'Preset GAMING marcado (Tier 0+1, excepto DNS manual). EXTREMO no se toca. Pulsa APLICAR.'
 })
 
 # A3: Master revert sin freeze. Antes Invoke-AXEMasterRevert corria ~60 reverts SINCRONOS
@@ -338,7 +339,7 @@ $script:doRestorePoint = {
     $BtnRestore.IsEnabled=$false; Write-AXELog 'Creando punto de restauracion en segundo plano...'
     $ps=[PowerShell]::Create()
     [void]$ps.AddScript($script:RestorePointScript.ToString())   # fuente unica en 34-safety.ps1
-    [void]$ps.AddArgument('AXE v5')
+    [void]$ps.AddArgument("AXE $($script:AXEVersion)")
     $script:rsPS=$ps; $script:rsHandle=$ps.BeginInvoke()
     $t=New-Object System.Windows.Threading.DispatcherTimer; $t.Interval=[TimeSpan]::FromSeconds(1); $script:rsTimer=$t
     $t.Add_Tick({
@@ -357,7 +358,7 @@ $BtnRestore.Add_Click($script:doRestorePoint)
 # ---- 12.15 init ----
 $n = Repair-StartupBackup
 if($n -gt 0){ Write-AXELog "Startup backup migrado a formato v5: $n entrada(s)." }
-Write-AXELog "AXE v5 lista. Tweaks: $($script:CAT.Count)."
+Write-AXELog "AXE $($script:AXEVersion) lista. Tweaks: $($script:CAT.Count)."
 Write-AXELog 'Recomendado: crea PRIMERO el punto de restauracion.'
 # A4: HW async -> chips + gating + Refresh-States al completar (la ventana ya esta visible)
 Start-AXEHardwareLoad

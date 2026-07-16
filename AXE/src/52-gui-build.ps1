@@ -32,6 +32,40 @@ $script:glyphs = @{
     'PRIVACIDAD'=[char]0xE72E; 'APPS'=[char]0xE71D; 'EXTREMO'=[char]0xE7BA;
     'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2
 }
+# Sombra suave compartida (solo se aplica en hover -> 1 card a la vez, sin coste en reposo)
+$script:cardShadow = New-Object System.Windows.Media.Effects.DropShadowEffect
+$script:cardShadow.Color=[System.Windows.Media.Colors]::Black; $script:cardShadow.BlurRadius=20; $script:cardShadow.ShadowDepth=0; $script:cardShadow.Opacity=0.40
+# Brush translucido de un color base (tiles de icono tenidos por tier / badges). alpha 0-255.
+function New-TintBrush($key,$alpha){
+    $c=(New-AXEBrush $key).Color
+    New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromArgb($alpha,$c.R,$c.G,$c.B))
+}
+# ---- helpers de animacion (easing CubicOut, micro-transiciones estilo Fluent) ----
+$script:easeOut = New-Object System.Windows.Media.Animation.CubicEase; $script:easeOut.EasingMode='EaseOut'
+function New-DblAnim($to,$ms){
+    $a=New-Object System.Windows.Media.Animation.DoubleAnimation
+    $a.To=[double]$to; $a.Duration=[System.Windows.Duration][TimeSpan]::FromMilliseconds($ms); $a.EasingFunction=$script:easeOut; $a
+}
+function New-ColorAnim($to,$ms){
+    $a=New-Object System.Windows.Media.Animation.ColorAnimation
+    $a.To=[System.Windows.Media.Color]$to; $a.Duration=[System.Windows.Duration][TimeSpan]::FromMilliseconds($ms); $a.EasingFunction=$script:easeOut; $a
+}
+# Fade-in de un elemento (cambio de vista). Opacity 0 -> 1.
+function Start-AXEFade($el,$ms=170){
+    $el.Opacity=0
+    $el.BeginAnimation([System.Windows.UIElement]::OpacityProperty,(New-DblAnim 1 $ms))
+}
+# Pulso del tile al activar un tweak (scale 1 -> 1.18 -> 1, centrado). Solo en accion del usuario.
+function Pulse-Tile($tile){
+    if($tile.RenderTransform -isnot [System.Windows.Media.ScaleTransform]){
+        $tile.RenderTransformOrigin=New-Object System.Windows.Point(0.5,0.5)
+        $tile.RenderTransform=New-Object System.Windows.Media.ScaleTransform
+    }
+    $a=New-Object System.Windows.Media.Animation.DoubleAnimation
+    $a.To=1.18; $a.Duration=[System.Windows.Duration][TimeSpan]::FromMilliseconds(110); $a.AutoReverse=$true; $a.EasingFunction=$script:easeOut
+    $tile.RenderTransform.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty,$a)
+    $tile.RenderTransform.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty,$a)
+}
 $script:tweakCats = New-Object System.Collections.ArrayList
 foreach($tw in $script:CAT){ if(-not $script:tweakCats.Contains($tw.Cat)){ [void]$script:tweakCats.Add($tw.Cat) } }
 $script:actionCats = @('MEDICION','LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
@@ -46,61 +80,81 @@ $script:busy = $false
 
 # ---- 12.8 construir una tarjeta de tweak ----
 function New-TweakCard($tw){
+    $tierKey = switch($tw.Tier){ 0 {'Green'} 1 {'Accent'} 2 {'Red'} }
+    $tierTip = switch($tw.Tier){ 0 {'Tier 0 - Seguro'} 1 {'Tier 1 - Elite'} 2 {'Tier 2 - EXTREMO (baja seguridad)'} }
+    $glyph = $script:glyphs[$tw.Cat]; if(-not $glyph){ $glyph=[char]0xE9D9 }
+
     $card = New-Object System.Windows.Controls.Border
     $card.Background = New-AXEBrush 'Surface'; $card.BorderBrush = New-AXEBrush 'Line'
     $card.BorderThickness = New-Object System.Windows.Thickness(1)
-    $card.CornerRadius = New-Object System.Windows.CornerRadius(8)
-    $card.Padding = New-Object System.Windows.Thickness(14,10,14,10)
+    $card.CornerRadius = New-Object System.Windows.CornerRadius(10)
+    $card.Padding = New-Object System.Windows.Thickness(12,10,14,10)
     $card.Margin = New-Object System.Windows.Thickness(0,0,0,8)
 
     $g = New-Object System.Windows.Controls.Grid
-    $c0=New-Object System.Windows.Controls.ColumnDefinition; $c0.Width='*'
-    $c1=New-Object System.Windows.Controls.ColumnDefinition; $c1.Width='Auto'
-    [void]$g.ColumnDefinitions.Add($c0); [void]$g.ColumnDefinitions.Add($c1)
+    foreach($w in @('Auto','*','Auto')){ $cd=New-Object System.Windows.Controls.ColumnDefinition; $cd.Width=$w; [void]$g.ColumnDefinitions.Add($cd) }
 
-    $left = New-Object System.Windows.Controls.StackPanel
-    # fila nombre + punto de tier
+    # tile de icono tenido por tier (verde=seguro / teal=elite / rojo=extremo) -> escaneable de un vistazo
+    $tile = New-Object System.Windows.Controls.Border
+    $tile.Width=38; $tile.Height=38; $tile.CornerRadius=New-Object System.Windows.CornerRadius(9)
+    $tile.Background = New-TintBrush $tierKey 30
+    $tile.VerticalAlignment='Center'; $tile.Margin=New-Object System.Windows.Thickness(0,0,12,0); $tile.ToolTip=$tierTip
+    $ico = New-Object System.Windows.Controls.TextBlock
+    $ico.Text=$glyph; $ico.FontFamily=New-Object System.Windows.Media.FontFamily('Segoe Fluent Icons, Segoe MDL2 Assets')
+    $ico.FontSize=17; $ico.Foreground=New-AXEBrush $tierKey; $ico.HorizontalAlignment='Center'; $ico.VerticalAlignment='Center'
+    $tile.Child=$ico
+    [System.Windows.Controls.Grid]::SetColumn($tile,0); [void]$g.Children.Add($tile)
+
+    $left = New-Object System.Windows.Controls.StackPanel; $left.VerticalAlignment='Center'
     $nameRow = New-Object System.Windows.Controls.StackPanel; $nameRow.Orientation='Horizontal'
-    $dot = New-Object System.Windows.Shapes.Ellipse; $dot.Width=9; $dot.Height=9; $dot.VerticalAlignment='Center'
-    $dot.Fill = switch($tw.Tier){ 0 {New-AXEBrush 'Green'} 1 {New-AXEBrush 'Accent'} 2 {New-AXEBrush 'Red'} }
-    $tierTip = switch($tw.Tier){ 0 {'Tier 0 - Seguro'} 1 {'Tier 1 - Elite'} 2 {'Tier 2 - EXTREMO (baja seguridad)'} }
-    $dot.ToolTip = $tierTip
     $name = New-Object System.Windows.Controls.TextBlock
-    $name.Text=$tw.Name; $name.FontWeight='SemiBold'; $name.Margin=New-Object System.Windows.Thickness(9,0,0,0); $name.VerticalAlignment='Center'
-    [void]$nameRow.Children.Add($dot); [void]$nameRow.Children.Add($name)
+    $name.Text=$tw.Name; $name.FontWeight='SemiBold'; $name.FontSize=13.5; $name.VerticalAlignment='Center'
+    [void]$nameRow.Children.Add($name)
     $desc = New-Object System.Windows.Controls.TextBlock
-    $desc.Text=$tw.Desc; $desc.Foreground=New-AXEBrush 'Muted'; $desc.TextWrapping='Wrap'; $desc.Margin=New-Object System.Windows.Thickness(18,3,10,0); $desc.FontSize=12
+    $desc.Text=$tw.Desc; $desc.Foreground=New-AXEBrush 'Muted'; $desc.TextWrapping='Wrap'; $desc.Margin=New-Object System.Windows.Thickness(0,2,10,0); $desc.FontSize=12
     [void]$left.Children.Add($nameRow); [void]$left.Children.Add($desc)
-    [System.Windows.Controls.Grid]::SetColumn($left,0); [void]$g.Children.Add($left)
+    [System.Windows.Controls.Grid]::SetColumn($left,1); [void]$g.Children.Add($left)
 
     $tog = New-Object System.Windows.Controls.CheckBox
     $tog.Style = $win.FindResource('ToggleSwitch'); $tog.VerticalAlignment='Center'; $tog.Tag=$tw
     [System.Windows.Automation.AutomationProperties]::SetName($tog,$tw.Name)
-    [System.Windows.Controls.Grid]::SetColumn($tog,1); [void]$g.Children.Add($tog)
+    [System.Windows.Controls.Grid]::SetColumn($tog,2); [void]$g.Children.Add($tog)
 
     $blk = Get-BlockReason $tw
     if($blk){
         $tog.IsEnabled=$false; $desc.Foreground=New-AXEBrush 'Red'; $desc.Text="[BLOQUEADO] $blk"
+        $tile.Background = New-TintBrush 'Red' 30; $ico.Foreground=New-AXEBrush 'Red'; $ico.Text=[char]0xE72E  # candado
     }
     if(-not $blk -and ($script:RECOMMENDED -contains $tw.Id)){
         $recB = New-Object System.Windows.Controls.Border
-        $recB.BorderBrush=New-AXEBrush 'Accent'; $recB.BorderThickness=New-Object System.Windows.Thickness(1)
-        $recB.CornerRadius=New-Object System.Windows.CornerRadius(4); $recB.Padding=New-Object System.Windows.Thickness(5,0,5,1)
-        $recB.Margin=New-Object System.Windows.Thickness(8,0,0,0); $recB.VerticalAlignment='Center'
+        $recB.Background=New-TintBrush 'Accent' 28
+        $recB.CornerRadius=New-Object System.Windows.CornerRadius(5); $recB.Padding=New-Object System.Windows.Thickness(6,1,6,2)
+        $recB.Margin=New-Object System.Windows.Thickness(9,0,0,0); $recB.VerticalAlignment='Center'
         $recT = New-Object System.Windows.Controls.TextBlock
         $recT.Text='Recomendado'; $recT.Foreground=New-AXEBrush 'Accent'; $recT.FontSize=10; $recT.FontWeight='SemiBold'
         $recB.Child=$recT; [void]$nameRow.Children.Add($recB)
     }
-    # Card entera clickable (patron Fluent SettingsCard) + hook de cambios pendientes
+    # Card clickable (patron Fluent SettingsCard) + hover ANIMADO: eleva (lift) + fade de fondo + sombra.
+    # NO toca BorderBrush -> no pisa el borde accent de "cambio pendiente" (Update-AXEPending).
     if(-not $blk){
-        $tog.Add_Click({ Update-AXEPending })
+        $tog.Add_Click({ if($tog.IsChecked){ Pulse-Tile $tile }; Update-AXEPending }.GetNewClosure())
         $card.Cursor='Hand'; $card.Tag=$tog
-        $card.Add_MouseEnter({ param($s,$e) $s.Background = New-AXEBrush 'Surface2' })
-        $card.Add_MouseLeave({ param($s,$e) $s.Background = New-AXEBrush 'Surface' })
-        $card.Add_MouseLeftButtonUp({ param($s,$e)
-            $tg=$s.Tag
-            if($tg -and $tg.IsEnabled -and -not $tg.IsMouseOver){ $tg.IsChecked = -not $tg.IsChecked; Update-AXEPending }
+        # brush propio (animable; el de recursos esta congelado) + transform de elevacion
+        $card.Background = New-Object System.Windows.Media.SolidColorBrush ((New-AXEBrush 'Surface').Color)
+        $card.RenderTransform = New-Object System.Windows.Media.TranslateTransform
+        $card.Add_MouseEnter({ param($s,$e)
+            $s.Effect=$script:cardShadow   # sombra: assign en enter (sin coste en reposo)
+            $s.Background.BeginAnimation([System.Windows.Media.SolidColorBrush]::ColorProperty,(New-ColorAnim (New-AXEBrush 'Surface2').Color 130))
+            $s.RenderTransform.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty,(New-DblAnim -3 130))
         })
+        $card.Add_MouseLeave({ param($s,$e)
+            $s.Effect=$null
+            $s.Background.BeginAnimation([System.Windows.Media.SolidColorBrush]::ColorProperty,(New-ColorAnim (New-AXEBrush 'Surface').Color 150))
+            $s.RenderTransform.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty,(New-DblAnim 0 150))
+        })
+        $card.Add_MouseLeftButtonUp({ param($s,$e)
+            if($tog.IsEnabled -and -not $tog.IsMouseOver){ $tog.IsChecked = -not $tog.IsChecked; if($tog.IsChecked){ Pulse-Tile $tile }; Update-AXEPending }
+        }.GetNewClosure())
     }
     $card.Child=$g
     @{Card=$card; Toggle=$tog; Desc=$desc; Tw=$tw; Blocked=[bool]$blk; Base=$null}
