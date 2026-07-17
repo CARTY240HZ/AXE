@@ -48,6 +48,20 @@ function Get-AXEHardware {
     # WinVer: Win11 = build >= 22000 (corte oficial Microsoft), Win10 = resto de 10.0.x
     $build = $os.BuildNumber
     $isWin11 = [int]$build -ge 22000
+    # --- ecosistema (§3.1): arquitectura, vendor, seguridad. Todo self-contained (corre en runspace) ---
+    $cpuArch   = $env:PROCESSOR_ARCHITECTURE                 # AMD64 / ARM64 / x86
+    $cpuVendor = $cpu.Manufacturer                            # GenuineIntel / AuthenticAMD / Qualcomm...
+    # Defender + Tamper: una sola llamada (lenta), ambos derivados. AV de terceros -> el cmdlet falla o AMServiceEnabled=false.
+    $mp = $null; try { $mp = Get-MpComputerStatus -ErrorAction Stop } catch {}
+    $hasDefender = [bool]($mp -and $mp.AMServiceEnabled)
+    $isTamper    = [bool]($mp -and $mp.IsTamperProtected)
+    # S mode: SkuPolicyRequired=1 en CI\Policy (try/catch, default no-S)
+    $isSMode = $false
+    try { $isSMode = ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name SkuPolicyRequired -ErrorAction Stop).SkuPolicyRequired -eq 1) } catch {}
+    # HAGS: heuristica conservadora. El OS solo crea el valor HwSchMode en GPUs WDDM>=2.7 capaces;
+    # ausente => tratamos como no-soportado (ocultar), nunca falso-positivo que aplique HAGS en HW incompatible.
+    $supportsHAGS = $false
+    try { $supportsHAGS = ($null -ne (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name HwSchMode -ErrorAction Stop).HwSchMode) } catch {}
     [pscustomobject]@{
         CpuName=$cpu.Name; Cores=$cpu.NumberOfCores; Threads=$cpu.NumberOfLogicalProcessors
         IsLaptop=$isLaptop; IsHybrid=$isHybrid; HasNvidia=$hasNvidia
@@ -55,6 +69,9 @@ function Get-AXEHardware {
         IsHome=($edition -match 'Home'); OnBattery=$onBattery
         IsWin11=$isWin11; BuildNumber=$build
         RamGB=[math]::Round($os.TotalVisibleMemorySize/1MB,1)
+        CpuArch=$cpuArch; CpuVendor=$cpuVendor
+        HasDefender=$hasDefender; IsTamperProtected=$isTamper
+        IsSMode=$isSMode; SupportsHAGS=$supportsHAGS
     }
 }
 

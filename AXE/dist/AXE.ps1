@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-17 21:43:04Z
+# Build UTC: 2026-07-17 22:05:07Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 32-measure.ps1, 34-safety.ps1, 36-report.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -94,6 +94,20 @@ function Get-AXEHardware {
     # WinVer: Win11 = build >= 22000 (corte oficial Microsoft), Win10 = resto de 10.0.x
     $build = $os.BuildNumber
     $isWin11 = [int]$build -ge 22000
+    # --- ecosistema (§3.1): arquitectura, vendor, seguridad. Todo self-contained (corre en runspace) ---
+    $cpuArch   = $env:PROCESSOR_ARCHITECTURE                 # AMD64 / ARM64 / x86
+    $cpuVendor = $cpu.Manufacturer                            # GenuineIntel / AuthenticAMD / Qualcomm...
+    # Defender + Tamper: una sola llamada (lenta), ambos derivados. AV de terceros -> el cmdlet falla o AMServiceEnabled=false.
+    $mp = $null; try { $mp = Get-MpComputerStatus -ErrorAction Stop } catch {}
+    $hasDefender = [bool]($mp -and $mp.AMServiceEnabled)
+    $isTamper    = [bool]($mp -and $mp.IsTamperProtected)
+    # S mode: SkuPolicyRequired=1 en CI\Policy (try/catch, default no-S)
+    $isSMode = $false
+    try { $isSMode = ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name SkuPolicyRequired -ErrorAction Stop).SkuPolicyRequired -eq 1) } catch {}
+    # HAGS: heuristica conservadora. El OS solo crea el valor HwSchMode en GPUs WDDM>=2.7 capaces;
+    # ausente => tratamos como no-soportado (ocultar), nunca falso-positivo que aplique HAGS en HW incompatible.
+    $supportsHAGS = $false
+    try { $supportsHAGS = ($null -ne (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name HwSchMode -ErrorAction Stop).HwSchMode) } catch {}
     [pscustomobject]@{
         CpuName=$cpu.Name; Cores=$cpu.NumberOfCores; Threads=$cpu.NumberOfLogicalProcessors
         IsLaptop=$isLaptop; IsHybrid=$isHybrid; HasNvidia=$hasNvidia
@@ -101,6 +115,9 @@ function Get-AXEHardware {
         IsHome=($edition -match 'Home'); OnBattery=$onBattery
         IsWin11=$isWin11; BuildNumber=$build
         RamGB=[math]::Round($os.TotalVisibleMemorySize/1MB,1)
+        CpuArch=$cpuArch; CpuVendor=$cpuVendor
+        HasDefender=$hasDefender; IsTamperProtected=$isTamper
+        IsSMode=$isSMode; SupportsHAGS=$supportsHAGS
     }
 }
 
@@ -394,7 +411,7 @@ Add-Tweak @{Id='lat_timerres';Cat='LATENCIA';Tier=1;Reboot=$true;Name='Timer res
  Revert={Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'GlobalTimerResolutionRequests'}}
 
 # --- GPU (Tier 1) ---
-Add-Tweak @{Id='gpu_hags';Cat='GPU';Tier=1;Reboot=$true;Name='HAGS (scheduling por hardware)';Desc='GPU gestiona su cola, menos latencia (REINICIO)';Requires=@{};
+Add-Tweak @{Id='gpu_hags';Cat='GPU';Tier=1;Reboot=$true;Name='HAGS (scheduling por hardware)';Desc='GPU gestiona su cola, menos latencia (REINICIO)';Requires=@{HAGS=$true};
  Test={(Get-RV $GD 'HwSchMode') -eq 2};Apply={Backup-RegKey 'HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'GraphicsDrivers.reg'; Set-RD $GD 'HwSchMode' 2};Revert={Del-RV $GD 'HwSchMode'}}
 Add-Tweak @{Id='gpu_mmcss';Cat='GPU';Tier=1;Reboot=$false;Name='Prioridad MMCSS juegos';Desc='GPU Priority 8 / Priority 6 / High';Requires=@{};
  Test={((Get-RV $Games 'GPU Priority') -eq 8) -and ((Get-RV $Games 'Priority') -eq 6) -and ((Get-RV $Games 'Scheduling Category') -eq 'High')};
@@ -433,13 +450,13 @@ Add-Tweak @{Id='net_dns';Cat='RED';Tier=1;Reboot=$false;Name='[OPT] DNS rapidos 
  Apply={ if($script:HW.NicName){ Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ServerAddresses @('1.1.1.1','8.8.8.8') } };Revert={ if($script:HW.NicName){ Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ResetServerAddresses } }}
 
 # --- MEMORIA (Tier 0/1) ---
-Add-Tweak @{Id='mem_pagingexec';Cat='MEMORIA';Tier=1;Reboot=$true;Name='Kernel siempre en RAM';Desc='DisablePagingExecutive=1 (necesita RAM holgada) (REINICIO)';Requires=@{};
+Add-Tweak @{Id='mem_pagingexec';Cat='MEMORIA';Tier=1;Reboot=$true;Name='Kernel siempre en RAM';Desc='DisablePagingExecutive=1 (necesita RAM holgada) (REINICIO)';Requires=@{MinRam=16};
  Test={(Get-RV $MM 'DisablePagingExecutive') -eq 1};Apply={Set-RD $MM 'DisablePagingExecutive' 1};Revert={Set-RD $MM 'DisablePagingExecutive' 0}}
-Add-Tweak @{Id='mem_ntfsmem';Cat='MEMORIA';Tier=1;Reboot=$true;Name='Cache de metadatos NTFS alta';Desc='NtfsMemoryUsage=2 (REINICIO)';Requires=@{};
+Add-Tweak @{Id='mem_ntfsmem';Cat='MEMORIA';Tier=1;Reboot=$true;Name='Cache de metadatos NTFS alta';Desc='NtfsMemoryUsage=2 (REINICIO)';Requires=@{MinRam=12};
  Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsMemoryUsage') -eq 2};Apply={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsMemoryUsage' 2};Revert={Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsMemoryUsage'}}
 Add-Tweak @{Id='mem_lastaccess';Cat='MEMORIA';Tier=0;Reboot=$false;Name='NTFS last-access OFF';Desc='Menos escrituras de metadatos al leer';Requires=@{};
  Test={ (& fsutil behavior query disablelastaccess) -match 'Disabled|= 1' };Apply={fsutil behavior set disablelastaccess 1 | Out-Null};Revert={fsutil behavior set disablelastaccess 0 | Out-Null}}
-Add-Tweak @{Id='mem_compression';Cat='MEMORIA';Tier=1;Reboot=$false;Name='Compresion de memoria OFF';Desc='Disable-MMAgent -mc: sin compresion de RAM = menos CPU en paginado, menos micro-stutter. OJO: gasta mas RAM, solo con RAM holgada (16GB+)';Requires=@{};
+Add-Tweak @{Id='mem_compression';Cat='MEMORIA';Tier=1;Reboot=$false;Name='Compresion de memoria OFF';Desc='Disable-MMAgent -mc: sin compresion de RAM = menos CPU en paginado, menos micro-stutter. OJO: gasta mas RAM, solo con RAM holgada (16GB+)';Requires=@{MinRam=16};
  Test={ try{ (Get-MMAgent -EA Stop).MemoryCompression -eq $false }catch{ $false } };
  Apply={ Disable-MMAgent -mc -EA SilentlyContinue };Revert={ Enable-MMAgent -mc -EA SilentlyContinue }}
 
@@ -584,19 +601,19 @@ Add-Tweak @{Id='ext_tamper';Cat='EXTREMO';Tier=2;Reboot=$false;Name='Tamper Prot
  Revert={Set-RD 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Features' 'TamperProtection' 1}}
 
 # Core Isolation / VBS / HVCI OFF: ~5-10% FPS (Tom's Hardware 2024-2026). Requiere ext_tamper antes.
-Add-Tweak @{Id='ext_vbs';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Core Isolation / Memory Integrity (VBS+HVCI) OFF';Desc='+5-10% FPS. Apaga VBS, HVCI y Credential Guard. Requiere Tamper Protection OFF primero';Requires=@{};
+Add-Tweak @{Id='ext_vbs';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Core Isolation / Memory Integrity (VBS+HVCI) OFF';Desc='+5-10% FPS. Apaga VBS, HVCI y Credential Guard. Requiere Tamper Protection OFF primero';Requires=@{TamperOff=$true};
  Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled') -eq 0 -and (Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity') -eq 0 -and (Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LsaCfgFlags') -in @($null,0)};
  Apply={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled' 0; Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity' 0; Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LsaCfgFlags' 0};
  Revert={Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled'; Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity'; Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LsaCfgFlags'}}
 
 # Control Flow Guard OFF: mitigacion de exploits. Ganancia pequena pero medible en CPU-bound.
-Add-Tweak @{Id='ext_cfg';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Control Flow Guard (CFG) OFF';Desc='Apaga proteccion de salto indirecto. Ganancia pequena en CPU-bound. Requiere reinicio';Requires=@{};
+Add-Tweak @{Id='ext_cfg';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Control Flow Guard (CFG) OFF';Desc='Apaga proteccion de salto indirecto. Ganancia pequena en CPU-bound. Requiere reinicio';Requires=@{TamperOff=$true};
  Test={ $m=Get-AXECache 'procmit' { try{Get-ProcessMitigation -System -EA Stop}catch{$null} }; if(-not $m){$false}else{$m.Cfg.Enable -eq 'OFF'} };
  Apply={ Set-ProcessMitigation -System -Disable CFG };
  Revert={ Set-ProcessMitigation -System -Enable CFG }}
 
 # Mandatory ASLR OFF: desactiva el randomizado de memoria forzado del sistema.
-Add-Tweak @{Id='ext_aslr';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Mandatory ASLR OFF';Desc='Apaga randomizado de memoria del sistema. Expone a exploits de buffer overflow';Requires=@{};
+Add-Tweak @{Id='ext_aslr';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Mandatory ASLR OFF';Desc='Apaga randomizado de memoria del sistema. Expone a exploits de buffer overflow';Requires=@{TamperOff=$true};
  Test={ $m=Get-AXECache 'procmit' { try{Get-ProcessMitigation -System -EA Stop}catch{$null} }; if(-not $m){$false}else{$m.Aslr.ForceRelocateImages -eq 'OFF'} };
  Apply={ Set-ProcessMitigation -System -Disable ForceRelocateImages };
  Revert={ Set-ProcessMitigation -System -Enable ForceRelocateImages }}
@@ -650,10 +667,20 @@ function Get-BlockReason($tw){
     if($r.Wired    -and $script:HW.IsWifi){ return "Wi-Fi: ganancia casi nula" }
     if($r.NotHome  -and $script:HW.IsHome){ return "Windows Home: politica ignorada por el SKU" }
     if($r.Nvidia   -and -not $script:HW.HasNvidia){ return "sin GPU NVIDIA: no aplica" }
+    if($r.NotLaptop -and $script:HW.IsLaptop){ return "portatil: no aplica" }
     if($r.WinVer){
         $cur = if($script:HW.IsWin11){ 11 } else { 10 }
         if($cur -notin $r.WinVer){ return "requiere Windows $($r.WinVer -join '/'), tienes Windows $cur (build $($script:HW.BuildNumber))" }
     }
+    # --- ecosistema extendido (§3.2) ---
+    if($r.MinRam -and $script:HW.RamGB -lt $r.MinRam){ return "requiere >= $($r.MinRam)GB RAM, tienes $($script:HW.RamGB)GB (con menos RAM = peor rendimiento)" }
+    if($r.WinBuild){ if([int]$script:HW.BuildNumber -notin $r.WinBuild){ return "requiere build $($r.WinBuild -join '/'), tienes $($script:HW.BuildNumber)" } }
+    if($r.CpuArch){ if($script:HW.CpuArch -notin $r.CpuArch){ return "requiere CPU $($r.CpuArch -join '/'), tienes $($script:HW.CpuArch)" } }
+    if($r.CpuVendor){ if($script:HW.CpuVendor -notin $r.CpuVendor){ return "requiere $($r.CpuVendor -join '/'), tienes $($script:HW.CpuVendor)" } }
+    if($r.HAGS -and -not $script:HW.SupportsHAGS){ return "GPU/driver sin soporte HAGS (WDDM 2.7+): no aplica" }
+    if($r.TamperOff -and $script:HW.IsTamperProtected){ return "Tamper Protection ON: el cambio no persiste (apaga Tamper primero)" }
+    if($r.Defender -and -not $script:HW.HasDefender){ return "AV de terceros / Defender inactivo: ajuste omitido" }
+    if($r.NotSMode -and $script:HW.IsSMode){ return "Windows S mode: no permite el cambio" }
     return $null
 }
 
@@ -1318,6 +1345,15 @@ if($SelfTest){
                 [void]$fails.Add("S10: $($tw.Id) WinVer invalido: $($wv -join ',')")
             }
         }
+    }
+    # S13: coherencia de Requires del ecosistema (§3.2) - claves fabricadas / mal tipadas
+    $checks++
+    foreach($tw in $script:CAT){
+        $rq = $tw.Requires
+        if($rq -isnot [hashtable]){ continue }
+        if($rq.ContainsKey('HAGS') -and $tw.Cat -ne 'GPU'){ [void]$fails.Add("S13: $($tw.Id) HAGS solo aplica a Cat=GPU") }
+        if($rq.ContainsKey('MinRam')){ $mr=$rq['MinRam']; if(-not ($mr -is [int]) -or $mr -le 0){ [void]$fails.Add("S13: $($tw.Id) MinRam invalido: $mr") } }
+        foreach($ak in 'CpuArch','CpuVendor','WinBuild'){ if($rq.ContainsKey($ak) -and ($rq[$ak] -isnot [array])){ [void]$fails.Add("S13: $($tw.Id) $ak debe ser array") } }
     }
     # S11: masa critica actualizada (el catalogo crece con cada fusion)
     $checks++

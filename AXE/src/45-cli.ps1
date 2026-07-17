@@ -85,6 +85,15 @@ if($SelfTest){
             }
         }
     }
+    # S13: coherencia de Requires del ecosistema (§3.2) - claves fabricadas / mal tipadas
+    $checks++
+    foreach($tw in $script:CAT){
+        $rq = $tw.Requires
+        if($rq -isnot [hashtable]){ continue }
+        if($rq.ContainsKey('HAGS') -and $tw.Cat -ne 'GPU'){ [void]$fails.Add("S13: $($tw.Id) HAGS solo aplica a Cat=GPU") }
+        if($rq.ContainsKey('MinRam')){ $mr=$rq['MinRam']; if(-not ($mr -is [int]) -or $mr -le 0){ [void]$fails.Add("S13: $($tw.Id) MinRam invalido: $mr") } }
+        foreach($ak in 'CpuArch','CpuVendor','WinBuild'){ if($rq.ContainsKey($ak) -and ($rq[$ak] -isnot [array])){ [void]$fails.Add("S13: $($tw.Id) $ak debe ser array") } }
+    }
     # S11: masa critica actualizada (el catalogo crece con cada fusion)
     $checks++
     if($script:CAT.Count -lt 60){ [void]$fails.Add("S11: catalogo con $($script:CAT.Count) tweaks (<60) - posible carga incompleta") }
