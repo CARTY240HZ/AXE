@@ -85,14 +85,18 @@ if($SelfTest){
             }
         }
     }
-    # S13: coherencia de Requires del ecosistema (§3.2) - claves fabricadas / mal tipadas
+    # S19: coherencia de Requires del ecosistema (§3.2) - claves fabricadas / mal tipadas.
+    # Whitelist: cualquier clave desconocida (typo tipo 'MimRam') => FAIL, porque Get-BlockReason
+    # la ignoraria en silencio y el tweak quedaria siempre visible (el linter no lo detecta).
     $checks++
+    $knownReq = @('MinRam','Desktop','NotLaptop','NotHybrid','AC','Wired','NotHome','Nvidia','WinVer','WinBuild','CpuArch','CpuVendor','HAGS','TamperOff','Defender','NotSMode')
     foreach($tw in $script:CAT){
         $rq = $tw.Requires
         if($rq -isnot [hashtable]){ continue }
-        if($rq.ContainsKey('HAGS') -and $tw.Cat -ne 'GPU'){ [void]$fails.Add("S13: $($tw.Id) HAGS solo aplica a Cat=GPU") }
-        if($rq.ContainsKey('MinRam')){ $mr=$rq['MinRam']; if(-not ($mr -is [int]) -or $mr -le 0){ [void]$fails.Add("S13: $($tw.Id) MinRam invalido: $mr") } }
-        foreach($ak in 'CpuArch','CpuVendor','WinBuild'){ if($rq.ContainsKey($ak) -and ($rq[$ak] -isnot [array])){ [void]$fails.Add("S13: $($tw.Id) $ak debe ser array") } }
+        foreach($k in $rq.Keys){ if($k -notin $knownReq){ [void]$fails.Add("S19: $($tw.Id) clave Requires desconocida '$k' (typo? no gatea)") } }
+        if($rq.ContainsKey('HAGS') -and $tw.Cat -ne 'GPU'){ [void]$fails.Add("S19: $($tw.Id) HAGS solo aplica a Cat=GPU") }
+        if($rq.ContainsKey('MinRam')){ $mr=$rq['MinRam']; if(-not ($mr -is [int]) -or $mr -le 0){ [void]$fails.Add("S19: $($tw.Id) MinRam invalido: $mr") } }
+        foreach($ak in 'CpuArch','CpuVendor','WinBuild'){ if($rq.ContainsKey($ak) -and ($rq[$ak] -isnot [array])){ [void]$fails.Add("S19: $($tw.Id) $ak debe ser array") } }
     }
     # S11: masa critica actualizada (el catalogo crece con cada fusion)
     $checks++
@@ -174,6 +178,15 @@ if($SelfTest){
         if(-not $back.scoreAfter){ [void]$fails.Add('S18: export JSON sin scoreAfter') }
         Remove-Item $tmp -Force -EA SilentlyContinue
     } catch { [void]$fails.Add("S18: report/export lanzo: $($_.Exception.Message)") }
+
+    # S20: modulo Defender (§7) presente - funciones de exclusion/afinado definidas
+    $checks++
+    foreach($fn in 'Add-AXEDefenderExclusion','Remove-AXEDefenderExclusion','Get-AXESteamCommon'){
+        if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S20: funcion Defender '$fn' no definida") }
+    }
+    foreach($id in 'def_cpulimit','def_scanidle'){
+        if(-not ($script:CAT | Where-Object Id -eq $id)){ [void]$fails.Add("S20: tweak Defender '$id' no en catalogo") }
+    }
 
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
