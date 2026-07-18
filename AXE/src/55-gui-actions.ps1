@@ -238,6 +238,36 @@ function Build-ActionView($catName){
             $script:measureBtn=New-ActionButton 'Medir ahora' 'Accent'
             $script:measureBtn.Add_Click({ Invoke-AXEMeasure -JitterMs 1000 })
             [void]$panel.Children.Add($script:measureBtn)
+            # §3.5: el boton vive en MEDICION a posta. Marca los ajustes de latencia pero NO
+            # aplica nada: obliga a pasar por APLICAR (punto de restauracion + snapshot) y deja
+            # el medir-antes / medir-despues a un clic, que es lo unico que convierte "va mejor"
+            # en un numero. Un boton que tocase el registro directamente se saltaria las dos cosas.
+            $script:latBtn=New-ActionButton 'Optimizar latencia e input lag' 'Green'
+            $script:latBtn.Add_Click({
+                if($script:busy){ return }
+                if(-not $script:HW){ Write-AXELog 'Hardware aun sin detectar: espera a que termine para no marcar ajustes que no aplican.' 'WARN'; return }
+                $set=@(Get-AXELatencySet); $n=0
+                foreach($catName in $script:tweakCats){
+                    foreach($e in $script:rows[$catName]){
+                        if(-not $e.Blocked -and ($set -contains $e.Tw.Id) -and -not $e.Toggle.IsChecked){ $e.Toggle.IsChecked=$true; $n++ }
+                    }
+                }
+                Update-AXEPending
+                Write-AXELog ("Latencia/input lag: {0} ajustes marcados de {1} aplicables a este equipo. NO se ha cambiado nada todavia: pulsa APLICAR." -f $n,$set.Count)
+                $script:measureOut.Text = @"
+$n ajustes de latencia marcados ($($set.Count) aplican a este equipo; el resto quedan fuera por tu hardware o por ser Tier 2 / placebo probable).
+
+Nada se ha cambiado aun. Para que el numero signifique algo:
+  1. "Medir ahora"        -> guarda el score ANTES
+  2. "APLICAR cambios"    -> crea punto de restauracion y aplica
+  3. Reinicia si se pide  -> varios ajustes solo entran al arrancar
+  4. "Medir ahora"        -> compara el score DESPUES
+
+El jitter es un PROXY de latencia: sirve para comparar la misma maquina antes/despues,
+no para comparar entre maquinas distintas.
+"@
+            })
+            [void]$panel.Children.Add($script:latBtn)
             # Reporte / delta
             $script:measureOut=New-Object System.Windows.Controls.TextBox; $script:measureOut.IsReadOnly=$true; $script:measureOut.Background=New-AXEBrush 'Surface'; $script:measureOut.Foreground=New-AXEBrush 'Fg'; $script:measureOut.BorderBrush=New-AXEBrush 'Line'; $script:measureOut.BorderThickness=New-Object System.Windows.Thickness(1); $script:measureOut.Padding=New-Object System.Windows.Thickness(12,8,12,8); $script:measureOut.Height=260; $script:measureOut.TextWrapping='Wrap'; $script:measureOut.VerticalScrollBarVisibility='Auto'; $script:measureOut.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:measureOut.FontSize=12
             $script:measureOut.Text="Medicion local, 0 dependencias. El jitter es un PROXY de latencia (no atribuible a driver concreto)."

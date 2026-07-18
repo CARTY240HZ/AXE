@@ -125,8 +125,13 @@ if($env:AXE_GUITEST -eq '1'){
     # layout forzado del bloque de render (mas abajo).
     try {
         $paths=@($LogoCanvas.Children)
-        $accent=$paths | Where-Object { $_.Fill -is [System.Windows.Media.SolidColorBrush] -and $_.Fill.Color.ToString() -eq '#FF2DD4BF' }
-        $surface=$paths | Where-Object { $_.Fill -is [System.Windows.Media.SolidColorBrush] -and $_.Fill.Color.ToString() -eq '#FF26262B' }
+        # Derivado de los recursos, no hardcodeado: la regresion que importa es "el logo usa
+        # los colores de la paleta", no "el logo es teal". Retocar la paleta ya no rompe esto,
+        # pero olvidarse de repintar el logo si.
+        $accentHex =(New-AXEBrush 'Accent').Color.ToString()
+        $surfaceHex=(New-AXEBrush 'Surface').Color.ToString()
+        $accent=$paths | Where-Object { $_.Fill -is [System.Windows.Media.SolidColorBrush] -and $_.Fill.Color.ToString() -eq $accentHex }
+        $surface=$paths | Where-Object { $_.Fill -is [System.Windows.Media.SolidColorBrush] -and $_.Fill.Color.ToString() -eq $surfaceHex }
         $logoOk=($paths.Count -eq 6) -and ($accent.Count -eq 2) -and ($surface.Count -eq 4)
         Write-Host ("Logo AXE          : paths={0} accent={1} surface={2} (esperado 6/2/4)" -f $paths.Count,$accent.Count,$surface.Count)
         if(-not $logoOk){ $allOk=$false }

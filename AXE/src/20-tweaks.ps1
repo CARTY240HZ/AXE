@@ -354,3 +354,94 @@ function Get-AXEEnvBanner {
         $ver,$h.BuildNumber,$sku,$h.CpuArch,$hyb,$h.RamGB,$gpu,$ssd,$net,$def,$applic,$hidden
 }
 
+# =====================================================
+# REGION 6.5 - RECOMENDACION POR MAQUINA (§3.4)
+# El gating (§3.2) responde "¿esto SE PUEDE aplicar aqui?". Esto responde la otra
+# mitad: "de lo que se puede, ¿que VALE LA PENA en ESTA maquina?". Un portatil de
+# 8GB en bateria y una torre de 32GB con NVIDIA no merecen la misma lista.
+# =====================================================
+
+# Nucleo: ganancia real, segura y universal. No depende del hardware.
+$script:RECCORE = @(
+    'cpu_mmcss','lat_mouse','sys_gamedvr','sys_fse','rend_gamemode',
+    'rend_visualfx','rend_mpo','gpu_hags','net_throttle','priv_recall','mem_lastaccess'
+)
+
+# Condicionales: id -> predicado sobre el hardware. Cada regla lleva el porque al lado:
+# una recomendacion sin motivo es indistinguible de una lista copiada de un foro.
+$script:RECRULES = @{
+    # OJO con los umbrales: RamGB sale de TotalVisibleMemorySize, que SIEMPRE es algo
+    # menor que la RAM fisica (32GB reales -> 31,7). Un umbral en 32 no dispararia nunca.
+    # Por eso los cortes van 1-2GB por debajo de la cifra comercial: 15=16GB, 23=24GB, 30=32GB.
+    'mem_pagingexec'  = { param($h) $h.RamGB -ge 23 }                              # kernel deja de paginar: solo con RAM de sobra (24GB+)
+    'mem_ntfsmem'     = { param($h) $h.RamGB -ge 15 }                              # cache de metadatos NTFS: paga si hay RAM libre (16GB+)
+    'mem_compression' = { param($h) $h.RamGB -ge 30 }                              # quitar compresion cambia CPU por RAM: solo con RAM abundante (32GB+)
+    'svc_sysmain'     = { param($h) $h.IsSSD }                                     # SysMain precarga para HDD; con SSD casi no aporta
+    'svc_wsearch'     = { param($h) -not $h.IsSSD }                                # el indexador duele sobre todo en disco mecanico
+    'rend_ultperf'    = { param($h) (-not $h.IsLaptop) -and (-not $h.OnBattery) }  # mas consumo/calor: sobremesa enchufado
+    'rend_bgapps'     = { param($h) ($h.RamGB -lt 15) -or $h.IsLaptop }            # liberar CPU/RAM en idle importa en equipos justos (<16GB) o portatiles
+    'cpu_park'        = { param($h) -not $h.IsLaptop }                             # desparkear en portatil = termicas y bateria
+    'sys_hibernate'   = { param($h) -not $h.IsLaptop }                             # en portatil la hibernacion si se usa
+    'lat_msi_audio'   = { param($h) -not $h.IsLaptop }                             # MSI en audio: IRQ compartida es mas fragil en portatil
+    'net_intmod'      = { param($h) -not $h.IsWifi }                               # moderacion de interrupciones es cosa del NIC cableado
+    'net_rss'         = { param($h) $h.Threads -ge 8 }                             # repartir RX entre nucleos necesita nucleos
+    'net_ctcp'        = { param($h) $h.IsWifi }                                    # CTCP recupera antes tras perdida: la radio pierde mas
+    'gpu_ulps'        = { param($h) $h.HasNvidia }                                 # ULPS es especifico de NVIDIA
+    'priv_copilot'    = { param($h) $h.IsWin11 }                                   # Copilot solo existe en Win11
+}
+
+function Get-AXERecommended {
+    # Sin HW no hay recomendacion honesta: solo el nucleo universal. La GUI recalcula
+    # cuando el runspace de deteccion entrega el hardware (Apply-AXEGating).
+    $ids = New-Object System.Collections.Generic.List[string]
+    foreach($i in $script:RECCORE){ [void]$ids.Add($i) }
+    $h = $script:HW
+    if($h){
+        foreach($id in $script:RECRULES.Keys){
+            $ok = $false
+            try { $ok = [bool](& $script:RECRULES[$id] $h) } catch { $ok = $false }
+            if($ok -and -not $ids.Contains($id)){ [void]$ids.Add($id) }
+        }
+    }
+    # Filtro duro. Recomendar algo que el propio catalogo marca Tier 2 o placebo probable
+    # es contradecirse, y la insignia pierde todo su valor. Se aplica SIEMPRE, tambien al
+    # nucleo: si un tweak se degrada a Tier 2 manana, sale solo de las recomendaciones.
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach($id in $ids){
+        $tw = $script:CAT | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+        if(-not $tw){ continue }                                                    # id muerto tras un rename: se cae solo, no rompe
+        if($tw.Tier -ge 2){ continue }
+        if($tw.PSObject.Properties['PlaceboLikely'] -and $tw.PlaceboLikely){ continue }
+        if(Get-BlockReason $tw){ continue }                                         # no aplica a esta maquina
+        [void]$out.Add($id)
+    }
+    # .ToArray() y NO ",$out": el operador coma envolveria la lista en otro array y los
+    # llamantes (que ya hacen @(Get-AXERecommended)) verian 1 elemento en vez de N.
+    $out.ToArray()
+}
+
+# §3.5 - SET DE LATENCIA / INPUT LAG
+# No es "todo Tier<2": son los ajustes cuyo efecto cae en la cadena
+# entrada -> proceso -> render -> pantalla, o en el jitter del timer que la sostiene.
+# Deliberadamente FUERA: net_dns (pisa DNS local/VPN), todo EXTREMO, y cualquier cosa
+# marcada PlaceboLikely - un boton de un clic no es sitio para apuestas.
+$script:LATENCYSET = @(
+    'lat_mouse','lat_timerres','lat_msi_gpu','lat_irq_gpu','lat_msi_audio','lat_faststart',
+    'cpu_dyntick','cpu_tsc','cpu_fth','cpu_mmcss','cpu_pthr',
+    'sys_gamedvr','sys_fse','sys_gamebar',
+    'rend_gamemode','rend_mpo','gpu_hags','gpu_vrr','net_throttle'
+)
+
+function Get-AXELatencySet {
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach($id in $script:LATENCYSET){
+        $tw = $script:CAT | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+        if(-not $tw){ continue }
+        if($tw.Tier -ge 2){ continue }
+        if($tw.PSObject.Properties['PlaceboLikely'] -and $tw.PlaceboLikely){ continue }
+        if(Get-BlockReason $tw){ continue }   # cruce con el gating: cada maquina, su lista
+        [void]$out.Add($id)
+    }
+    $out.ToArray()
+}
+
