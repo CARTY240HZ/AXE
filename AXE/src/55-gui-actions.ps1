@@ -254,9 +254,17 @@ function Build-ActionView($catName){
                 }
                 Update-AXEPending
                 Write-AXELog ("Latencia/input lag: {0} ajustes marcados de {1} aplicables a este equipo. NO se ha cambiado nada todavia: pulsa APLICAR." -f $n,$set.Count)
+                $notes = @(Get-AXELatencyNotes) | ForEach-Object { "  - $_" }
+                $bat = if($script:HW.OnBattery){ "`r`nAVISO: estas en BATERIA. Mide enchufado o los numeros no seran comparables.`r`n" } else { '' }
                 $script:measureOut.Text = @"
-$n ajustes de latencia marcados ($($set.Count) aplican a este equipo; el resto quedan fuera por tu hardware o por ser Tier 2 / placebo probable).
+PLAN DE LATENCIA PARA ESTE EQUIPO
+$($script:HW.CpuName) - $($script:HW.RamGB)GB - $(if($script:HW.IsSSD){'SSD'}else{'HDD'}) - $(if($script:HW.IsLaptop){'Portatil'}else{'Sobremesa'}) - $(if($script:HW.IsWifi){'Wi-Fi'}else{'Ethernet'})
 
+$n ajustes marcados ($($set.Count) aplicables; el resto fuera por tu hardware, o por ser Tier 2 / placebo probable).
+
+Por que este plan y no otro:
+$($notes -join "`r`n")
+$bat
 Nada se ha cambiado aun. Para que el numero signifique algo:
   1. "Medir ahora"        -> guarda el score ANTES
   2. "APLICAR cambios"    -> crea punto de restauracion y aplica

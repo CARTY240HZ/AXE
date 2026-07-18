@@ -425,16 +425,48 @@ function Get-AXERecommended {
 # entrada -> proceso -> render -> pantalla, o en el jitter del timer que la sostiene.
 # Deliberadamente FUERA: net_dns (pisa DNS local/VPN), todo EXTREMO, y cualquier cosa
 # marcada PlaceboLikely - un boton de un clic no es sitio para apuestas.
-$script:LATENCYSET = @(
-    'lat_mouse','lat_timerres','lat_msi_gpu','lat_irq_gpu','lat_msi_audio','lat_faststart',
-    'cpu_dyntick','cpu_tsc','cpu_fth','cpu_mmcss','cpu_pthr',
+
+# Nucleo: la cadena de entrada y render. Vale igual en cualquier maquina.
+$script:LATCORE = @(
+    'lat_mouse','lat_timerres','lat_msi_gpu','lat_irq_gpu','lat_faststart',
+    'cpu_dyntick','cpu_tsc','cpu_fth','cpu_mmcss',
     'sys_gamedvr','sys_fse','sys_gamebar',
     'rend_gamemode','rend_mpo','gpu_hags','gpu_vrr','net_throttle'
 )
 
+# Condicionales. Dos familias:
+#  (a) ajustes de latencia que en cierto hardware SALEN CAROS (bateria, termicas, IRQ);
+#  (b) ajustes que no son "latencia" de manual pero que en ESTA maquina son la mayor
+#      fuente de stutter real - un indexador sobre disco mecanico arruina mas frametimes
+#      que cualquier valor de registro de los que circulan por los foros.
+$script:LATRULES = @{
+    'cpu_pthr'        = { param($h) -not $h.OnBattery }                            # Power Throttling OFF en bateria = autonomia a cero sin ganancia sostenida
+    'cpu_park'        = { param($h) (-not $h.IsLaptop) -and (-not $h.IsHybrid) }   # en portatil throttlea; en hibrida pelea con Thread Director
+    'lat_msi_audio'   = { param($h) -not $h.IsLaptop }                             # MSI en audio: la IRQ compartida de portatil es mas fragil
+    'rend_ultperf'    = { param($h) (-not $h.IsLaptop) -and (-not $h.OnBattery) }  # evita el downclock en idle que se nota como lag al reaccionar
+    'net_intmod'      = { param($h) -not $h.IsWifi }                               # moderacion de interrupciones: cosa del NIC cableado
+    'net_rss'         = { param($h) $h.Threads -ge 8 }                             # repartir RX entre nucleos necesita nucleos
+    'net_ctcp'        = { param($h) $h.IsWifi }                                    # la radio pierde paquetes; CTCP recupera antes
+    'mem_pagingexec'  = { param($h) $h.RamGB -ge 23 }                              # kernel fuera del pagefile = menos micro-tirones (24GB+)
+    'mem_compression' = { param($h) $h.RamGB -ge 30 }                              # sin compresion, menos CPU en paginado (32GB+)
+    'svc_sysmain'     = { param($h) $h.IsSSD }                                     # con SSD la precarga solo genera I/O de fondo
+    'svc_wsearch'     = { param($h) -not $h.IsSSD }                                # indexador sobre HDD: la mayor fuente de stutter del sistema
+    'rend_bgapps'     = { param($h) ($h.RamGB -lt 15) -or $h.IsLaptop }            # apps UWP en background compiten por CPU en equipos justos
+}
+
 function Get-AXELatencySet {
+    $ids = New-Object System.Collections.Generic.List[string]
+    foreach($i in $script:LATCORE){ [void]$ids.Add($i) }
+    $h = $script:HW
+    if($h){
+        foreach($id in $script:LATRULES.Keys){
+            $ok = $false
+            try { $ok = [bool](& $script:LATRULES[$id] $h) } catch { $ok = $false }
+            if($ok -and -not $ids.Contains($id)){ [void]$ids.Add($id) }
+        }
+    }
     $out = New-Object System.Collections.Generic.List[string]
-    foreach($id in $script:LATENCYSET){
+    foreach($id in $ids){
         $tw = $script:CAT | Where-Object { $_.Id -eq $id } | Select-Object -First 1
         if(-not $tw){ continue }
         if($tw.Tier -ge 2){ continue }
@@ -443,5 +475,25 @@ function Get-AXELatencySet {
         [void]$out.Add($id)
     }
     $out.ToArray()
+}
+
+# Notas de por que ESTA maquina recibe este plan y no otro. Sin esto el boton es una
+# caja negra: el usuario ve "23 marcados" y no sabe si le ha tocado lo suyo o una receta
+# generica. Es la diferencia entre una herramienta y un .bat de foro.
+function Get-AXELatencyNotes {
+    $n = New-Object System.Collections.Generic.List[string]
+    $h = $script:HW
+    if(-not $h){ [void]$n.Add('Hardware sin detectar: solo se aplica el nucleo universal.'); return $n.ToArray() }
+    if($h.OnBattery){ [void]$n.Add('EN BATERIA: Power Throttling y plan de energia quedan fuera. Ademas la medicion en bateria no es comparable con la de enchufado: conecta el cargador antes de medir.') }
+    if($h.IsLaptop){  [void]$n.Add('Portatil: fuera MSI de audio y core parking. En chasis compacto la IRQ compartida y las termicas cuestan mas de lo que dan.') }
+    if($h.IsHybrid){  [void]$n.Add('CPU hibrida P/E: core parking fuera, se pelea con Thread Director.') }
+    if($h.IsWifi){    [void]$n.Add('Wi-Fi: dentro CTCP (recupera antes tras perdida), fuera moderacion de interrupciones (es del NIC cableado). El jitter lo domina la radio: por cable bajaria mas.') }
+    else {            [void]$n.Add('Ethernet: dentro moderacion de interrupciones del adaptador.') }
+    if(-not $h.IsSSD){ [void]$n.Add('Disco mecanico: apagar el indexador de busqueda es aqui la mayor ganancia de frametimes, por encima de cualquier valor de registro.') }
+    else {             [void]$n.Add('SSD: dentro apagar la precarga (SysMain), que sobre SSD solo genera I/O de fondo.') }
+    if($h.RamGB -lt 15){ [void]$n.Add('RAM justa: se prioriza liberar memoria sobre cachear. Kernel-en-RAM y quitar compresion quedan fuera: costarian mas de lo que dan.') }
+    elseif($h.RamGB -ge 30){ [void]$n.Add('RAM abundante: dentro kernel-en-RAM y sin compresion de memoria, ambos reducen micro-tirones.') }
+    if(-not $h.SupportsHAGS){ [void]$n.Add('Sin soporte HAGS (WDDM 2.7+): el scheduling por hardware no aplica a esta GPU/driver.') }
+    $n.ToArray()
 }
 
