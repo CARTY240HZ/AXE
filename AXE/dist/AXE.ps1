@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-18 16:15:01Z
+# Build UTC: 2026-07-18 17:23:44Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 32-measure.ps1, 34-safety.ps1, 36-report.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -709,6 +709,97 @@ function Get-AXEEnvBanner {
     $def  = if($h.HasDefender){ if($h.IsTamperProtected){ 'Defender+Tamper' } else { 'Defender' } } else { 'AV 3ros' }
     "{0} {1} - {2} - {3} - {4} - {5}GB - {6} - {7} - {8} - {9} - {10} aplicables / {11} ocultos" -f `
         $ver,$h.BuildNumber,$sku,$h.CpuArch,$hyb,$h.RamGB,$gpu,$ssd,$net,$def,$applic,$hidden
+}
+
+# =====================================================
+# REGION 6.5 - RECOMENDACION POR MAQUINA (§3.4)
+# El gating (§3.2) responde "¿esto SE PUEDE aplicar aqui?". Esto responde la otra
+# mitad: "de lo que se puede, ¿que VALE LA PENA en ESTA maquina?". Un portatil de
+# 8GB en bateria y una torre de 32GB con NVIDIA no merecen la misma lista.
+# =====================================================
+
+# Nucleo: ganancia real, segura y universal. No depende del hardware.
+$script:RECCORE = @(
+    'cpu_mmcss','lat_mouse','sys_gamedvr','sys_fse','rend_gamemode',
+    'rend_visualfx','rend_mpo','gpu_hags','net_throttle','priv_recall','mem_lastaccess'
+)
+
+# Condicionales: id -> predicado sobre el hardware. Cada regla lleva el porque al lado:
+# una recomendacion sin motivo es indistinguible de una lista copiada de un foro.
+$script:RECRULES = @{
+    # OJO con los umbrales: RamGB sale de TotalVisibleMemorySize, que SIEMPRE es algo
+    # menor que la RAM fisica (32GB reales -> 31,7). Un umbral en 32 no dispararia nunca.
+    # Por eso los cortes van 1-2GB por debajo de la cifra comercial: 15=16GB, 23=24GB, 30=32GB.
+    'mem_pagingexec'  = { param($h) $h.RamGB -ge 23 }                              # kernel deja de paginar: solo con RAM de sobra (24GB+)
+    'mem_ntfsmem'     = { param($h) $h.RamGB -ge 15 }                              # cache de metadatos NTFS: paga si hay RAM libre (16GB+)
+    'mem_compression' = { param($h) $h.RamGB -ge 30 }                              # quitar compresion cambia CPU por RAM: solo con RAM abundante (32GB+)
+    'svc_sysmain'     = { param($h) $h.IsSSD }                                     # SysMain precarga para HDD; con SSD casi no aporta
+    'svc_wsearch'     = { param($h) -not $h.IsSSD }                                # el indexador duele sobre todo en disco mecanico
+    'rend_ultperf'    = { param($h) (-not $h.IsLaptop) -and (-not $h.OnBattery) }  # mas consumo/calor: sobremesa enchufado
+    'rend_bgapps'     = { param($h) ($h.RamGB -lt 15) -or $h.IsLaptop }            # liberar CPU/RAM en idle importa en equipos justos (<16GB) o portatiles
+    'cpu_park'        = { param($h) -not $h.IsLaptop }                             # desparkear en portatil = termicas y bateria
+    'sys_hibernate'   = { param($h) -not $h.IsLaptop }                             # en portatil la hibernacion si se usa
+    'lat_msi_audio'   = { param($h) -not $h.IsLaptop }                             # MSI en audio: IRQ compartida es mas fragil en portatil
+    'net_intmod'      = { param($h) -not $h.IsWifi }                               # moderacion de interrupciones es cosa del NIC cableado
+    'net_rss'         = { param($h) $h.Threads -ge 8 }                             # repartir RX entre nucleos necesita nucleos
+    'net_ctcp'        = { param($h) $h.IsWifi }                                    # CTCP recupera antes tras perdida: la radio pierde mas
+    'gpu_ulps'        = { param($h) $h.HasNvidia }                                 # ULPS es especifico de NVIDIA
+    'priv_copilot'    = { param($h) $h.IsWin11 }                                   # Copilot solo existe en Win11
+}
+
+function Get-AXERecommended {
+    # Sin HW no hay recomendacion honesta: solo el nucleo universal. La GUI recalcula
+    # cuando el runspace de deteccion entrega el hardware (Apply-AXEGating).
+    $ids = New-Object System.Collections.Generic.List[string]
+    foreach($i in $script:RECCORE){ [void]$ids.Add($i) }
+    $h = $script:HW
+    if($h){
+        foreach($id in $script:RECRULES.Keys){
+            $ok = $false
+            try { $ok = [bool](& $script:RECRULES[$id] $h) } catch { $ok = $false }
+            if($ok -and -not $ids.Contains($id)){ [void]$ids.Add($id) }
+        }
+    }
+    # Filtro duro. Recomendar algo que el propio catalogo marca Tier 2 o placebo probable
+    # es contradecirse, y la insignia pierde todo su valor. Se aplica SIEMPRE, tambien al
+    # nucleo: si un tweak se degrada a Tier 2 manana, sale solo de las recomendaciones.
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach($id in $ids){
+        $tw = $script:CAT | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+        if(-not $tw){ continue }                                                    # id muerto tras un rename: se cae solo, no rompe
+        if($tw.Tier -ge 2){ continue }
+        if($tw.PSObject.Properties['PlaceboLikely'] -and $tw.PlaceboLikely){ continue }
+        if(Get-BlockReason $tw){ continue }                                         # no aplica a esta maquina
+        [void]$out.Add($id)
+    }
+    # .ToArray() y NO ",$out": el operador coma envolveria la lista en otro array y los
+    # llamantes (que ya hacen @(Get-AXERecommended)) verian 1 elemento en vez de N.
+    $out.ToArray()
+}
+
+# §3.5 - SET DE LATENCIA / INPUT LAG
+# No es "todo Tier<2": son los ajustes cuyo efecto cae en la cadena
+# entrada -> proceso -> render -> pantalla, o en el jitter del timer que la sostiene.
+# Deliberadamente FUERA: net_dns (pisa DNS local/VPN), todo EXTREMO, y cualquier cosa
+# marcada PlaceboLikely - un boton de un clic no es sitio para apuestas.
+$script:LATENCYSET = @(
+    'lat_mouse','lat_timerres','lat_msi_gpu','lat_irq_gpu','lat_msi_audio','lat_faststart',
+    'cpu_dyntick','cpu_tsc','cpu_fth','cpu_mmcss','cpu_pthr',
+    'sys_gamedvr','sys_fse','sys_gamebar',
+    'rend_gamemode','rend_mpo','gpu_hags','gpu_vrr','net_throttle'
+)
+
+function Get-AXELatencySet {
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach($id in $script:LATENCYSET){
+        $tw = $script:CAT | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+        if(-not $tw){ continue }
+        if($tw.Tier -ge 2){ continue }
+        if($tw.PSObject.Properties['PlaceboLikely'] -and $tw.PlaceboLikely){ continue }
+        if(Get-BlockReason $tw){ continue }   # cruce con el gating: cada maquina, su lista
+        [void]$out.Add($id)
+    }
+    $out.ToArray()
 }
 
 
@@ -1592,6 +1683,8 @@ if($List){
     Write-Host "== AXE $($script:AXEVersion) =="
     if($script:HW){ Write-Host "HW: $($script:HW.CpuName) | Laptop=$($script:HW.IsLaptop) Hybrid=$($script:HW.IsHybrid) Nvidia=$($script:HW.HasNvidia) Wifi=$($script:HW.IsWifi) AC=$(-not $script:HW.OnBattery)" }
     if($script:HW){ Write-Host ("ECO: " + (Get-AXEEnvBanner)) }
+    # §3.4: la CLI dice lo mismo que la GUI. Una sola fuente (Get-AXERecommended), dos caras.
+    if($script:HW){ $rec=@(Get-AXERecommended); Write-Host ("REC: {0} recomendados para este equipo -> {1}" -f $rec.Count,($rec -join ', ')) }
     Write-Host ""
     foreach($tw in $script:CAT){
         $blk = Get-BlockReason $tw
@@ -1689,30 +1782,45 @@ $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="AXE" Height="840" Width="1200" MinHeight="720" MinWidth="1040"
-        WindowStartupLocation="CenterScreen" Background="#1B1B1F"
+        WindowStartupLocation="CenterScreen" Background="#101216"
         TextOptions.TextFormattingMode="Ideal" UseLayoutRounding="True"
         FontFamily="Segoe UI Variable, Segoe UI" FontSize="13" Foreground="#ECECF0">
   <Window.Resources>
-    <SolidColorBrush x:Key="Bg"       Color="#1B1B1F"/>
-    <SolidColorBrush x:Key="Surface"  Color="#26262B"/>
-    <SolidColorBrush x:Key="Surface2" Color="#303036"/>
-    <SolidColorBrush x:Key="Line"     Color="#3A3A42"/>
-    <SolidColorBrush x:Key="Fg"       Color="#ECECF0"/>
-    <SolidColorBrush x:Key="Muted"    Color="#9A9AA6"/>
-    <SolidColorBrush x:Key="Accent"   Color="#2DD4BF"/>
-    <SolidColorBrush x:Key="AccentDim" Color="#242DD4BF"/>
-    <SolidColorBrush x:Key="OnAccent" Color="#0B0B0D"/>
-    <SolidColorBrush x:Key="Green"    Color="#4ADE80"/>
-    <SolidColorBrush x:Key="Amber"    Color="#FBBF24"/>
-    <SolidColorBrush x:Key="Red"      Color="#F87171"/>
-    <SolidColorBrush x:Key="Purple"   Color="#A78BFA"/>
+    <!-- ============================================================
+         PALETA: banco de instrumentos, no UI gamer.
+         Grafito frio desplazado a azul = carcasa del instrumento.
+         REGLA DURA: toda la saturacion esta reservada al RIESGO.
+         Fuera de la escala de tier + severidad de log, la UI es
+         grafito y blanco. Asi el tier es imposible de no ver.
+         ============================================================ -->
+    <SolidColorBrush x:Key="Bg"       Color="#101216"/>
+    <SolidColorBrush x:Key="Surface"  Color="#181B21"/>
+    <SolidColorBrush x:Key="Surface2" Color="#212630"/>
+    <SolidColorBrush x:Key="Line"     Color="#2C323D"/>
+    <SolidColorBrush x:Key="Fg"       Color="#E4E8EF"/>
+    <SolidColorBrush x:Key="Muted"    Color="#828B9C"/>
+    <!-- Ambar de instrumento (lampara "armado"). No es el teal/acid-green por defecto. -->
+    <SolidColorBrush x:Key="Accent"   Color="#E0A32E"/>
+    <SolidColorBrush x:Key="AccentDim" Color="#24E0A32E"/>
+    <SolidColorBrush x:Key="OnAccent" Color="#101216"/>
+    <!-- Escala de riesgo. Green=Tier 0 seguro, Accent=Tier 1 elite, Red=Tier 2 extremo.
+         Tier 1 comparte color con la marca a proposito: es el tier que el producto recomienda. -->
+    <SolidColorBrush x:Key="Green"    Color="#5FAF8D"/>
+    <SolidColorBrush x:Key="Amber"    Color="#E0A32E"/>
+    <SolidColorBrush x:Key="Red"      Color="#E2593C"/>
+    <SolidColorBrush x:Key="Purple"   Color="#8C86C9"/>
+
+    <!-- Cara de utilidad. Regla semantica: todo lo que es VERDAD DE MAQUINA
+         (valores de registro, contadores, codigos de tier, banner de HW, log)
+         va en mono. Las etiquetas humanas van en sans. -->
+    <FontFamily x:Key="Mono">Cascadia Mono, Consolas, Courier New</FontFamily>
 
     <!-- Anillo de foco de teclado (a11y: foco visible por teclado, guia Fluent) -->
     <Style x:Key="FocusRing">
       <Setter Property="Control.Template">
         <Setter.Value>
           <ControlTemplate>
-            <Rectangle Stroke="#3AE7D0" StrokeThickness="2" RadiusX="8" RadiusY="8" Margin="-2" SnapsToDevicePixels="True"/>
+            <Rectangle Stroke="#F2C368" StrokeThickness="2" RadiusX="8" RadiusY="8" Margin="-2" SnapsToDevicePixels="True"/>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
@@ -1731,7 +1839,7 @@ $xaml = @'
                   <Thumb>
                     <Thumb.Template>
                       <ControlTemplate TargetType="Thumb">
-                        <Border CornerRadius="5" Background="#4A4A55" Margin="2"/>
+                        <Border CornerRadius="5" Background="#39414F" Margin="2"/>
                       </ControlTemplate>
                     </Thumb.Template>
                   </Thumb>
@@ -1886,7 +1994,7 @@ $xaml = @'
             <Grid Width="46" Height="24" Background="Transparent">
               <Border x:Name="Track" CornerRadius="12" Background="{StaticResource Surface2}"
                       BorderBrush="{StaticResource Line}" BorderThickness="1"/>
-              <Ellipse x:Name="Thumb" Width="16" Height="16" HorizontalAlignment="Left" Margin="4,0,0,0" Fill="#C4C4CE">
+              <Ellipse x:Name="Thumb" Width="16" Height="16" HorizontalAlignment="Left" Margin="4,0,0,0" Fill="#AEB6C4">
                 <Ellipse.RenderTransform><TranslateTransform x:Name="TT" X="0"/></Ellipse.RenderTransform>
               </Ellipse>
             </Grid>
@@ -1957,9 +2065,11 @@ $xaml = @'
           <StackPanel x:Name="HwChips" Orientation="Horizontal" HorizontalAlignment="Right"/>
           <!-- 3.3: banner de ecosistema. Hace explicito POR QUE se ve lo que se ve (cuantos
                tweaks aplican a esta maquina y cuantos estan ocultos por gating). -->
-          <TextBlock x:Name="EnvBannerLbl" Text="HW no detectado (arranque)" FontSize="10"
+          <!-- Verdad de maquina -> mono. Es un volcado del ecosistema detectado, no una etiqueta. -->
+          <TextBlock x:Name="EnvBannerLbl" Text="HW no detectado (arranque)" FontSize="10.5"
+                     FontFamily="{StaticResource Mono}"
                      Foreground="{StaticResource Muted}" HorizontalAlignment="Right"
-                     Margin="0,5,2,0" TextTrimming="CharacterEllipsis"/>
+                     Margin="0,6,2,0" TextTrimming="CharacterEllipsis"/>
         </StackPanel>
         <Border Grid.Column="2" Background="{StaticResource Surface2}" CornerRadius="8" Padding="14,8" VerticalAlignment="Center" MinWidth="172">
           <StackPanel>
@@ -2058,7 +2168,7 @@ $xaml = @'
           </StackPanel>
         </Grid>
         <RichTextBox x:Name="LogBox" IsReadOnly="True" Background="Transparent" BorderThickness="0"
-                 Foreground="#7CDCA0" FontFamily="Cascadia Code, Consolas" FontSize="12"
+                 Foreground="#828B9C" FontFamily="{StaticResource Mono}" FontSize="11.5"
                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Padding="12,6">
           <RichTextBox.Document><FlowDocument PagePadding="0"/></RichTextBox.Document>
         </RichTextBox>
@@ -2085,10 +2195,13 @@ $StatusBar    = $win.FindName('StatusBar')
 $VerLbl       = $win.FindName('VerLbl'); if($VerLbl){ $VerLbl.Text = "v$($script:AXEVersion)" }
 $ApplyBar     = $win.FindName('ApplyBar')
 $script:LogBox = $win.FindName('LogBox')
-# Sink de log con color por severidad (ERR rojo / WARN ambar / INFO verde) + cap 500 lineas
+# Sink de log con color por severidad + cap 500 lineas.
+# INFO va NEUTRO a proposito: el verde-sobre-negro de terminal competia con la escala de
+# riesgo y era lo unico que delataba la edad de la UI. La saturacion se gasta solo donde
+# significa algo (WARN ambar / ERR rojo), igual que la regla de la paleta.
 $script:AXELogSink = {
     param($line,$level)
-    $col = switch($level){ 'ERR' {'#F87171'} 'WARN' {'#FBBF24'} default {'#7CDCA0'} }
+    $col = switch($level){ 'ERR' {'#E2593C'} 'WARN' {'#E0A32E'} default {'#828B9C'} }
     $p = New-Object System.Windows.Documents.Paragraph
     $p.Margin = New-Object System.Windows.Thickness(0)
     $run = New-Object System.Windows.Documents.Run([string]$line)
@@ -2190,8 +2303,12 @@ function Pulse-Tile($tile){
 $script:tweakCats = New-Object System.Collections.ArrayList
 foreach($tw in $script:CAT){ if(-not $script:tweakCats.Contains($tw.Cat)){ [void]$script:tweakCats.Add($tw.Cat) } }
 $script:actionCats = @('MEDICION','LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
-# Badge "Recomendado" = senal curada (no todo Tier<2): mejores ganancias seguras y universales
-$script:RECOMMENDED = @('cpu_mmcss','cpu_prio','lat_mouse','sys_gamedvr','sys_fse','rend_gamemode','rend_visualfx','rend_mpo','gpu_hags','net_throttle','net_nagle','priv_recall','mem_lastaccess')
+# Badge "Recomendado" = §3.4, calculado contra ESTA maquina (Get-AXERecommended en 20-tweaks).
+# Al arrancar el HW aun no esta (runspace); sale el nucleo universal y Apply-AXEGating
+# lo recalcula en cuanto la deteccion termina. $script:recBadges guarda el Border de cada
+# tarjeta para poder encender/apagar la insignia sin reconstruir la vista.
+$script:RECOMMENDED = @(Get-AXERecommended)
+$script:recBadges   = @{}
 
 $script:views    = @{}   # cat -> panel (en ContentHost)
 $script:rows     = @{}   # cat -> lista de @{Tw;Toggle;Desc}
@@ -2208,53 +2325,88 @@ function New-TweakCard($tw){
     $card = New-Object System.Windows.Controls.Border
     $card.Background = New-AXEBrush 'Surface'; $card.BorderBrush = New-AXEBrush 'Line'
     $card.BorderThickness = New-Object System.Windows.Thickness(1)
-    $card.CornerRadius = New-Object System.Windows.CornerRadius(10)
-    $card.Padding = New-Object System.Windows.Thickness(12,10,14,10)
-    $card.Margin = New-Object System.Windows.Thickness(0,0,0,8)
+    # Radio corto: chasis de instrumento, no burbuja. Padding izq 0 -> la espina toca el borde.
+    $card.CornerRadius = New-Object System.Windows.CornerRadius(6)
+    $card.Padding = New-Object System.Windows.Thickness(0,11,14,11)
+    $card.Margin = New-Object System.Windows.Thickness(0,0,0,6)
 
     $g = New-Object System.Windows.Controls.Grid
-    foreach($w in @('Auto','*','Auto')){ $cd=New-Object System.Windows.Controls.ColumnDefinition; $cd.Width=$w; [void]$g.ColumnDefinitions.Add($cd) }
+    foreach($w in @('Auto','Auto','*','Auto')){ $cd=New-Object System.Windows.Controls.ColumnDefinition; $cd.Width=$w; [void]$g.ColumnDefinitions.Add($cd) }
 
-    # tile de icono tenido por tier (verde=seguro / teal=elite / rojo=extremo) -> escaneable de un vistazo
+    # FIRMA: espina de riesgo. Barra vertical tenida por tier en el borde izquierdo.
+    # Es el UNICO sitio de la tarjeta donde vive el color de tier: al scrollear, el catalogo
+    # se lee como un espectro de riesgo y el racimo de Tier 2 salta a la vista sin leer nada.
+    $spine = New-Object System.Windows.Controls.Border
+    $spine.Width=3; $spine.CornerRadius=New-Object System.Windows.CornerRadius(2)
+    $spine.Background = New-AXEBrush $tierKey
+    # Margen negativo = padding vertical de la tarjeta (11) menos 3px de respiro arriba/abajo.
+    # Sin esto la espina queda recortada y flotando: se lee como un tick suelto, no como espina.
+    $spine.VerticalAlignment='Stretch'; $spine.Margin=New-Object System.Windows.Thickness(0,-8,13,-8)
+    $spine.ToolTip=$tierTip
+    # Tier 1 es la NORMA (55 de 77 tweaks): a plena saturacion pinta la columna entera de
+    # ambar y el "espectro de riesgo" deja de discriminar - T0 y T2 se pierden en el muro.
+    # Atenuando solo T1, lo excepcional (verde seguro / rojo extremo) vuelve a saltar.
+    if($tw.Tier -eq 1){ $spine.Opacity = 0.45 }
+    [System.Windows.Controls.Grid]::SetColumn($spine,0); [void]$g.Children.Add($spine)
+
+    # Tile de icono: NEUTRO. Marca categoria, no riesgo. Tintarlo tambien por tier duplicaria
+    # la senal y le quitaria fuerza a la espina (una senal, un sitio).
     $tile = New-Object System.Windows.Controls.Border
-    $tile.Width=38; $tile.Height=38; $tile.CornerRadius=New-Object System.Windows.CornerRadius(9)
-    $tile.Background = New-TintBrush $tierKey 30
+    $tile.Width=34; $tile.Height=34; $tile.CornerRadius=New-Object System.Windows.CornerRadius(7)
+    $tile.Background = New-AXEBrush 'Surface2'
     $tile.VerticalAlignment='Center'; $tile.Margin=New-Object System.Windows.Thickness(0,0,12,0); $tile.ToolTip=$tierTip
     $ico = New-Object System.Windows.Controls.TextBlock
     $ico.Text=$glyph; $ico.FontFamily=New-Object System.Windows.Media.FontFamily('Segoe Fluent Icons, Segoe MDL2 Assets')
-    $ico.FontSize=17; $ico.Foreground=New-AXEBrush $tierKey; $ico.HorizontalAlignment='Center'; $ico.VerticalAlignment='Center'
+    $ico.FontSize=16; $ico.Foreground=New-AXEBrush 'Muted'; $ico.HorizontalAlignment='Center'; $ico.VerticalAlignment='Center'
     $tile.Child=$ico
-    [System.Windows.Controls.Grid]::SetColumn($tile,0); [void]$g.Children.Add($tile)
+    [System.Windows.Controls.Grid]::SetColumn($tile,1); [void]$g.Children.Add($tile)
 
     $left = New-Object System.Windows.Controls.StackPanel; $left.VerticalAlignment='Center'
     $nameRow = New-Object System.Windows.Controls.StackPanel; $nameRow.Orientation='Horizontal'
+    # Codigo de tier en mono: dato de maquina, escaneable, sin ir a buscar la leyenda.
+    $tierC = New-Object System.Windows.Controls.TextBlock
+    $tierC.Text=("T{0}" -f $tw.Tier); $tierC.FontFamily=$win.FindResource('Mono')
+    $tierC.FontSize=10.5; $tierC.Foreground=New-AXEBrush $tierKey; $tierC.VerticalAlignment='Center'
+    $tierC.Margin=New-Object System.Windows.Thickness(0,1,8,0); $tierC.ToolTip=$tierTip
+    if($tw.Tier -eq 1){ $tierC.Opacity = 0.6 }   # mismo motivo que la espina: T1 es el fondo, no la senal
+    [void]$nameRow.Children.Add($tierC)
     $name = New-Object System.Windows.Controls.TextBlock
     $name.Text=$tw.Name; $name.FontWeight='SemiBold'; $name.FontSize=13.5; $name.VerticalAlignment='Center'
     [void]$nameRow.Children.Add($name)
     $desc = New-Object System.Windows.Controls.TextBlock
-    $desc.Text=$tw.Desc; $desc.Foreground=New-AXEBrush 'Muted'; $desc.TextWrapping='Wrap'; $desc.Margin=New-Object System.Windows.Thickness(0,2,10,0); $desc.FontSize=12
+    $desc.Text=$tw.Desc; $desc.Foreground=New-AXEBrush 'Muted'; $desc.TextWrapping='Wrap'; $desc.Margin=New-Object System.Windows.Thickness(0,3,10,0); $desc.FontSize=11.5
     [void]$left.Children.Add($nameRow); [void]$left.Children.Add($desc)
-    [System.Windows.Controls.Grid]::SetColumn($left,1); [void]$g.Children.Add($left)
+    [System.Windows.Controls.Grid]::SetColumn($left,2); [void]$g.Children.Add($left)
 
     $tog = New-Object System.Windows.Controls.CheckBox
     $tog.Style = $win.FindResource('ToggleSwitch'); $tog.VerticalAlignment='Center'; $tog.Tag=$tw
     [System.Windows.Automation.AutomationProperties]::SetName($tog,$tw.Name)
-    [System.Windows.Controls.Grid]::SetColumn($tog,2); [void]$g.Children.Add($tog)
+    [System.Windows.Controls.Grid]::SetColumn($tog,3); [void]$g.Children.Add($tog)
 
     $blk = Get-BlockReason $tw
     if($blk){
-        $tog.IsEnabled=$false; $desc.Foreground=New-AXEBrush 'Red'; $desc.Text="[BLOQUEADO] $blk"
-        $tile.Background = New-TintBrush 'Red' 30; $ico.Foreground=New-AXEBrush 'Red'; $ico.Text=[char]0xE72E  # candado
+        # Bloqueado es un ESTADO, no un tier: apaga la espina (el riesgo ya no aplica a esta
+        # maquina) y mueve la senal al tile + candado, para no ensuciar el espectro de riesgo.
+        $tog.IsEnabled=$false; $desc.Foreground=New-AXEBrush 'Muted'; $desc.Text="No aplica: $blk"
+        $spine.Background = New-AXEBrush 'Line'
+        $card.Opacity = 0.62
+        $tile.Background = New-AXEBrush 'Surface2'; $ico.Foreground=New-AXEBrush 'Muted'; $ico.Text=[char]0xE72E  # candado
     }
-    if(-not $blk -and ($script:RECOMMENDED -contains $tw.Id)){
-        $recB = New-Object System.Windows.Controls.Border
-        $recB.Background=New-TintBrush 'Accent' 28
-        $recB.CornerRadius=New-Object System.Windows.CornerRadius(5); $recB.Padding=New-Object System.Windows.Thickness(6,1,6,2)
-        $recB.Margin=New-Object System.Windows.Thickness(9,0,0,0); $recB.VerticalAlignment='Center'
-        $recT = New-Object System.Windows.Controls.TextBlock
-        $recT.Text='Recomendado'; $recT.Foreground=New-AXEBrush 'Accent'; $recT.FontSize=10; $recT.FontWeight='SemiBold'
-        $recB.Child=$recT; [void]$nameRow.Children.Add($recB)
-    }
+    # Insignia "Para tu equipo". VERDE, no ambar: el ambar es el color de la accion primaria
+    # (APLICAR) y de Tier 1. Si la insignia tambien fuese ambar, tres cosas distintas
+    # competirian por el mismo color y ninguna destacaria. Verde = "esto te conviene".
+    # Se construye SIEMPRE y se oculta si no toca: asi Apply-AXEGating puede encenderla
+    # cuando llega el hardware, sin reconstruir la tarjeta.
+    $recB = New-Object System.Windows.Controls.Border
+    $recB.Background=New-TintBrush 'Green' 30
+    $recB.CornerRadius=New-Object System.Windows.CornerRadius(5); $recB.Padding=New-Object System.Windows.Thickness(6,1,6,2)
+    $recB.Margin=New-Object System.Windows.Thickness(9,0,0,0); $recB.VerticalAlignment='Center'
+    $recB.ToolTip='Recomendado para ESTE equipo segun el hardware detectado (RAM, disco, GPU, red, portatil/sobremesa).'
+    $recT = New-Object System.Windows.Controls.TextBlock
+    $recT.Text='Para tu equipo'; $recT.Foreground=New-AXEBrush 'Green'; $recT.FontSize=10; $recT.FontWeight='SemiBold'
+    $recB.Child=$recT; [void]$nameRow.Children.Add($recB)
+    $recB.Visibility = if(-not $blk -and ($script:RECOMMENDED -contains $tw.Id)){'Visible'}else{'Collapsed'}
+    $script:recBadges[$tw.Id] = $recB
     # Card clickable (patron Fluent SettingsCard) + hover ANIMADO: eleva (lift) + fade de fondo + sombra.
     # NO toca BorderBrush -> no pisa el borde accent de "cambio pendiente" (Update-AXEPending).
     if(-not $blk){
@@ -2579,6 +2731,36 @@ function Build-ActionView($catName){
             $script:measureBtn=New-ActionButton 'Medir ahora' 'Accent'
             $script:measureBtn.Add_Click({ Invoke-AXEMeasure -JitterMs 1000 })
             [void]$panel.Children.Add($script:measureBtn)
+            # §3.5: el boton vive en MEDICION a posta. Marca los ajustes de latencia pero NO
+            # aplica nada: obliga a pasar por APLICAR (punto de restauracion + snapshot) y deja
+            # el medir-antes / medir-despues a un clic, que es lo unico que convierte "va mejor"
+            # en un numero. Un boton que tocase el registro directamente se saltaria las dos cosas.
+            $script:latBtn=New-ActionButton 'Optimizar latencia e input lag' 'Green'
+            $script:latBtn.Add_Click({
+                if($script:busy){ return }
+                if(-not $script:HW){ Write-AXELog 'Hardware aun sin detectar: espera a que termine para no marcar ajustes que no aplican.' 'WARN'; return }
+                $set=@(Get-AXELatencySet); $n=0
+                foreach($catName in $script:tweakCats){
+                    foreach($e in $script:rows[$catName]){
+                        if(-not $e.Blocked -and ($set -contains $e.Tw.Id) -and -not $e.Toggle.IsChecked){ $e.Toggle.IsChecked=$true; $n++ }
+                    }
+                }
+                Update-AXEPending
+                Write-AXELog ("Latencia/input lag: {0} ajustes marcados de {1} aplicables a este equipo. NO se ha cambiado nada todavia: pulsa APLICAR." -f $n,$set.Count)
+                $script:measureOut.Text = @"
+$n ajustes de latencia marcados ($($set.Count) aplican a este equipo; el resto quedan fuera por tu hardware o por ser Tier 2 / placebo probable).
+
+Nada se ha cambiado aun. Para que el numero signifique algo:
+  1. "Medir ahora"        -> guarda el score ANTES
+  2. "APLICAR cambios"    -> crea punto de restauracion y aplica
+  3. Reinicia si se pide  -> varios ajustes solo entran al arrancar
+  4. "Medir ahora"        -> compara el score DESPUES
+
+El jitter es un PROXY de latencia: sirve para comparar la misma maquina antes/despues,
+no para comparar entre maquinas distintas.
+"@
+            })
+            [void]$panel.Children.Add($script:latBtn)
             # Reporte / delta
             $script:measureOut=New-Object System.Windows.Controls.TextBox; $script:measureOut.IsReadOnly=$true; $script:measureOut.Background=New-AXEBrush 'Surface'; $script:measureOut.Foreground=New-AXEBrush 'Fg'; $script:measureOut.BorderBrush=New-AXEBrush 'Line'; $script:measureOut.BorderThickness=New-Object System.Windows.Thickness(1); $script:measureOut.Padding=New-Object System.Windows.Thickness(12,8,12,8); $script:measureOut.Height=260; $script:measureOut.TextWrapping='Wrap'; $script:measureOut.VerticalScrollBarVisibility='Auto'; $script:measureOut.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:measureOut.FontSize=12
             $script:measureOut.Text="Medicion local, 0 dependencias. El jitter es un PROXY de latencia (no atribuible a driver concreto)."
@@ -2680,6 +2862,10 @@ function Refresh-States {
 # ---- 12.12b carga HW async (GUI): la ventana no espera los ~3.7s de CIM ----
 # Re-aplica el gating a las cards ya construidas (se construyeron con HW=null => sin bloqueo).
 function Apply-AXEGating {
+    # §3.4: las tarjetas se construyen antes de que el runspace devuelva el hardware, asi
+    # que la lista inicial es solo el nucleo universal. Aqui ya hay HW real: se recalcula
+    # contra ESTA maquina y se encienden/apagan las insignias en sitio.
+    $script:RECOMMENDED = @(Get-AXERecommended)
     foreach($catName in $script:tweakCats){
         foreach($e in $script:rows[$catName]){
             $blk = Get-BlockReason $e.Tw
@@ -2687,8 +2873,11 @@ function Apply-AXEGating {
                 $e.Blocked=$true; $e.Toggle.IsEnabled=$false; $e.Toggle.IsChecked=$false
                 $e.Desc.Foreground=New-AXEBrush 'Red'; $e.Desc.Text="[BLOQUEADO] $blk"
             }
+            $b = $script:recBadges[$e.Tw.Id]
+            if($b){ $b.Visibility = if(-not $blk -and ($script:RECOMMENDED -contains $e.Tw.Id)){'Visible'}else{'Collapsed'} }
         }
     }
+    Write-AXELog ("Recomendaciones ajustadas a tu equipo: {0} de {1} tweaks." -f $script:RECOMMENDED.Count,$script:CAT.Count)
 }
 # Get-AXEHardware es self-contained (solo CIM + pscustomobject) => corre limpio en runspace.
 $script:hwPS=$null
@@ -3089,8 +3278,13 @@ if($env:AXE_GUITEST -eq '1'){
     # layout forzado del bloque de render (mas abajo).
     try {
         $paths=@($LogoCanvas.Children)
-        $accent=$paths | Where-Object { $_.Fill -is [System.Windows.Media.SolidColorBrush] -and $_.Fill.Color.ToString() -eq '#FF2DD4BF' }
-        $surface=$paths | Where-Object { $_.Fill -is [System.Windows.Media.SolidColorBrush] -and $_.Fill.Color.ToString() -eq '#FF26262B' }
+        # Derivado de los recursos, no hardcodeado: la regresion que importa es "el logo usa
+        # los colores de la paleta", no "el logo es teal". Retocar la paleta ya no rompe esto,
+        # pero olvidarse de repintar el logo si.
+        $accentHex =(New-AXEBrush 'Accent').Color.ToString()
+        $surfaceHex=(New-AXEBrush 'Surface').Color.ToString()
+        $accent=$paths | Where-Object { $_.Fill -is [System.Windows.Media.SolidColorBrush] -and $_.Fill.Color.ToString() -eq $accentHex }
+        $surface=$paths | Where-Object { $_.Fill -is [System.Windows.Media.SolidColorBrush] -and $_.Fill.Color.ToString() -eq $surfaceHex }
         $logoOk=($paths.Count -eq 6) -and ($accent.Count -eq 2) -and ($surface.Count -eq 4)
         Write-Host ("Logo AXE          : paths={0} accent={1} surface={2} (esperado 6/2/4)" -f $paths.Count,$accent.Count,$surface.Count)
         if(-not $logoOk){ $allOk=$false }

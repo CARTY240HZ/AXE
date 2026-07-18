@@ -87,6 +87,10 @@ function Refresh-States {
 # ---- 12.12b carga HW async (GUI): la ventana no espera los ~3.7s de CIM ----
 # Re-aplica el gating a las cards ya construidas (se construyeron con HW=null => sin bloqueo).
 function Apply-AXEGating {
+    # §3.4: las tarjetas se construyen antes de que el runspace devuelva el hardware, asi
+    # que la lista inicial es solo el nucleo universal. Aqui ya hay HW real: se recalcula
+    # contra ESTA maquina y se encienden/apagan las insignias en sitio.
+    $script:RECOMMENDED = @(Get-AXERecommended)
     foreach($catName in $script:tweakCats){
         foreach($e in $script:rows[$catName]){
             $blk = Get-BlockReason $e.Tw
@@ -94,8 +98,11 @@ function Apply-AXEGating {
                 $e.Blocked=$true; $e.Toggle.IsEnabled=$false; $e.Toggle.IsChecked=$false
                 $e.Desc.Foreground=New-AXEBrush 'Red'; $e.Desc.Text="[BLOQUEADO] $blk"
             }
+            $b = $script:recBadges[$e.Tw.Id]
+            if($b){ $b.Visibility = if(-not $blk -and ($script:RECOMMENDED -contains $e.Tw.Id)){'Visible'}else{'Collapsed'} }
         }
     }
+    Write-AXELog ("Recomendaciones ajustadas a tu equipo: {0} de {1} tweaks." -f $script:RECOMMENDED.Count,$script:CAT.Count)
 }
 # Get-AXEHardware es self-contained (solo CIM + pscustomobject) => corre limpio en runspace.
 $script:hwPS=$null

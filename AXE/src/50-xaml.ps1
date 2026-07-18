@@ -54,30 +54,45 @@ $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="AXE" Height="840" Width="1200" MinHeight="720" MinWidth="1040"
-        WindowStartupLocation="CenterScreen" Background="#1B1B1F"
+        WindowStartupLocation="CenterScreen" Background="#101216"
         TextOptions.TextFormattingMode="Ideal" UseLayoutRounding="True"
         FontFamily="Segoe UI Variable, Segoe UI" FontSize="13" Foreground="#ECECF0">
   <Window.Resources>
-    <SolidColorBrush x:Key="Bg"       Color="#1B1B1F"/>
-    <SolidColorBrush x:Key="Surface"  Color="#26262B"/>
-    <SolidColorBrush x:Key="Surface2" Color="#303036"/>
-    <SolidColorBrush x:Key="Line"     Color="#3A3A42"/>
-    <SolidColorBrush x:Key="Fg"       Color="#ECECF0"/>
-    <SolidColorBrush x:Key="Muted"    Color="#9A9AA6"/>
-    <SolidColorBrush x:Key="Accent"   Color="#2DD4BF"/>
-    <SolidColorBrush x:Key="AccentDim" Color="#242DD4BF"/>
-    <SolidColorBrush x:Key="OnAccent" Color="#0B0B0D"/>
-    <SolidColorBrush x:Key="Green"    Color="#4ADE80"/>
-    <SolidColorBrush x:Key="Amber"    Color="#FBBF24"/>
-    <SolidColorBrush x:Key="Red"      Color="#F87171"/>
-    <SolidColorBrush x:Key="Purple"   Color="#A78BFA"/>
+    <!-- ============================================================
+         PALETA: banco de instrumentos, no UI gamer.
+         Grafito frio desplazado a azul = carcasa del instrumento.
+         REGLA DURA: toda la saturacion esta reservada al RIESGO.
+         Fuera de la escala de tier + severidad de log, la UI es
+         grafito y blanco. Asi el tier es imposible de no ver.
+         ============================================================ -->
+    <SolidColorBrush x:Key="Bg"       Color="#101216"/>
+    <SolidColorBrush x:Key="Surface"  Color="#181B21"/>
+    <SolidColorBrush x:Key="Surface2" Color="#212630"/>
+    <SolidColorBrush x:Key="Line"     Color="#2C323D"/>
+    <SolidColorBrush x:Key="Fg"       Color="#E4E8EF"/>
+    <SolidColorBrush x:Key="Muted"    Color="#828B9C"/>
+    <!-- Ambar de instrumento (lampara "armado"). No es el teal/acid-green por defecto. -->
+    <SolidColorBrush x:Key="Accent"   Color="#E0A32E"/>
+    <SolidColorBrush x:Key="AccentDim" Color="#24E0A32E"/>
+    <SolidColorBrush x:Key="OnAccent" Color="#101216"/>
+    <!-- Escala de riesgo. Green=Tier 0 seguro, Accent=Tier 1 elite, Red=Tier 2 extremo.
+         Tier 1 comparte color con la marca a proposito: es el tier que el producto recomienda. -->
+    <SolidColorBrush x:Key="Green"    Color="#5FAF8D"/>
+    <SolidColorBrush x:Key="Amber"    Color="#E0A32E"/>
+    <SolidColorBrush x:Key="Red"      Color="#E2593C"/>
+    <SolidColorBrush x:Key="Purple"   Color="#8C86C9"/>
+
+    <!-- Cara de utilidad. Regla semantica: todo lo que es VERDAD DE MAQUINA
+         (valores de registro, contadores, codigos de tier, banner de HW, log)
+         va en mono. Las etiquetas humanas van en sans. -->
+    <FontFamily x:Key="Mono">Cascadia Mono, Consolas, Courier New</FontFamily>
 
     <!-- Anillo de foco de teclado (a11y: foco visible por teclado, guia Fluent) -->
     <Style x:Key="FocusRing">
       <Setter Property="Control.Template">
         <Setter.Value>
           <ControlTemplate>
-            <Rectangle Stroke="#3AE7D0" StrokeThickness="2" RadiusX="8" RadiusY="8" Margin="-2" SnapsToDevicePixels="True"/>
+            <Rectangle Stroke="#F2C368" StrokeThickness="2" RadiusX="8" RadiusY="8" Margin="-2" SnapsToDevicePixels="True"/>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
@@ -96,7 +111,7 @@ $xaml = @'
                   <Thumb>
                     <Thumb.Template>
                       <ControlTemplate TargetType="Thumb">
-                        <Border CornerRadius="5" Background="#4A4A55" Margin="2"/>
+                        <Border CornerRadius="5" Background="#39414F" Margin="2"/>
                       </ControlTemplate>
                     </Thumb.Template>
                   </Thumb>
@@ -251,7 +266,7 @@ $xaml = @'
             <Grid Width="46" Height="24" Background="Transparent">
               <Border x:Name="Track" CornerRadius="12" Background="{StaticResource Surface2}"
                       BorderBrush="{StaticResource Line}" BorderThickness="1"/>
-              <Ellipse x:Name="Thumb" Width="16" Height="16" HorizontalAlignment="Left" Margin="4,0,0,0" Fill="#C4C4CE">
+              <Ellipse x:Name="Thumb" Width="16" Height="16" HorizontalAlignment="Left" Margin="4,0,0,0" Fill="#AEB6C4">
                 <Ellipse.RenderTransform><TranslateTransform x:Name="TT" X="0"/></Ellipse.RenderTransform>
               </Ellipse>
             </Grid>
@@ -322,9 +337,11 @@ $xaml = @'
           <StackPanel x:Name="HwChips" Orientation="Horizontal" HorizontalAlignment="Right"/>
           <!-- 3.3: banner de ecosistema. Hace explicito POR QUE se ve lo que se ve (cuantos
                tweaks aplican a esta maquina y cuantos estan ocultos por gating). -->
-          <TextBlock x:Name="EnvBannerLbl" Text="HW no detectado (arranque)" FontSize="10"
+          <!-- Verdad de maquina -> mono. Es un volcado del ecosistema detectado, no una etiqueta. -->
+          <TextBlock x:Name="EnvBannerLbl" Text="HW no detectado (arranque)" FontSize="10.5"
+                     FontFamily="{StaticResource Mono}"
                      Foreground="{StaticResource Muted}" HorizontalAlignment="Right"
-                     Margin="0,5,2,0" TextTrimming="CharacterEllipsis"/>
+                     Margin="0,6,2,0" TextTrimming="CharacterEllipsis"/>
         </StackPanel>
         <Border Grid.Column="2" Background="{StaticResource Surface2}" CornerRadius="8" Padding="14,8" VerticalAlignment="Center" MinWidth="172">
           <StackPanel>
@@ -423,7 +440,7 @@ $xaml = @'
           </StackPanel>
         </Grid>
         <RichTextBox x:Name="LogBox" IsReadOnly="True" Background="Transparent" BorderThickness="0"
-                 Foreground="#7CDCA0" FontFamily="Cascadia Code, Consolas" FontSize="12"
+                 Foreground="#828B9C" FontFamily="{StaticResource Mono}" FontSize="11.5"
                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Padding="12,6">
           <RichTextBox.Document><FlowDocument PagePadding="0"/></RichTextBox.Document>
         </RichTextBox>
@@ -450,10 +467,13 @@ $StatusBar    = $win.FindName('StatusBar')
 $VerLbl       = $win.FindName('VerLbl'); if($VerLbl){ $VerLbl.Text = "v$($script:AXEVersion)" }
 $ApplyBar     = $win.FindName('ApplyBar')
 $script:LogBox = $win.FindName('LogBox')
-# Sink de log con color por severidad (ERR rojo / WARN ambar / INFO verde) + cap 500 lineas
+# Sink de log con color por severidad + cap 500 lineas.
+# INFO va NEUTRO a proposito: el verde-sobre-negro de terminal competia con la escala de
+# riesgo y era lo unico que delataba la edad de la UI. La saturacion se gasta solo donde
+# significa algo (WARN ambar / ERR rojo), igual que la regla de la paleta.
 $script:AXELogSink = {
     param($line,$level)
-    $col = switch($level){ 'ERR' {'#F87171'} 'WARN' {'#FBBF24'} default {'#7CDCA0'} }
+    $col = switch($level){ 'ERR' {'#E2593C'} 'WARN' {'#E0A32E'} default {'#828B9C'} }
     $p = New-Object System.Windows.Documents.Paragraph
     $p.Margin = New-Object System.Windows.Thickness(0)
     $run = New-Object System.Windows.Documents.Run([string]$line)

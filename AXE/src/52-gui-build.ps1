@@ -74,8 +74,12 @@ function Pulse-Tile($tile){
 $script:tweakCats = New-Object System.Collections.ArrayList
 foreach($tw in $script:CAT){ if(-not $script:tweakCats.Contains($tw.Cat)){ [void]$script:tweakCats.Add($tw.Cat) } }
 $script:actionCats = @('MEDICION','LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
-# Badge "Recomendado" = senal curada (no todo Tier<2): mejores ganancias seguras y universales
-$script:RECOMMENDED = @('cpu_mmcss','cpu_prio','lat_mouse','sys_gamedvr','sys_fse','rend_gamemode','rend_visualfx','rend_mpo','gpu_hags','net_throttle','net_nagle','priv_recall','mem_lastaccess')
+# Badge "Recomendado" = §3.4, calculado contra ESTA maquina (Get-AXERecommended en 20-tweaks).
+# Al arrancar el HW aun no esta (runspace); sale el nucleo universal y Apply-AXEGating
+# lo recalcula en cuanto la deteccion termina. $script:recBadges guarda el Border de cada
+# tarjeta para poder encender/apagar la insignia sin reconstruir la vista.
+$script:RECOMMENDED = @(Get-AXERecommended)
+$script:recBadges   = @{}
 
 $script:views    = @{}   # cat -> panel (en ContentHost)
 $script:rows     = @{}   # cat -> lista de @{Tw;Toggle;Desc}
@@ -92,53 +96,88 @@ function New-TweakCard($tw){
     $card = New-Object System.Windows.Controls.Border
     $card.Background = New-AXEBrush 'Surface'; $card.BorderBrush = New-AXEBrush 'Line'
     $card.BorderThickness = New-Object System.Windows.Thickness(1)
-    $card.CornerRadius = New-Object System.Windows.CornerRadius(10)
-    $card.Padding = New-Object System.Windows.Thickness(12,10,14,10)
-    $card.Margin = New-Object System.Windows.Thickness(0,0,0,8)
+    # Radio corto: chasis de instrumento, no burbuja. Padding izq 0 -> la espina toca el borde.
+    $card.CornerRadius = New-Object System.Windows.CornerRadius(6)
+    $card.Padding = New-Object System.Windows.Thickness(0,11,14,11)
+    $card.Margin = New-Object System.Windows.Thickness(0,0,0,6)
 
     $g = New-Object System.Windows.Controls.Grid
-    foreach($w in @('Auto','*','Auto')){ $cd=New-Object System.Windows.Controls.ColumnDefinition; $cd.Width=$w; [void]$g.ColumnDefinitions.Add($cd) }
+    foreach($w in @('Auto','Auto','*','Auto')){ $cd=New-Object System.Windows.Controls.ColumnDefinition; $cd.Width=$w; [void]$g.ColumnDefinitions.Add($cd) }
 
-    # tile de icono tenido por tier (verde=seguro / teal=elite / rojo=extremo) -> escaneable de un vistazo
+    # FIRMA: espina de riesgo. Barra vertical tenida por tier en el borde izquierdo.
+    # Es el UNICO sitio de la tarjeta donde vive el color de tier: al scrollear, el catalogo
+    # se lee como un espectro de riesgo y el racimo de Tier 2 salta a la vista sin leer nada.
+    $spine = New-Object System.Windows.Controls.Border
+    $spine.Width=3; $spine.CornerRadius=New-Object System.Windows.CornerRadius(2)
+    $spine.Background = New-AXEBrush $tierKey
+    # Margen negativo = padding vertical de la tarjeta (11) menos 3px de respiro arriba/abajo.
+    # Sin esto la espina queda recortada y flotando: se lee como un tick suelto, no como espina.
+    $spine.VerticalAlignment='Stretch'; $spine.Margin=New-Object System.Windows.Thickness(0,-8,13,-8)
+    $spine.ToolTip=$tierTip
+    # Tier 1 es la NORMA (55 de 77 tweaks): a plena saturacion pinta la columna entera de
+    # ambar y el "espectro de riesgo" deja de discriminar - T0 y T2 se pierden en el muro.
+    # Atenuando solo T1, lo excepcional (verde seguro / rojo extremo) vuelve a saltar.
+    if($tw.Tier -eq 1){ $spine.Opacity = 0.45 }
+    [System.Windows.Controls.Grid]::SetColumn($spine,0); [void]$g.Children.Add($spine)
+
+    # Tile de icono: NEUTRO. Marca categoria, no riesgo. Tintarlo tambien por tier duplicaria
+    # la senal y le quitaria fuerza a la espina (una senal, un sitio).
     $tile = New-Object System.Windows.Controls.Border
-    $tile.Width=38; $tile.Height=38; $tile.CornerRadius=New-Object System.Windows.CornerRadius(9)
-    $tile.Background = New-TintBrush $tierKey 30
+    $tile.Width=34; $tile.Height=34; $tile.CornerRadius=New-Object System.Windows.CornerRadius(7)
+    $tile.Background = New-AXEBrush 'Surface2'
     $tile.VerticalAlignment='Center'; $tile.Margin=New-Object System.Windows.Thickness(0,0,12,0); $tile.ToolTip=$tierTip
     $ico = New-Object System.Windows.Controls.TextBlock
     $ico.Text=$glyph; $ico.FontFamily=New-Object System.Windows.Media.FontFamily('Segoe Fluent Icons, Segoe MDL2 Assets')
-    $ico.FontSize=17; $ico.Foreground=New-AXEBrush $tierKey; $ico.HorizontalAlignment='Center'; $ico.VerticalAlignment='Center'
+    $ico.FontSize=16; $ico.Foreground=New-AXEBrush 'Muted'; $ico.HorizontalAlignment='Center'; $ico.VerticalAlignment='Center'
     $tile.Child=$ico
-    [System.Windows.Controls.Grid]::SetColumn($tile,0); [void]$g.Children.Add($tile)
+    [System.Windows.Controls.Grid]::SetColumn($tile,1); [void]$g.Children.Add($tile)
 
     $left = New-Object System.Windows.Controls.StackPanel; $left.VerticalAlignment='Center'
     $nameRow = New-Object System.Windows.Controls.StackPanel; $nameRow.Orientation='Horizontal'
+    # Codigo de tier en mono: dato de maquina, escaneable, sin ir a buscar la leyenda.
+    $tierC = New-Object System.Windows.Controls.TextBlock
+    $tierC.Text=("T{0}" -f $tw.Tier); $tierC.FontFamily=$win.FindResource('Mono')
+    $tierC.FontSize=10.5; $tierC.Foreground=New-AXEBrush $tierKey; $tierC.VerticalAlignment='Center'
+    $tierC.Margin=New-Object System.Windows.Thickness(0,1,8,0); $tierC.ToolTip=$tierTip
+    if($tw.Tier -eq 1){ $tierC.Opacity = 0.6 }   # mismo motivo que la espina: T1 es el fondo, no la senal
+    [void]$nameRow.Children.Add($tierC)
     $name = New-Object System.Windows.Controls.TextBlock
     $name.Text=$tw.Name; $name.FontWeight='SemiBold'; $name.FontSize=13.5; $name.VerticalAlignment='Center'
     [void]$nameRow.Children.Add($name)
     $desc = New-Object System.Windows.Controls.TextBlock
-    $desc.Text=$tw.Desc; $desc.Foreground=New-AXEBrush 'Muted'; $desc.TextWrapping='Wrap'; $desc.Margin=New-Object System.Windows.Thickness(0,2,10,0); $desc.FontSize=12
+    $desc.Text=$tw.Desc; $desc.Foreground=New-AXEBrush 'Muted'; $desc.TextWrapping='Wrap'; $desc.Margin=New-Object System.Windows.Thickness(0,3,10,0); $desc.FontSize=11.5
     [void]$left.Children.Add($nameRow); [void]$left.Children.Add($desc)
-    [System.Windows.Controls.Grid]::SetColumn($left,1); [void]$g.Children.Add($left)
+    [System.Windows.Controls.Grid]::SetColumn($left,2); [void]$g.Children.Add($left)
 
     $tog = New-Object System.Windows.Controls.CheckBox
     $tog.Style = $win.FindResource('ToggleSwitch'); $tog.VerticalAlignment='Center'; $tog.Tag=$tw
     [System.Windows.Automation.AutomationProperties]::SetName($tog,$tw.Name)
-    [System.Windows.Controls.Grid]::SetColumn($tog,2); [void]$g.Children.Add($tog)
+    [System.Windows.Controls.Grid]::SetColumn($tog,3); [void]$g.Children.Add($tog)
 
     $blk = Get-BlockReason $tw
     if($blk){
-        $tog.IsEnabled=$false; $desc.Foreground=New-AXEBrush 'Red'; $desc.Text="[BLOQUEADO] $blk"
-        $tile.Background = New-TintBrush 'Red' 30; $ico.Foreground=New-AXEBrush 'Red'; $ico.Text=[char]0xE72E  # candado
+        # Bloqueado es un ESTADO, no un tier: apaga la espina (el riesgo ya no aplica a esta
+        # maquina) y mueve la senal al tile + candado, para no ensuciar el espectro de riesgo.
+        $tog.IsEnabled=$false; $desc.Foreground=New-AXEBrush 'Muted'; $desc.Text="No aplica: $blk"
+        $spine.Background = New-AXEBrush 'Line'
+        $card.Opacity = 0.62
+        $tile.Background = New-AXEBrush 'Surface2'; $ico.Foreground=New-AXEBrush 'Muted'; $ico.Text=[char]0xE72E  # candado
     }
-    if(-not $blk -and ($script:RECOMMENDED -contains $tw.Id)){
-        $recB = New-Object System.Windows.Controls.Border
-        $recB.Background=New-TintBrush 'Accent' 28
-        $recB.CornerRadius=New-Object System.Windows.CornerRadius(5); $recB.Padding=New-Object System.Windows.Thickness(6,1,6,2)
-        $recB.Margin=New-Object System.Windows.Thickness(9,0,0,0); $recB.VerticalAlignment='Center'
-        $recT = New-Object System.Windows.Controls.TextBlock
-        $recT.Text='Recomendado'; $recT.Foreground=New-AXEBrush 'Accent'; $recT.FontSize=10; $recT.FontWeight='SemiBold'
-        $recB.Child=$recT; [void]$nameRow.Children.Add($recB)
-    }
+    # Insignia "Para tu equipo". VERDE, no ambar: el ambar es el color de la accion primaria
+    # (APLICAR) y de Tier 1. Si la insignia tambien fuese ambar, tres cosas distintas
+    # competirian por el mismo color y ninguna destacaria. Verde = "esto te conviene".
+    # Se construye SIEMPRE y se oculta si no toca: asi Apply-AXEGating puede encenderla
+    # cuando llega el hardware, sin reconstruir la tarjeta.
+    $recB = New-Object System.Windows.Controls.Border
+    $recB.Background=New-TintBrush 'Green' 30
+    $recB.CornerRadius=New-Object System.Windows.CornerRadius(5); $recB.Padding=New-Object System.Windows.Thickness(6,1,6,2)
+    $recB.Margin=New-Object System.Windows.Thickness(9,0,0,0); $recB.VerticalAlignment='Center'
+    $recB.ToolTip='Recomendado para ESTE equipo segun el hardware detectado (RAM, disco, GPU, red, portatil/sobremesa).'
+    $recT = New-Object System.Windows.Controls.TextBlock
+    $recT.Text='Para tu equipo'; $recT.Foreground=New-AXEBrush 'Green'; $recT.FontSize=10; $recT.FontWeight='SemiBold'
+    $recB.Child=$recT; [void]$nameRow.Children.Add($recB)
+    $recB.Visibility = if(-not $blk -and ($script:RECOMMENDED -contains $tw.Id)){'Visible'}else{'Collapsed'}
+    $script:recBadges[$tw.Id] = $recB
     # Card clickable (patron Fluent SettingsCard) + hover ANIMADO: eleva (lift) + fade de fondo + sombra.
     # NO toca BorderBrush -> no pisa el borde accent de "cambio pendiente" (Update-AXEPending).
     if(-not $blk){
