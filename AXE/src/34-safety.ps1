@@ -14,7 +14,14 @@ $script:RestorePointScript = {
     Enable-ComputerRestore -Drive 'C:\' -EA SilentlyContinue
     $rp='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
     New-ItemProperty -Path $rp -Name SystemRestorePointCreationFrequency -Value 0 -PropertyType DWord -Force | Out-Null
-    try { Checkpoint-Computer -Description $desc -RestorePointType MODIFY_SETTINGS; 'OK: punto CREADO.' }
+    try {
+        Checkpoint-Computer -Description $desc -RestorePointType MODIFY_SETTINGS
+        # §4.2 #5: CREAR *Y VERIFICAR*. Checkpoint-Computer no lanza aunque el throttle 24h
+        # o VSS silencien la creacion => confirmar que el punto realmente aterrizo.
+        $rpv = Get-ComputerRestorePoint -EA SilentlyContinue | Where-Object { $_.Description -eq $desc } | Select-Object -Last 1
+        if($rpv){ 'OK: punto CREADO Y VERIFICADO.' }
+        else { 'ERROR: Checkpoint no persistio (throttle 24h o VSS bloqueado): sin punto valido.' }
+    }
     catch { "ERROR: $($_.Exception.Message)" }
     finally { Remove-ItemProperty -Path $rp -Name SystemRestorePointCreationFrequency -EA SilentlyContinue }
 }
@@ -33,4 +40,23 @@ function New-AXERestorePoint {
     } catch {
         return [pscustomobject]@{ Status='error'; Message=$_.Exception.Message }
     }
+}
+
+function Assert-AXEVss {
+    # §4.1: garantiza VSS+swprv arrancables (demand) y VSS corriendo. Best-effort, NUNCA lanza.
+    # Sin VSS el restore point falla; el caller decide fallback (.reg/Export). Devuelve {Ok; Message}.
+    try {
+        foreach($sv in 'VSS','swprv'){ $s=Get-Service $sv -EA SilentlyContinue; if($s -and $s.StartType -eq 'Disabled'){ & sc.exe config $sv start= demand | Out-Null } }
+        Start-Service VSS -EA SilentlyContinue
+        $vss = Get-Service VSS -EA SilentlyContinue
+        if($vss -and $vss.Status -eq 'Running'){ [pscustomobject]@{ Ok=$true;  Message='VSS operativo' } }
+        else { [pscustomobject]@{ Ok=$false; Message='VSS no arranco: restore point puede fallar (usa fallback .reg/Export)' } }
+    } catch { [pscustomobject]@{ Ok=$false; Message="VSS check fallo: $($_.Exception.Message)" } }
+}
+
+function Get-AXETamperState {
+    # §4.1: estado de Tamper Protection. Para rutear tweaks de Defender por registro crudo
+    # hacia *-MpPreference (con Tamper ON, la escritura de registro no persiste). Default $false.
+    if($script:HW -and $script:HW.PSObject.Properties['IsTamperProtected']){ return [bool]$script:HW.IsTamperProtected }
+    try { return [bool](Get-MpComputerStatus -ErrorAction Stop).IsTamperProtected } catch { return $false }
 }

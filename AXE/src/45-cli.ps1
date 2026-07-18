@@ -194,6 +194,11 @@ if($SelfTest){
     }
     try { if([string]::IsNullOrWhiteSpace((Get-AXEEnvBanner))){ [void]$fails.Add('S21: Get-AXEEnvBanner vacio') } }
     catch { [void]$fails.Add("S21: Get-AXEEnvBanner lanzo: $($_.Exception.Message)") }
+    # S22: preflight de seguridad (§4.1) presente
+    $checks++
+    foreach($fn in 'Assert-AXEVss','Get-AXETamperState'){
+        if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S22: funcion '$fn' no definida") }
+    }
 
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
