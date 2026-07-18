@@ -19,7 +19,7 @@ Add-Tweak @{Id='cpu_prio';Cat='CPU';Tier=2;Reboot=$false;Name='Prioridad ventana
  Test={(Get-RV $PC 'Win32PrioritySeparation') -eq $W32PS};
  Apply={Backup-RegKey 'HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl' 'PriorityControl.reg'; Set-RD $PC 'Win32PrioritySeparation' $W32PS};
  Revert={Set-RD $PC 'Win32PrioritySeparation' 2}}
-Add-Tweak @{Id='cpu_mmcss';Cat='CPU';Tier=1;Reboot=$false;Name='Liberar CPU multimedia';Desc='SystemResponsiveness=0';Requires=@{};
+Add-Tweak @{Id='cpu_mmcss';Cat='CPU';Tier=1;Reboot=$false;Name='Liberar CPU multimedia';Desc='SystemResponsiveness=0: MS reserva un % de CPU a tareas de baja prioridad; a 0 baja al minimo real (10)';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/win32/procthread/multimedia-class-scheduler-service';SourceType='official';PlaceboLikely=$false;NotesEng='MS documents SystemResponsiveness under the SystemProfile key as the percentage of CPU guaranteed to low-priority tasks. Values not evenly divisible by 10 are rounded down, so 0 lands at the floor and frees the reservation for the foreground multimedia task. Documented mechanism.';
  Test={(Get-RV $SP 'SystemResponsiveness') -eq 0};Apply={Set-RD $SP 'SystemResponsiveness' 0};Revert={Set-RD $SP 'SystemResponsiveness' 20}}
 Add-Tweak @{Id='cpu_pthr';Cat='CPU';Tier=1;Reboot=$false;Name='Power Throttling OFF';Desc='Sin limite de frecuencia';Requires=@{AC=$true};
  Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling' 'PowerThrottlingOff') -eq 1};
@@ -63,7 +63,7 @@ Add-Tweak @{Id='lat_timerres';Cat='LATENCIA';Tier=1;Reboot=$true;Name='Timer res
 # --- GPU (Tier 1) ---
 Add-Tweak @{Id='gpu_hags';Cat='GPU';Tier=1;Reboot=$true;Name='HAGS (scheduling por hardware)';Desc='GPU gestiona su cola, menos latencia (REINICIO)';Requires=@{HAGS=$true};
  Test={(Get-RV $GD 'HwSchMode') -eq 2};Apply={Backup-RegKey 'HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'GraphicsDrivers.reg'; Set-RD $GD 'HwSchMode' 2};Revert={Del-RV $GD 'HwSchMode'}}
-Add-Tweak @{Id='gpu_mmcss';Cat='GPU';Tier=1;Reboot=$false;Name='Prioridad MMCSS juegos';Desc='GPU Priority 8 / Priority 6 / High';Requires=@{};
+Add-Tweak @{Id='gpu_mmcss';Cat='GPU';Tier=1;Reboot=$false;Name='Prioridad MMCSS juegos';Desc='Scheduling Category=High sube el hilo del juego a la banda 23-26. OJO: de los 3 valores clasicos, solo este hace algo (ver NotesEng)';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/win32/procthread/multimedia-class-scheduler-service';SourceType='official';PlaceboLikely=$false;NotesEng='Partially inert by MS design, documented on the MMCSS page: (1) "GPU Priority ... This priority is not yet used"; (2) "For tasks with a Scheduling Category of High, this value [Priority] is always treated as 2" - so Priority=6 is overridden. Only Scheduling Category=High does real work: it moves the task into the 23-26 thread-priority band. Kept at Tier 1 because that one value is a documented, real mechanism; the other two are preserved for parity with the community preset and are harmless no-ops.';
  Test={((Get-RV $Games 'GPU Priority') -eq 8) -and ((Get-RV $Games 'Priority') -eq 6) -and ((Get-RV $Games 'Scheduling Category') -eq 'High')};
  Apply={Set-RD $Games 'GPU Priority' 8;Set-RD $Games 'Priority' 6;Set-RS $Games 'Scheduling Category' 'High';Set-RS $Games 'SFIO Priority' 'High';Set-RS $Games 'Background Only' 'False'};
  Revert={Set-RD $Games 'GPU Priority' 8;Set-RD $Games 'Priority' 2;Del-RV $Games 'Scheduling Category';Del-RV $Games 'SFIO Priority';Del-RV $Games 'Background Only'}}
@@ -123,7 +123,7 @@ Add-Tweak @{Id='sys_gamebar';Cat='SISTEMA';Tier=1;Reboot=$false;Name='GameBar mi
  Revert={Set-RD 'HKCU:\Software\Microsoft\GameBar' 'ShowStartupPanel' 1; Set-RD 'HKCU:\Software\Microsoft\GameBar' 'UseNexusForGameBarEnabled' 1}}
 Add-Tweak @{Id='sys_hibernate';Cat='SISTEMA';Tier=1;Reboot=$false;Name='Hibernacion OFF';Desc='Libera hiberfil.sys (portatil pierde hibernar)';Requires=@{};
  Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabled') -eq 0};Apply={powercfg /h off};Revert={powercfg /h on}}
-Add-Tweak @{Id='sys_do';Cat='SISTEMA';Tier=0;Reboot=$false;Name='Delivery Optimization P2P OFF';Desc='No compartes updates con otros PCs';Requires=@{};
+Add-Tweak @{Id='sys_do';Cat='SISTEMA';Tier=0;Reboot=$false;Name='Delivery Optimization P2P OFF';Desc='DODownloadMode=0 (HTTP Only): no compartes updates con otros PCs, las descargas siguen funcionando';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/deployment/do/waas-delivery-optimization-reference';SourceType='official';PlaceboLikely=$false;NotesEng='MS documents mode 0 as "HTTP Only": disables peer-to-peer caching but still allows Delivery Optimization to download over HTTP from the original source or a Connected Cache server. Default is LAN (1). Note MS deprecates Bypass (100) in Win11 and explicitly says to use 0 to disable P2P - which is what this tweak does.';
  Test={(Get-RV 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode') -eq 0};   # FIX A2: policy key correcta
  Apply={Set-RD 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 0};Revert={Del-RV 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode'}}
 Add-Tweak @{Id='sys_bing';Cat='SISTEMA';Tier=0;Reboot=$false;Name='Busqueda sin Bing';Desc='Menu inicio sin resultados web';Requires=@{};
@@ -213,7 +213,7 @@ Add-Tweak @{Id='app_edge';Cat='APPS';Tier=0;Reboot=$false;Name='Telemetria Edge 
  Revert={Del-RV $EdgePol 'HubsSidebarEnabled'; Del-RV $EdgePol 'PersonalizationReportingEnabled'; Del-RV $EdgePol 'UserFeedbackAllowed'; Del-RV $EdgePol 'MetricsReportingEnabled'; Del-RV $EdgePol 'Edge3PSerpTelemetryEnabled'; Del-RV $EdgePol 'SpotlightExperiencesAndRecommendationsEnabled'; Del-RV $EdgePol 'DefaultBrowserSettingsCampaignEnabled'; Del-RV $EdgePol 'ComposeInlineEnabled'}}
 
 $FfPol = 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox'
-Add-Tweak @{Id='app_firefox';Cat='APPS';Tier=0;Reboot=$false;Name='Telemetria Firefox OFF';Desc='Telemetria + agente navegador por defecto';Requires=@{};
+Add-Tweak @{Id='app_firefox';Cat='APPS';Tier=0;Reboot=$false;Name='Telemetria Firefox OFF';Desc='DisableTelemetry + DisableDefaultBrowserAgent por politica de empresa';Requires=@{};Source='https://mozilla.github.io/policy-templates/';SourceType='official';PlaceboLikely=$false;NotesEng='Mozilla policy templates (official) document both keys under Software\Policies\Mozilla\Firefox as REG_DWORD 0x1/0x0. Path and value type verified to match this tweak exactly.';
  Test={(Get-RV $FfPol 'DisableTelemetry') -eq 1};
  Apply={Set-RD $FfPol 'DisableTelemetry' 1; Set-RD $FfPol 'DisableDefaultBrowserAgent' 1};
  Revert={Del-RV $FfPol 'DisableTelemetry'; Del-RV $FfPol 'DisableDefaultBrowserAgent'}}

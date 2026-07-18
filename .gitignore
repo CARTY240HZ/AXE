@@ -14,5 +14,15 @@
 # Directorio de datos legacy pre-rebrand (migrado a AXE/ en runtime; si queda huérfano, ignorar)
 **/LWSuite/
 
+# Datos de runtime cuando el motor se ejecuta FUERA de la raiz: 05-core deriva AXERoot
+# del script, asi que correr dist/AXE.ps1 crea dist/AXE/ y los tests crean src/AXE/.
+# Es estado mutable (logs + tweak_state.json), no fuente.
+AXE/dist/AXE/
+AXE/src/AXE/
+
+# Renders del harness GUI (AXE_GUITEST / AXE_GUISHOW): artefactos de test
+AXE/dist/axe_render.png
+AXE/dist/axe_shown.png
+
 # Artefactos de test side-effect del rewrite v6 abandonado (directorio ya no existe)
 LWSuite-v6/

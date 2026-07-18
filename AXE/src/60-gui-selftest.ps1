@@ -132,6 +132,15 @@ if($env:AXE_GUITEST -eq '1'){
         if(-not $logoOk){ $allOk=$false }
     } catch { Write-Host "Logo AXE          : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
 
+    # regresion 3.3: el header muestra el banner de ecosistema, y es EL MISMO texto que
+    # imprime la CLI (-List "ECO:"). Si alguien duplica la logica en la GUI, esto lo caza.
+    try {
+        $bannerTxt = $EnvBannerLbl.Text
+        $bannerOk  = $bannerTxt -and ($bannerTxt -eq (Get-AXEEnvBanner)) -and ($bannerTxt -match 'aplicables')
+        Write-Host ("Banner ecosistema : '{0}' coincide con CLI={1} (esperado True)" -f $bannerTxt,$bannerOk)
+        if(-not $bannerOk){ $allOk=$false }
+    } catch { Write-Host "Banner ecosistema : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
+
     # render PNG
     try {
         $W=1200;$H=840

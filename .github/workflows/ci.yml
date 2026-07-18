@@ -55,3 +55,32 @@ jobs:
           name: AXE-dist
           path: AXE/dist/AXE.ps1
           if-no-files-found: warn
+
+  # Integracion contra Windows REAL (el runner windows-latest es una maquina desechable).
+  # Ejercita lo que el job unit NO puede: Get-AXEHardware sobre CIM real, los Test del
+  # catalogo contra el registro/servicios de verdad, y el round-trip Apply -> Test ->
+  # Restore-TweakState (motor de snapshot H3) sobre una whitelist solo-HKCU.
+  # AXE_INTEGRATION=1 habilita el bloque que muta: NUNCA se activa fuera de CI.
+  integration:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser -ErrorAction Stop
+
+      - name: Pester (integration, Windows real)
+        shell: pwsh
+        env:
+          AXE_INTEGRATION: '1'
+        run: |
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = 'AXE/tests'
+          $cfg.Filter.Tag = 'integration'
+          $cfg.Run.Exit = $true
+          $cfg.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $cfg
