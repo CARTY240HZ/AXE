@@ -62,6 +62,13 @@ function Get-AXEHardware {
     # ausente => tratamos como no-soportado (ocultar), nunca falso-positivo que aplique HAGS en HW incompatible.
     $supportsHAGS = $false
     try { $supportsHAGS = ($null -ne (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name HwSchMode -ErrorAction Stop).HwSchMode) } catch {}
+    # SSD del disco de sistema (§3.3 banner). NVMe suele reportar MediaType 'Unspecified' => fallback BusType.
+    $isSSD = $false
+    try {
+        $osDiskNum = (Get-Partition -DriveLetter ($env:SystemDrive.TrimEnd(':')) -ErrorAction Stop).DiskNumber
+        $osPhys = Get-PhysicalDisk -ErrorAction Stop | Where-Object { $_.DeviceId -eq "$osDiskNum" }
+        if($osPhys){ $isSSD = ($osPhys.MediaType -eq 'SSD') -or ($osPhys.BusType -eq 'NVMe') }
+    } catch {}
     [pscustomobject]@{
         CpuName=$cpu.Name; Cores=$cpu.NumberOfCores; Threads=$cpu.NumberOfLogicalProcessors
         IsLaptop=$isLaptop; IsHybrid=$isHybrid; HasNvidia=$hasNvidia
@@ -71,7 +78,7 @@ function Get-AXEHardware {
         RamGB=[math]::Round($os.TotalVisibleMemorySize/1MB,1)
         CpuArch=$cpuArch; CpuVendor=$cpuVendor
         HasDefender=$hasDefender; IsTamperProtected=$isTamper
-        IsSMode=$isSMode; SupportsHAGS=$supportsHAGS
+        IsSMode=$isSMode; SupportsHAGS=$supportsHAGS; IsSSD=$isSSD
     }
 }
 

@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-17 23:56:23Z
+# Build UTC: 2026-07-18 10:50:49Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 32-measure.ps1, 34-safety.ps1, 36-report.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -108,6 +108,13 @@ function Get-AXEHardware {
     # ausente => tratamos como no-soportado (ocultar), nunca falso-positivo que aplique HAGS en HW incompatible.
     $supportsHAGS = $false
     try { $supportsHAGS = ($null -ne (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name HwSchMode -ErrorAction Stop).HwSchMode) } catch {}
+    # SSD del disco de sistema (§3.3 banner). NVMe suele reportar MediaType 'Unspecified' => fallback BusType.
+    $isSSD = $false
+    try {
+        $osDiskNum = (Get-Partition -DriveLetter ($env:SystemDrive.TrimEnd(':')) -ErrorAction Stop).DiskNumber
+        $osPhys = Get-PhysicalDisk -ErrorAction Stop | Where-Object { $_.DeviceId -eq "$osDiskNum" }
+        if($osPhys){ $isSSD = ($osPhys.MediaType -eq 'SSD') -or ($osPhys.BusType -eq 'NVMe') }
+    } catch {}
     [pscustomobject]@{
         CpuName=$cpu.Name; Cores=$cpu.NumberOfCores; Threads=$cpu.NumberOfLogicalProcessors
         IsLaptop=$isLaptop; IsHybrid=$isHybrid; HasNvidia=$hasNvidia
@@ -117,7 +124,7 @@ function Get-AXEHardware {
         RamGB=[math]::Round($os.TotalVisibleMemorySize/1MB,1)
         CpuArch=$cpuArch; CpuVendor=$cpuVendor
         HasDefender=$hasDefender; IsTamperProtected=$isTamper
-        IsSMode=$isSMode; SupportsHAGS=$supportsHAGS
+        IsSMode=$isSMode; SupportsHAGS=$supportsHAGS; IsSSD=$isSSD
     }
 }
 
@@ -682,6 +689,26 @@ function Get-BlockReason($tw){
     if($r.Defender -and -not $script:HW.HasDefender){ return "AV de terceros / Defender inactivo: ajuste omitido" }
     if($r.NotSMode -and $script:HW.IsSMode){ return "Windows S mode: no permite el cambio" }
     return $null
+}
+
+# §3.2: azucar booleano - un tweak se MUESTRA solo si aplica al ecosistema.
+function Test-AXEEnvApplies($tw){ -not (Get-BlockReason $tw) }
+
+# §3.3: banner de ecosistema (GUI header + CLI). Hace explicito POR QUE se ve lo que se ve.
+function Get-AXEEnvBanner {
+    if(-not $script:HW){ return 'HW no detectado (arranque)' }
+    $h = $script:HW
+    $applic = 0; $hidden = 0
+    foreach($tw in $script:CAT){ if(Get-BlockReason $tw){ $hidden++ } else { $applic++ } }
+    $ver  = if($h.IsWin11){ 'Win11' } else { 'Win10' }
+    $sku  = if($h.IsHome){ 'Home' } else { 'Pro/Ent' }
+    $hyb  = if($h.IsHybrid){ 'hibrida' } else { 'clasica' }
+    $gpu  = if($h.HasNvidia){ 'NVIDIA' } else { 'no-NVIDIA' }
+    $ssd  = if($h.IsSSD){ 'SSD' } else { 'HDD/otro' }
+    $net  = if($h.IsWifi){ 'Wi-Fi' } else { 'Ethernet' }
+    $def  = if($h.HasDefender){ if($h.IsTamperProtected){ 'Defender+Tamper' } else { 'Defender' } } else { 'AV 3ros' }
+    "{0} {1} - {2} - {3} - {4} - {5}GB - {6} - {7} - {8} - {9} - {10} aplicables / {11} ocultos" -f `
+        $ver,$h.BuildNumber,$sku,$h.CpuArch,$hyb,$h.RamGB,$gpu,$ssd,$net,$def,$applic,$hidden
 }
 
 
@@ -1510,6 +1537,13 @@ if($SelfTest){
     foreach($id in 'def_cpulimit','def_scanidle'){
         if(-not ($script:CAT | Where-Object Id -eq $id)){ [void]$fails.Add("S20: tweak Defender '$id' no en catalogo") }
     }
+    # S21: banner de ecosistema (§3.3) + azucar de gating (§3.2) presentes y no lanzan
+    $checks++
+    foreach($fn in 'Get-AXEEnvBanner','Test-AXEEnvApplies'){
+        if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S21: funcion '$fn' no definida") }
+    }
+    try { if([string]::IsNullOrWhiteSpace((Get-AXEEnvBanner))){ [void]$fails.Add('S21: Get-AXEEnvBanner vacio') } }
+    catch { [void]$fails.Add("S21: Get-AXEEnvBanner lanzo: $($_.Exception.Message)") }
 
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
@@ -1526,6 +1560,7 @@ if($SelfTest){
 if($List){
     Write-Host "== AXE $($script:AXEVersion) =="
     if($script:HW){ Write-Host "HW: $($script:HW.CpuName) | Laptop=$($script:HW.IsLaptop) Hybrid=$($script:HW.IsHybrid) Nvidia=$($script:HW.HasNvidia) Wifi=$($script:HW.IsWifi) AC=$(-not $script:HW.OnBattery)" }
+    if($script:HW){ Write-Host ("ECO: " + (Get-AXEEnvBanner)) }
     Write-Host ""
     foreach($tw in $script:CAT){
         $blk = Get-BlockReason $tw

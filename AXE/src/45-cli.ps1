@@ -187,6 +187,13 @@ if($SelfTest){
     foreach($id in 'def_cpulimit','def_scanidle'){
         if(-not ($script:CAT | Where-Object Id -eq $id)){ [void]$fails.Add("S20: tweak Defender '$id' no en catalogo") }
     }
+    # S21: banner de ecosistema (§3.3) + azucar de gating (§3.2) presentes y no lanzan
+    $checks++
+    foreach($fn in 'Get-AXEEnvBanner','Test-AXEEnvApplies'){
+        if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S21: funcion '$fn' no definida") }
+    }
+    try { if([string]::IsNullOrWhiteSpace((Get-AXEEnvBanner))){ [void]$fails.Add('S21: Get-AXEEnvBanner vacio') } }
+    catch { [void]$fails.Add("S21: Get-AXEEnvBanner lanzo: $($_.Exception.Message)") }
 
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
@@ -203,6 +210,7 @@ if($SelfTest){
 if($List){
     Write-Host "== AXE $($script:AXEVersion) =="
     if($script:HW){ Write-Host "HW: $($script:HW.CpuName) | Laptop=$($script:HW.IsLaptop) Hybrid=$($script:HW.IsHybrid) Nvidia=$($script:HW.HasNvidia) Wifi=$($script:HW.IsWifi) AC=$(-not $script:HW.OnBattery)" }
+    if($script:HW){ Write-Host ("ECO: " + (Get-AXEEnvBanner)) }
     Write-Host ""
     foreach($tw in $script:CAT){
         $blk = Get-BlockReason $tw

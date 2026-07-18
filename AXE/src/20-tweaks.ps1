@@ -334,3 +334,23 @@ function Get-BlockReason($tw){
     return $null
 }
 
+# §3.2: azucar booleano - un tweak se MUESTRA solo si aplica al ecosistema.
+function Test-AXEEnvApplies($tw){ -not (Get-BlockReason $tw) }
+
+# §3.3: banner de ecosistema (GUI header + CLI). Hace explicito POR QUE se ve lo que se ve.
+function Get-AXEEnvBanner {
+    if(-not $script:HW){ return 'HW no detectado (arranque)' }
+    $h = $script:HW
+    $applic = 0; $hidden = 0
+    foreach($tw in $script:CAT){ if(Get-BlockReason $tw){ $hidden++ } else { $applic++ } }
+    $ver  = if($h.IsWin11){ 'Win11' } else { 'Win10' }
+    $sku  = if($h.IsHome){ 'Home' } else { 'Pro/Ent' }
+    $hyb  = if($h.IsHybrid){ 'hibrida' } else { 'clasica' }
+    $gpu  = if($h.HasNvidia){ 'NVIDIA' } else { 'no-NVIDIA' }
+    $ssd  = if($h.IsSSD){ 'SSD' } else { 'HDD/otro' }
+    $net  = if($h.IsWifi){ 'Wi-Fi' } else { 'Ethernet' }
+    $def  = if($h.HasDefender){ if($h.IsTamperProtected){ 'Defender+Tamper' } else { 'Defender' } } else { 'AV 3ros' }
+    "{0} {1} - {2} - {3} - {4} - {5}GB - {6} - {7} - {8} - {9} - {10} aplicables / {11} ocultos" -f `
+        $ver,$h.BuildNumber,$sku,$h.CpuArch,$hyb,$h.RamGB,$gpu,$ssd,$net,$def,$applic,$hidden
+}
+
