@@ -318,7 +318,14 @@ $xaml = @'
           </Viewbox>
           <TextBlock x:Name="VerLbl" Text="v6" FontSize="12" Foreground="{StaticResource Muted}" Margin="7,4,0,0" VerticalAlignment="Center"/>
         </StackPanel>
-        <StackPanel x:Name="HwChips" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,18,0"/>
+        <StackPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,18,0">
+          <StackPanel x:Name="HwChips" Orientation="Horizontal" HorizontalAlignment="Right"/>
+          <!-- 3.3: banner de ecosistema. Hace explicito POR QUE se ve lo que se ve (cuantos
+               tweaks aplican a esta maquina y cuantos estan ocultos por gating). -->
+          <TextBlock x:Name="EnvBannerLbl" Text="HW no detectado (arranque)" FontSize="10"
+                     Foreground="{StaticResource Muted}" HorizontalAlignment="Right"
+                     Margin="0,5,2,0" TextTrimming="CharacterEllipsis"/>
+        </StackPanel>
         <Border Grid.Column="2" Background="{StaticResource Surface2}" CornerRadius="8" Padding="14,8" VerticalAlignment="Center" MinWidth="172">
           <StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
@@ -435,6 +442,7 @@ $ContentHost  = $win.FindName('ContentHost')
 $ContentTitle = $win.FindName('ContentTitle')
 $SearchBox    = $win.FindName('SearchBox')
 $HwChips      = $win.FindName('HwChips')
+$EnvBannerLbl = $win.FindName('EnvBannerLbl')
 $LogoBox      = $win.FindName('LogoBox')
 $LogoCanvas   = $win.FindName('LogoCanvas')
 $CountLbl     = $win.FindName('CountLbl')

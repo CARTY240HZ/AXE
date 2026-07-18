@@ -22,6 +22,11 @@ function Build-HwChips {
     [void]$HwChips.Children.Add((New-Chip ([char]0xE7F4) ($(if($script:HW.IsLaptop){'Portatil'}else{'Desktop'}))))
     [void]$HwChips.Children.Add((New-Chip ([char]0xE701) ($(if($script:HW.IsWifi){'Wi-Fi'}else{'Ethernet'}))))
     [void]$HwChips.Children.Add((New-Chip ([char]0xE83E) ($(if($script:HW.OnBattery){'Bateria'}else{'AC'}))))
+    # 3.3: mismo banner que imprime la CLI (-List "ECO:"). Fuente unica: Get-AXEEnvBanner.
+    if($EnvBannerLbl){
+        $EnvBannerLbl.Text = Get-AXEEnvBanner
+        $EnvBannerLbl.ToolTip = 'Ecosistema detectado: define que tweaks aplican a esta maquina y cuantos quedan ocultos por gating (3.2).'
+    }
 }
 if($script:HW){ Build-HwChips }   # headless/GUISHOW con HW ya cargado
 
