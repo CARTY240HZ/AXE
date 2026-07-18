@@ -1,0 +1,57 @@
+name: AXE CI
+
+on:
+  push:
+    branches: [ axe ]
+  pull_request:
+    branches: [ axe ]
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer + Pester
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser -ErrorAction Stop
+
+      - name: ScriptAnalyzer (Error gate)
+        shell: pwsh
+        run: |
+          $r = Invoke-ScriptAnalyzer -Path AXE/src -Recurse -Severity Error
+          if ($r) { $r | Format-Table RuleName,ScriptName,Line,Message -Auto; throw "ScriptAnalyzer: $($r.Count) errores" }
+          Write-Host "ScriptAnalyzer: 0 errores"
+
+      - name: Build (concat src -> dist)
+        shell: pwsh
+        run: ./AXE/build.ps1
+
+      - name: SelfTest (schema + coherencia, CLI headless)
+        shell: pwsh
+        run: |
+          # -SelfTest sale del bloque CLI antes del assert de admin (no requiere elevacion)
+          & pwsh -NoProfile -File AXE/dist/AXE.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { throw "SelfTest fallo (exit $LASTEXITCODE)" }
+
+      - name: Pester (unit, excluye integration)
+        shell: pwsh
+        run: |
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = 'AXE/tests'
+          $cfg.Filter.ExcludeTag = 'integration'
+          $cfg.Run.Exit = $true
+          $cfg.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $cfg
+
+      - name: Artifact dist/AXE.ps1
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AXE-dist
+          path: AXE/dist/AXE.ps1
+          if-no-files-found: warn
