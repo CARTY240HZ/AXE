@@ -230,7 +230,19 @@ if($env:AXE_GUITEST -eq '1'){
         $pngPath=Join-Path $env:AXE_GUITEST_PNG_DIR 'axe_render.png'
         $fs=[System.IO.File]::Create($pngPath); $enc.Save($fs); $fs.Close()
         Write-Host "Render PNG        : $pngPath"
-    } catch { Write-Host "Render PNG        : FALLO -> $($_.Exception.Message)" }
+    } catch {
+        # El volcado del PNG es un ARTEFACTO, no una asercion: que no se pueda escribir no dice
+        # nada sobre si la GUI esta bien, asi que no tumba el gate (y esta bien que no lo haga).
+        # Pero antes imprimia "FALLO" igualmente y el harness remataba con "LAYOUT OK": un fallo
+        # que no era fallo, ruido que entrena a ignorar la palabra FALLO en la salida.
+        #   Sin AXE_GUITEST_PNG_DIR (ejecucion manual del harness) ni siquiera es un problema: es
+        # que no se pidio el volcado. build.ps1 si define la variable.
+        if([string]::IsNullOrWhiteSpace($env:AXE_GUITEST_PNG_DIR)){
+            Write-Host "Render PNG        : omitido (AXE_GUITEST_PNG_DIR no definida; no es un fallo)"
+        } else {
+            Write-Host "Render PNG        : no se pudo escribir -> $($_.Exception.Message)  (artefacto, no tumba el gate)"
+        }
+    }
     if($allOk){ Write-Host "RESULTADO: LAYOUT OK"; exit 0 } else { Write-Host "RESULTADO: LAYOUT FALLO"; exit 1 }
 }
 

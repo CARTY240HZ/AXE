@@ -122,8 +122,8 @@ function Get-AXETimerResolution {
         # comportamiento global. Por eso se leen juntos: puntuar CurrentMs a secas castiga
         # maquinas bien configuradas solo porque en ese segundo nadie pedia 0.5ms.
         # Ref: https://learn.microsoft.com/en-us/windows/win32/api/timeapi/nf-timeapi-timebeginperiod
-        #   OJO: el aviso de Measure-AXETimerSweep usa 22000 (Win11) para lo mismo. El corte
-        #   real es 19041; los builds 19041-19045 tambien aislan y ese aviso no los cubre.
+        #   Measure-AXETimerSweep usa este MISMO corte para su aviso. Uso 22000 (Win11) hasta
+        #   2026-07-19, con lo que los builds 19041-19045 aislaban y no recibian el aviso.
         $isolated = ([Environment]::OSVersion.Version.Build -ge 19041)
         $gtrr = $null
         try {
@@ -296,12 +296,16 @@ function Measure-AXETimerSweep {
     }
     if($StepMs -le 0 -or $EndMs -lt $StartMs){ Write-AXELog 'Barrido: rango invalido.' 'ERR'; return $null }
 
-    # Aviso honesto: en Win11 2004+ el request es por-proceso salvo que este el flag global.
-    # Sin el, el optimo que encontremos vale para AXE, NO para el juego.
+    # Aviso honesto: desde Windows 10 2004 el request es por-proceso salvo que este el flag
+    # global. Sin el, el optimo que encontremos vale para AXE, NO para el juego.
+    #   El corte es 19041 (Win10 2004), no 22000 (Win11). Con 22000, los builds 19041-19045
+    # aislaban igual y NO recibian el aviso: justo las maquinas que mas lo necesitan, porque en
+    # Win10 nadie espera este comportamiento. Mismo umbral que Get-AXETimerResolution, que ya lo
+    # tenia bien; que los dos sitios usaran cortes distintos era la incoherencia de fondo.
     try {
-        if([Environment]::OSVersion.Version.Build -ge 22000 -and
+        if([Environment]::OSVersion.Version.Build -ge 19041 -and
            (Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'GlobalTimerResolutionRequests') -ne 1){
-            Write-AXELog 'Win11 sin GlobalTimerResolutionRequests=1: el optimo medido aplica solo a este proceso. Activa lat_timerres y reinicia para que valga a nivel sistema.' 'WARN'
+            Write-AXELog 'Sin GlobalTimerResolutionRequests=1 (Win10 2004+): el optimo medido aplica solo a este proceso. Activa lat_timerres y reinicia para que valga a nivel sistema.' 'WARN'
         }
     } catch {}
 
