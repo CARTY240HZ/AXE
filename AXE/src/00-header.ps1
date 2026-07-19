@@ -17,6 +17,8 @@
 #   -GameList     Preferencia de GPU por juego, tal como esta ahora
 #   -OptimizeGame <ruta.exe> [-NoFSO]  dGPU + flip model en ESE ejecutable
 #   -RevertGame   <ruta.exe>           Deshace lo anterior al estado capturado
+#   -Fps <proceso> [-FpsSeconds N]     Mide FPS reales con PresentMon (1% low incluido)
+#   -Fps <proceso> -FpsCompare         Antes/despues con veredicto honesto (ruido o no)
 #   (sin args)    GUI (requiere admin via el launcher .bat)
 # =====================================================
 
@@ -37,7 +39,12 @@ param(
     [switch]$GameList,
     [string]$OptimizeGame,
     [string]$RevertGame,
-    [switch]$NoFSO
+    [switch]$NoFSO,
+    # Nombres verificados contra el resto de src/ antes de anadirlos: ver la nota de $GameList
+    # sobre la colision con el $Games de 20-tweaks.ps1, y el check S24 que la caza.
+    [string]$Fps,
+    [int]$FpsSeconds = 20,
+    [switch]$FpsCompare
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
