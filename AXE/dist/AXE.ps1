@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-19 15:28:14Z
+# Build UTC: 2026-07-19 15:39:59Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 36-report.ps1, 38-regedit.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -3541,6 +3541,10 @@ $script:glyphs = @{
     'MEMORIA'=[char]0xE964; 'SISTEMA'=[char]0xE770; 'RENDIMIENTO'=[char]0xE9D9; 'SERVICIOS'=[char]0xE90F;
     'PRIVACIDAD'=[char]0xE72E; 'APPS'=[char]0xE71D; 'EXTREMO'=[char]0xE7BA;
     'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2; 'REGISTRO'=[char]0xE71D
+    # FPS: E7F8 (Speed). Distinto del E9D2 de MEDICION a posta: aquel mide latencia/timer del
+    # sistema, este sube y mide FPS de un juego. El mismo icono en los dos los confundiria en la
+    # barra lateral, que es donde se elige sin leer.
+    'FPS'=[char]0xE7F8
 }
 # Sombra suave compartida (solo se aplica en hover -> 1 card a la vez, sin coste en reposo)
 $script:cardShadow = New-Object System.Windows.Media.Effects.DropShadowEffect
@@ -4330,7 +4334,7 @@ function Switch-View($catName){
     foreach($v in $script:views.Values){ $v.Visibility='Collapsed' }
     $ContentTitle.Text=$catName; $script:activeCat=$catName
     if($catName -in $script:actionCats){
-        $ContentSub.Text = switch($catName){ 'MEDICION'{'Mide latencia/timer y calcula el AXE Score'} 'REGISTRO'{'Que claves toca el catalogo (solo lectura)'} 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
+        $ContentSub.Text = switch($catName){ 'FPS'{'Sube FPS por juego (GPU dedicada + flip model) y mide si es real'} 'MEDICION'{'Mide latencia/timer y calcula el AXE Score'} 'REGISTRO'{'Que claves toca el catalogo (solo lectura)'} 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
         if(-not $script:views.ContainsKey($catName)){ Build-ActionView $catName | Out-Null }
         $script:views[$catName].Visibility='Visible'; Start-AXEFade $script:views[$catName]; return
     }
@@ -4896,6 +4900,18 @@ if($env:AXE_GUITEST -eq '1'){
         Write-Host "Pestana FPS       : vista=$fpsTabOk salida=$fpsUiOk funciones=$fpsFnOk (esperado True/True/True)"
         if(-not ($fpsTabOk -and $fpsUiOk -and $fpsFnOk)){ $allOk=$false }
     } catch { Write-Host "Pestana FPS       : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
+    # regresion ICONO+SUBTITULO por categoria. Anadir una pestana son TRES sitios: actionCats
+    # (52-gui-build), el glyph de $script:glyphs y la rama del subtitulo en Switch-View
+    # (57-gui-handlers). FPS se anadio con el primero y sin los otros dos: la pestana salia
+    # funcionando pero sin icono en la barra lateral y sin subtitulo en la cabecera, y el gate
+    # daba LAYOUT OK igual. Este check cubre la clase entera, no el caso de FPS.
+    try {
+        $sinIcono = @($script:actionCats | Where-Object { -not $script:glyphs.ContainsKey($_) })
+        $sinSub   = @(foreach($c in $script:actionCats){ Switch-View $c; if([string]::IsNullOrWhiteSpace($ContentSub.Text)){ $c } })
+        Write-Host "Iconos/subtitulos : sin icono=$($sinIcono.Count) sin subtitulo=$($sinSub.Count) (esperado 0/0)"
+        if($sinIcono.Count -gt 0){ Write-Host "  FAIL: categorias sin glyph -> $($sinIcono -join ', ')"; $allOk=$false }
+        if($sinSub.Count   -gt 0){ Write-Host "  FAIL: categorias sin subtitulo -> $($sinSub -join ', ')"; $allOk=$false }
+    } catch { Write-Host "Iconos/subtitulos : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: ejercer handler ASISTENTE (bug de scope $out/$doAsk null)
     try {
         $before=$script:aiOut.Text.Length
