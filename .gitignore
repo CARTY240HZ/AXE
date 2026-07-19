@@ -26,3 +26,12 @@ AXE/dist/axe_shown.png
 
 # Artefactos de test side-effect del rewrite v6 abandonado (directorio ya no existe)
 LWSuite-v6/
+
+# Ficheros locales del equipo, no fuente del proyecto:
+#   winutil.exe  - binario de terceros (WinUtil), descargado para comparar. No es nuestro, no se
+#                  redistribuye y no tiene por que viajar en el repo.
+#   .zcode/      - metadata de herramienta local.
+# Ya estaban sin trackear (0 commits los tocan); esto solo evita que salgan como '??' en cada
+# git status y que acaben dentro por un 'git add .' distraido.
+winutil.exe
+.zcode/
