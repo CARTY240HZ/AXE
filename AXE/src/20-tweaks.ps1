@@ -26,8 +26,26 @@ Add-Tweak @{Id='cpu_pthr';Cat='CPU';Tier=1;Reboot=$false;Name='Power Throttling 
  Apply={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling' 'PowerThrottlingOff' 1};Revert={Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling' 'PowerThrottlingOff'}}
 Add-Tweak @{Id='cpu_park';Cat='CPU';Tier=1;Reboot=$false;Name='Core Parking OFF';Desc='Nucleos siempre activos';Requires=@{Desktop=$true;NotHybrid=$true};
  Test={ $g=((Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'ActivePowerScheme') -replace '[{}]',''); (Get-RV "HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$g\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583" 'ACSettingIndex') -eq 100 };
- Apply={powercfg -setacvalueindex scheme_current sub_processor 0cc5b647-c1df-4637-891a-dec35c318583 100; powercfg -setactive scheme_current};
- Revert={powercfg -setacvalueindex scheme_current sub_processor 0cc5b647-c1df-4637-891a-dec35c318583 0; powercfg -setactive scheme_current}}
+ Apply={
+   # Captura el minimo de nucleos previo. Igual que rend_ultperf, usa powercfg => sin snapshot,
+   # asi que el Revert es el UNICO camino de vuelta. Antes escribia 0 hardcodeado, que no es un
+   # restore sino una conjetura del default: Windows OCULTA este ajuste en 'powercfg -q' salvo
+   # que se desbloquee su atributo, asi que ni comprobando a mano se sabe cual era.
+   $sg=((Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'ActivePowerScheme') -replace '[{}]','')
+   $cur=(Get-RV "HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$sg\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583" 'ACSettingIndex')
+   if($null -ne $cur -and $null -eq (Get-RV 'HKCU:\Software\AXE' 'ParkMinCoresPrev')){ Set-RD 'HKCU:\Software\AXE' 'ParkMinCoresPrev' $cur }
+   powercfg -setacvalueindex scheme_current sub_processor 0cc5b647-c1df-4637-891a-dec35c318583 100; powercfg -setactive scheme_current};
+ Revert={
+   $p=(Get-RV 'HKCU:\Software\AXE' 'ParkMinCoresPrev')
+   if($null -eq $p){
+       # No se capturo (aplicado por una version anterior). NO se inventa un default: escribir 0
+       # como antes dejaba el equipo en un estado que quiza nunca tuvo, y encima presentado como
+       # "revertido". Mejor no tocar y decirlo.
+       Write-AXELog 'cpu_park: no hay valor previo guardado, no revierto (escribir un default supuesto seria peor). Ajusta Core Parking a mano si lo necesitas.' 'WARN'
+   } else {
+       powercfg -setacvalueindex scheme_current sub_processor 0cc5b647-c1df-4637-891a-dec35c318583 $p; powercfg -setactive scheme_current
+       Del-RV 'HKCU:\Software\AXE' 'ParkMinCoresPrev'
+   }}}
 Add-Tweak @{Id='cpu_fth';Cat='CPU';Tier=1;Reboot=$false;Name='FTH OFF (micro-tirones)';Desc='Desactiva Fault Tolerant Heap';Requires=@{};
  Test={(Get-RV 'HKLM:\SOFTWARE\Microsoft\FTH' 'Enabled') -eq 0};Apply={Set-RD 'HKLM:\SOFTWARE\Microsoft\FTH' 'Enabled' 0};Revert={Set-RD 'HKLM:\SOFTWARE\Microsoft\FTH' 'Enabled' 1}}
 Add-Tweak @{Id='cpu_dyntick';Cat='CPU';Tier=1;Reboot=$true;Name='Dynamic Tick OFF';Desc='Timer constante, menos jitter (REINICIO)';Requires=@{};
@@ -66,7 +84,20 @@ Add-Tweak @{Id='gpu_hags';Cat='GPU';Tier=1;Reboot=$true;Name='HAGS (scheduling p
 Add-Tweak @{Id='gpu_mmcss';Cat='GPU';Tier=1;Reboot=$false;Name='Prioridad MMCSS juegos';Desc='Scheduling Category=High sube el hilo del juego a la banda 23-26. OJO: de los 3 valores clasicos, solo este hace algo (ver NotesEng)';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/win32/procthread/multimedia-class-scheduler-service';SourceType='official';PlaceboLikely=$false;NotesEng='Partially inert by MS design, documented on the MMCSS page: (1) "GPU Priority ... This priority is not yet used"; (2) "For tasks with a Scheduling Category of High, this value [Priority] is always treated as 2" - so Priority=6 is overridden. Only Scheduling Category=High does real work: it moves the task into the 23-26 thread-priority band. Kept at Tier 1 because that one value is a documented, real mechanism; the other two are preserved for parity with the community preset and are harmless no-ops.';
  Test={((Get-RV $Games 'GPU Priority') -eq 8) -and ((Get-RV $Games 'Priority') -eq 6) -and ((Get-RV $Games 'Scheduling Category') -eq 'High')};
  Apply={Set-RD $Games 'GPU Priority' 8;Set-RD $Games 'Priority' 6;Set-RS $Games 'Scheduling Category' 'High';Set-RS $Games 'SFIO Priority' 'High';Set-RS $Games 'Background Only' 'False'};
- Revert={Set-RD $Games 'GPU Priority' 8;Set-RD $Games 'Priority' 2;Del-RV $Games 'Scheduling Category';Del-RV $Games 'SFIO Priority';Del-RV $Games 'Background Only'}}
+ # OJO: este Revert es solo el FALLBACK. La via normal es Restore-TweakState, que devuelve los
+ # valores REALES capturados por Set-RD/Set-RS al aplicar (10-reg-helpers). Aqui se llega unicamente
+ # si no hay snapshot: tweak aplicado por una version anterior de AXE, o a mano fuera de AXE.
+ #   Antes este fallback BORRABA 'Scheduling Category', 'SFIO Priority' y 'Background Only'. La
+ # tarea Games de Windows trae esos valores de fabrica (verificado en el registro: Affinity,
+ # Background Only, Clock Rate, GPU Priority, Priority, Scheduling Category, SFIO Priority), asi
+ # que borrarlos no restaura nada: deja la tarea sin claves que el sistema espera encontrar.
+ #   Se restaura solo 'Priority'=2, que es el valor que MS documenta para esta tarea. Los otros
+ # tres NO se tocan: sus valores de fabrica no estan registrados en ningun sitio y escribir una
+ # suposicion es justo el fallo que se esta corrigiendo. Se avisa para que no parezca completo.
+ #   'GPU Priority' ya no se reescribe: Apply lo deja en 8, que es lo que ya valia.
+ Revert={
+   Set-RD $Games 'Priority' 2
+   Write-AXELog "gpu_mmcss: revertido parcial (sin snapshot). 'Priority' restaurado a 2; 'Scheduling Category', 'SFIO Priority' y 'Background Only' quedan como estan porque no se capturo su valor original." 'WARN'}}
 Add-Tweak @{Id='gpu_ulps';Cat='GPU';Tier=1;Reboot=$true;Name='NVIDIA ULPS OFF';Desc='GPU no entra en bajo consumo profundo (REINICIO)';Requires=@{Nvidia=$true};
  Test={ $k='HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'; $sub=Get-ChildItem $k -EA SilentlyContinue | Where-Object { (Get-RV $_.PSPath 'DriverDesc') -match 'NVIDIA' }; if(-not $sub){return $true}; $ok=$true; foreach($s in $sub){ if((Get-RV $s.PSPath 'EnableUlps') -ne 0){$ok=$false} }; $ok };
  Apply={ $k='HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'; Get-ChildItem $k -EA SilentlyContinue | Where-Object { (Get-RV $_.PSPath 'DriverDesc') -match 'NVIDIA' } | ForEach-Object { Set-RD $_.PSPath 'EnableUlps' 0 } };
@@ -156,8 +187,30 @@ Add-Tweak @{Id='rend_prefetch';Cat='RENDIMIENTO';Tier=2;Reboot=$true;Name='Prefe
  Revert={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters' 'EnablePrefetcher' 3; Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters' 'EnableSuperfetch' 3}}
 Add-Tweak @{Id='rend_ultperf';Cat='RENDIMIENTO';Tier=1;Reboot=$false;Name='Plan energia Ultimate Performance';Desc='Evita downclock de CPU en idle. OJO: mas consumo/calor (mejor en sobremesa/enchufado)';Requires=@{};
  Test={$g=(Get-RV 'HKCU:\Software\AXE' 'UltPerfGuid'); if(-not $g){$false}else{[bool]((powercfg /getactivescheme) -match [regex]::Escape($g))}};
- Apply={$g=(Get-RV 'HKCU:\Software\AXE' 'UltPerfGuid'); if(-not $g){ $o=(powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>&1 | Out-String); $g=[regex]::Match($o,'[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}').Value; if(-not $g){$g='e9a42b02-d5df-448d-aa00-03f14749eb61'}; Set-RS 'HKCU:\Software\AXE' 'UltPerfGuid' $g }; powercfg /setactive $g | Out-Null};
- Revert={$g=(Get-RV 'HKCU:\Software\AXE' 'UltPerfGuid'); powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e | Out-Null; if($g){ powercfg -delete $g 2>$null | Out-Null; Del-RV 'HKCU:\Software\AXE' 'UltPerfGuid' }}}
+ Apply={
+   # Captura el plan ACTIVO antes de cambiarlo. Este tweak usa powercfg, luego Test-SnapEligible
+   # lo excluye del snapshot: sin esta captura no hay NADA de donde restaurar, y el Revert
+   # forzaba Equilibrado a ciegas -- quien viniera de Alto Rendimiento o de un plan del
+   # fabricante acababa en otro plan sin que nadie se lo dijera.
+   $g=(Get-RV 'HKCU:\Software\AXE' 'UltPerfGuid')
+   if(-not (Get-RV 'HKCU:\Software\AXE' 'PrevPlanGuid')){
+       $cur=[regex]::Match(((powercfg /getactivescheme) | Out-String),'[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}').Value
+       # Si ya estabas en el plan que crea este tweak (re-aplicar), guardarlo seria guardar el
+       # destino como origen y el Revert no te llevaria a ninguna parte.
+       if($cur -and $cur -ne $g){ Set-RS 'HKCU:\Software\AXE' 'PrevPlanGuid' $cur }
+   }
+   if(-not $g){ $o=(powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>&1 | Out-String); $g=[regex]::Match($o,'[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}').Value; if(-not $g){$g='e9a42b02-d5df-448d-aa00-03f14749eb61'}; Set-RS 'HKCU:\Software\AXE' 'UltPerfGuid' $g }
+   powercfg /setactive $g | Out-Null};
+ Revert={
+   $g=(Get-RV 'HKCU:\Software\AXE' 'UltPerfGuid')
+   $prev=(Get-RV 'HKCU:\Software\AXE' 'PrevPlanGuid')
+   # Sin plan capturado (aplicado por una version anterior de AXE) se cae a Equilibrado. Es una
+   # CONJETURA, no un restore, y se dice en el log en vez de fingir que se devolvio el original.
+   if(-not $prev){ $prev='381b4222-f694-41f0-9685-ff5bb260df2e'; Write-AXELog 'rend_ultperf: no habia plan previo guardado; activo Equilibrado (default de Windows), que puede no ser el que tenias.' 'WARN' }
+   powercfg /setactive $prev | Out-Null
+   # Borrar DESPUES de activar otro: powercfg no puede borrar el esquema activo.
+   if($g){ powercfg -delete $g 2>$null | Out-Null; Del-RV 'HKCU:\Software\AXE' 'UltPerfGuid' }
+   Del-RV 'HKCU:\Software\AXE' 'PrevPlanGuid'}}
 Add-Tweak @{Id='rend_bgapps';Cat='RENDIMIENTO';Tier=1;Reboot=$false;Name='Apps en segundo plano OFF';Desc='Apps UWP no corren en background. Libera CPU/RAM en idle';Requires=@{};
  Test={(Get-RV 'HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled') -eq 1};
  Apply={Set-RD 'HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled' 1; Set-RD 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search' 'BackgroundAppGlobalToggle' 0};
