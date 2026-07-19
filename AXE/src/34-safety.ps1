@@ -42,21 +42,18 @@ function New-AXERestorePoint {
     }
 }
 
-function Assert-AXEVss {
-    # §4.1: garantiza VSS+swprv arrancables (demand) y VSS corriendo. Best-effort, NUNCA lanza.
-    # Sin VSS el restore point falla; el caller decide fallback (.reg/Export). Devuelve {Ok; Message}.
-    try {
-        foreach($sv in 'VSS','swprv'){ $s=Get-Service $sv -EA SilentlyContinue; if($s -and $s.StartType -eq 'Disabled'){ & sc.exe config $sv start= demand | Out-Null } }
-        Start-Service VSS -EA SilentlyContinue
-        $vss = Get-Service VSS -EA SilentlyContinue
-        if($vss -and $vss.Status -eq 'Running'){ [pscustomobject]@{ Ok=$true;  Message='VSS operativo' } }
-        else { [pscustomobject]@{ Ok=$false; Message='VSS no arranco: restore point puede fallar (usa fallback .reg/Export)' } }
-    } catch { [pscustomobject]@{ Ok=$false; Message="VSS check fallo: $($_.Exception.Message)" } }
-}
-
-function Get-AXETamperState {
-    # §4.1: estado de Tamper Protection. Para rutear tweaks de Defender por registro crudo
-    # hacia *-MpPreference (con Tamper ON, la escritura de registro no persiste). Default $false.
-    if($script:HW -and $script:HW.PSObject.Properties['IsTamperProtected']){ return [bool]$script:HW.IsTamperProtected }
-    try { return [bool](Get-MpComputerStatus -ErrorAction Stop).IsTamperProtected } catch { return $false }
-}
+# ELIMINADAS (auditoria 2026-07-19): Assert-AXEVss y Get-AXETamperState. Escritas contra la
+# spec §4.1 ("preflight de seguridad") y nunca cableadas: cero llamadores de produccion. Su
+# unica referencia era un check del SelfTest (S22) que comprobaba que estaban DEFINIDAS -- un
+# test sobre funciones que nadie llama, verde para siempre y con cobertura ficticia. Se fue con
+# ellas.
+#
+# No eran codigo util pendiente de conectar, eran duplicados de algo que ya corre:
+#   - Assert-AXEVss repetia literalmente el bucle VSS/swprv de $script:RestorePointScript (arriba),
+#     que si se ejecuta en cada punto de restauracion.
+#   - Get-AXETamperState tenia una consulta en vivo como fallback por si no habia $script:HW,
+#     pero Get-BlockReason retorna antes en ese caso (20-tweaks:369), asi que esa rama era
+#     inalcanzable. Quien necesita el dato usa $script:HW.IsTamperProtected directo.
+#
+# Si vuelve a hacer falta un preflight de VSS, extraer el bucle de RestorePointScript a una
+# funcion y llamarla desde AMBOS sitios; no reescribirlo al lado.

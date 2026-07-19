@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-19 04:16:25Z
+# Build UTC: 2026-07-19 11:58:26Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 32-measure.ps1, 34-safety.ps1, 36-report.ps1, 38-regedit.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -240,24 +240,29 @@ function Restore-TweakState($id){
 # pasada: $script:tCache se vacia al arrancar cada Refresh-States (y tras Apply/Revert,
 # que disparan Refresh), asi el valor NUNCA queda obsoleto respecto al estado real.
 $script:tCache = @{}
+# Topologia HW (lista de dispositivos PnP): inmutable durante la sesion => cache PERMANENTE, en
+# un store aparte. El bit mutable (registro MSISupported/DevicePriority) se sigue leyendo fresco
+# con Get-RV en cada Test; aqui solo se cachea la ENUMERACION cara de CIM.
+$script:hwTopoCache = @{}
+# Antes esto eran DOS funciones byte a byte identicas (Get-AXECache / Get-AXEHwCache) que solo se
+# diferenciaban en el hashtable de respaldo. Ahora es una con -Permanent.
+#   Los dos stores siguen SEPARADOS a posta: $tCache se vacia al arrancar cada Refresh-States
+# (57-gui-handlers:62) para que ningun Test devuelva estado obsoleto despues de un Apply/Revert,
+# y $hwTopoCache no se vacia nunca. Fundirlos en un solo diccionario haria que cada Refresh
+# tirase la enumeracion PnP cara, o peor, que la topologia sobreviviese donde no debe.
 function Get-AXECache {
-    param([string]$Key,[scriptblock]$Producer)
+    param([string]$Key,[scriptblock]$Producer,[switch]$Permanent)
+    if($Permanent){
+        if($null -eq $script:hwTopoCache){ $script:hwTopoCache=@{} }
+        if($script:hwTopoCache.ContainsKey($Key)){ return $script:hwTopoCache[$Key] }
+        $v = & $Producer
+        $script:hwTopoCache[$Key] = $v
+        return $v
+    }
     if($null -eq $script:tCache){ $script:tCache=@{} }
     if($script:tCache.ContainsKey($Key)){ return $script:tCache[$Key] }
     $v = & $Producer
     $script:tCache[$Key] = $v
-    return $v
-}
-# Topologia HW (lista de dispositivos PnP) es inmutable en la sesion => cache permanente.
-# El bit mutable (registro MSISupported/DevicePriority) se sigue leyendo fresco por Get-RV
-# en cada Test; aqui solo cacheamos la ENUMERACION cara de CIM.
-$script:hwTopoCache = @{}
-function Get-AXEHwCache {
-    param([string]$Key,[scriptblock]$Producer)
-    if($null -eq $script:hwTopoCache){ $script:hwTopoCache=@{} }
-    if($script:hwTopoCache.ContainsKey($Key)){ return $script:hwTopoCache[$Key] }
-    $v = & $Producer
-    $script:hwTopoCache[$Key] = $v
     return $v
 }
 
@@ -413,7 +418,7 @@ Add-Tweak @{Id='cpu_tsc';Cat='CPU';Tier=1;Reboot=$true;Name='TSC Sync Enhanced';
 
 # --- LATENCIA / INPUT LAG (Tier 1) ---
 Add-Tweak @{Id='lat_msi_audio';Cat='LATENCIA';Tier=1;Reboot=$true;Name='MSI mode en HD Audio';Desc='Baja DPC latency del audio';Requires=@{};
- Test={ $hd=Get-AXEHwCache 'pnp:hda' { Get-CimInstance Win32_PnPEntity -Filter "Name LIKE '%High Definition Audio%'" -EA SilentlyContinue | Where-Object PNPDeviceID -like 'PCI*' }; if(-not $hd){return $true}; $ok=$true; foreach($d in $hd){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"; if((Get-RV $p 'MSISupported') -ne 1){$ok=$false} }; $ok };
+ Test={ $hd=Get-AXECache 'pnp:hda' { Get-CimInstance Win32_PnPEntity -Filter "Name LIKE '%High Definition Audio%'" -EA SilentlyContinue | Where-Object PNPDeviceID -like 'PCI*' } -Permanent; if(-not $hd){return $true}; $ok=$true; foreach($d in $hd){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"; if((Get-RV $p 'MSISupported') -ne 1){$ok=$false} }; $ok };
  Apply={ $hd=Get-CimInstance Win32_PnPEntity -Filter "Name LIKE '%High Definition Audio%'" -EA SilentlyContinue | Where-Object PNPDeviceID -like 'PCI*'; foreach($d in $hd){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"; Set-RD $p 'MSISupported' 1 } };
  Revert={ $hd=Get-CimInstance Win32_PnPEntity -Filter "Name LIKE '%High Definition Audio%'" -EA SilentlyContinue | Where-Object PNPDeviceID -like 'PCI*'; foreach($d in $hd){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"; Del-RV $p 'MSISupported' } }}
 Add-Tweak @{Id='lat_mouse';Cat='LATENCIA';Tier=1;Reboot=$false;Name='Aceleracion de raton OFF';Desc='Movimiento 1:1, sin curva de Windows';Requires=@{};
@@ -424,11 +429,11 @@ Add-Tweak @{Id='lat_faststart';Cat='LATENCIA';Tier=1;Reboot=$false;Name='Fast St
  Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled') -eq 0};
  Apply={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled' 0};Revert={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled' 1}}
 Add-Tweak @{Id='lat_irq_gpu';Cat='LATENCIA';Tier=1;Reboot=$true;Name='IRQ priority alta en GPU';Desc='DevicePriority=3 en la GPU (REINICIO)';Requires=@{};
- Test={ $g=Get-AXEHwCache 'pnp:disp' { Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' } }; if(-not $g){return $true}; $ok=$true; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\Affinity Policy"; if((Get-RV $p 'DevicePriority') -ne 3){$ok=$false} }; $ok };
+ Test={ $g=Get-AXECache 'pnp:disp' { Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' } } -Permanent; if(-not $g){return $true}; $ok=$true; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\Affinity Policy"; if((Get-RV $p 'DevicePriority') -ne 3){$ok=$false} }; $ok };
  Apply={ $g=Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' }; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\Affinity Policy"; Set-RD $p 'DevicePriority' 3 } };
  Revert={ $g=Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' }; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\Affinity Policy"; Del-RV $p 'DevicePriority' } }}
 Add-Tweak @{Id='lat_msi_gpu';Cat='LATENCIA';Tier=1;Reboot=$true;Name='MSI mode en GPU';Desc='Message Signaled Interrupts en la GPU: baja DPC latency (REINICIO)';Requires=@{};
- Test={ $g=Get-AXEHwCache 'pnp:disp' { Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' } }; if(-not $g){return $true}; $ok=$true; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"; if((Get-RV $p 'MSISupported') -ne 1){$ok=$false} }; $ok };
+ Test={ $g=Get-AXECache 'pnp:disp' { Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' } } -Permanent; if(-not $g){return $true}; $ok=$true; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"; if((Get-RV $p 'MSISupported') -ne 1){$ok=$false} }; $ok };
  Apply={ $g=Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' }; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"; Set-RD $p 'MSISupported' 1 } };
  Revert={ $g=Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'PCI*' -and $_.Name -notmatch 'Virtual' }; foreach($d in $g){ $p="HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.PNPDeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"; Del-RV $p 'MSISupported' } }}
 Add-Tweak @{Id='lat_timerres';Cat='LATENCIA';Tier=1;Reboot=$true;Name='Timer resolution global (Win11)';Desc='El request de alta resolucion del juego aplica a TODO el sistema (baja DPC). Win11 lo aisla por-proceso por defecto (REINICIO). Posible interaccion con anti-cheat: no confirmado';Requires=@{WinVer=@(11)};Source='https://github.com/valleyofdoom/TimerResolution';SourceType='community-measured';PlaceboLikely=$false;NotesEng='Restores Win10-style global timer honoring on Win11 2004+ (read by ntoskrnl at kernel init, reboot required). Community-measured DPC/latency effect (valleyofdoom). Possible anti-cheat interaction: possible, not confirmed. Measure jitter before/after AFTER reboot.';
@@ -1883,24 +1888,21 @@ function New-AXERestorePoint {
     }
 }
 
-function Assert-AXEVss {
-    # §4.1: garantiza VSS+swprv arrancables (demand) y VSS corriendo. Best-effort, NUNCA lanza.
-    # Sin VSS el restore point falla; el caller decide fallback (.reg/Export). Devuelve {Ok; Message}.
-    try {
-        foreach($sv in 'VSS','swprv'){ $s=Get-Service $sv -EA SilentlyContinue; if($s -and $s.StartType -eq 'Disabled'){ & sc.exe config $sv start= demand | Out-Null } }
-        Start-Service VSS -EA SilentlyContinue
-        $vss = Get-Service VSS -EA SilentlyContinue
-        if($vss -and $vss.Status -eq 'Running'){ [pscustomobject]@{ Ok=$true;  Message='VSS operativo' } }
-        else { [pscustomobject]@{ Ok=$false; Message='VSS no arranco: restore point puede fallar (usa fallback .reg/Export)' } }
-    } catch { [pscustomobject]@{ Ok=$false; Message="VSS check fallo: $($_.Exception.Message)" } }
-}
-
-function Get-AXETamperState {
-    # §4.1: estado de Tamper Protection. Para rutear tweaks de Defender por registro crudo
-    # hacia *-MpPreference (con Tamper ON, la escritura de registro no persiste). Default $false.
-    if($script:HW -and $script:HW.PSObject.Properties['IsTamperProtected']){ return [bool]$script:HW.IsTamperProtected }
-    try { return [bool](Get-MpComputerStatus -ErrorAction Stop).IsTamperProtected } catch { return $false }
-}
+# ELIMINADAS (auditoria 2026-07-19): Assert-AXEVss y Get-AXETamperState. Escritas contra la
+# spec §4.1 ("preflight de seguridad") y nunca cableadas: cero llamadores de produccion. Su
+# unica referencia era un check del SelfTest (S22) que comprobaba que estaban DEFINIDAS -- un
+# test sobre funciones que nadie llama, verde para siempre y con cobertura ficticia. Se fue con
+# ellas.
+#
+# No eran codigo util pendiente de conectar, eran duplicados de algo que ya corre:
+#   - Assert-AXEVss repetia literalmente el bucle VSS/swprv de $script:RestorePointScript (arriba),
+#     que si se ejecuta en cada punto de restauracion.
+#   - Get-AXETamperState tenia una consulta en vivo como fallback por si no habia $script:HW,
+#     pero Get-BlockReason retorna antes en ese caso (20-tweaks:369), asi que esa rama era
+#     inalcanzable. Quien necesita el dato usa $script:HW.IsTamperProtected directo.
+#
+# Si vuelve a hacer falta un preflight de VSS, extraer el bucle de RestorePointScript a una
+# funcion y llamarla desde AMBOS sitios; no reescribirlo al lado.
 
 
 # >>>>> MODULE: 36-report.ps1 >>>>>
@@ -2316,11 +2318,14 @@ if($SelfTest){
     }
     try { if([string]::IsNullOrWhiteSpace((Get-AXEEnvBanner))){ [void]$fails.Add('S21: Get-AXEEnvBanner vacio') } }
     catch { [void]$fails.Add("S21: Get-AXEEnvBanner lanzo: $($_.Exception.Message)") }
-    # S22: preflight de seguridad (§4.1) presente
-    $checks++
-    foreach($fn in 'Assert-AXEVss','Get-AXETamperState'){
-        if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S22: funcion '$fn' no definida") }
-    }
+    # S22 ELIMINADO (auditoria 2026-07-19). Comprobaba que Assert-AXEVss y Get-AXETamperState
+    # estuvieran DEFINIDAS. Ninguna tenia llamadores de produccion, asi que el check solo probaba
+    # que existia codigo muerto: imposible de fallar mientras nadie borrara las funciones, y cero
+    # senal sobre si el preflight de §4.1 servia (no servia: no se invocaba nunca). Las funciones
+    # se han borrado en 34-safety.ps1 y el check se va con ellas.
+    #   Leccion por si se reescribe: un check de "la funcion existe" no vale. Si se cablea un
+    # preflight de verdad, el check debe EJECUTARLO y mirar lo que devuelve -- como S21 con
+    # Get-AXEEnvBanner, o el harness GUI pulsando de verdad el boton de REGISTRO.
 
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
