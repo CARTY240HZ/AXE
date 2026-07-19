@@ -14,6 +14,9 @@
 #   -SelfTest     Validacion de integridad del catalogo y helpers (0 fallos)
 #   -List         Estado real de cada tweak contra el sistema
 #   -Export/-Import <file>  Perfil JSON
+#   -GameList     Preferencia de GPU por juego, tal como esta ahora
+#   -OptimizeGame <ruta.exe> [-NoFSO]  dGPU + flip model en ESE ejecutable
+#   -RevertGame   <ruta.exe>           Deshace lo anterior al estado capturado
 #   (sin args)    GUI (requiere admin via el launcher .bat)
 # =====================================================
 
@@ -26,7 +29,15 @@ param(
     [switch]$Measure,
     [switch]$Score,
     [string]$Report,
-    [switch]$TimerSweep
+    [switch]$TimerSweep,
+    # OJO: NO llamar a este switch '$Games'. 20-tweaks.ps1 usa $Games como variable local para
+    # la ruta de la tarea MMCSS ('...\SystemProfile\Tasks\Games'); declararlo aqui como [switch]
+    # la tipa a nivel de script y la asignacion de esa cadena revienta => gpu_mmcss se queda
+    # apuntando a una ruta vacia. Pasaba el SelfTest con 0 fallos (su Test solo devuelve false).
+    [switch]$GameList,
+    [string]$OptimizeGame,
+    [string]$RevertGame,
+    [switch]$NoFSO
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
