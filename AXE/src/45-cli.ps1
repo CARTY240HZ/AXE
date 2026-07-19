@@ -242,6 +242,34 @@ if($SelfTest){
         }
     }
 
+    # S25: medicion de FPS (region 10d). Se EJERCE el calculo y el veredicto con series
+    # sinteticas: no hace falta PresentMon ni un juego abierto, y por eso el check corre
+    # siempre en vez de saltarse en la mitad de las maquinas.
+    $checks++
+    try {
+        $const = Get-AXEFpsStats -FrameTimesMs (@(16.667) * 100)
+        if(-not $const.Ok -or [math]::Abs($const.AvgFps - 60) -gt 0.5){ [void]$fails.Add("S25: 60 FPS constantes dieron $($const.AvgFps)") }
+        # El 1% low debe mirar los frames MAS LENTOS. Si el orden se invirtiera, este caso lo
+        # caza: 99 frames de 10ms + 1 de 100ms tiene que dar 1% low ~= 10 FPS, no ~100.
+        $spike = Get-AXEFpsStats -FrameTimesMs (@(@(10.0) * 99) + @(100.0))
+        if([math]::Abs($spike.P1LowFps - 10) -gt 1){ [void]$fails.Add("S25: 1% low midio los frames rapidos (dio $($spike.P1LowFps), esperado ~10)") }
+        if((Get-AXEFpsStats -FrameTimesMs @(16.6,16.6)).Ok){ [void]$fails.Add('S25: captura de 2 frames se dio por valida') }
+        # Veredicto: dos capturas iguales NO pueden ser concluyentes.
+        $mk = { param($base,$j,$n) Get-AXEFpsStats -FrameTimesMs @(foreach($i in 0..($n-1)){ $base + $j*[math]::Sin($i*0.7) }) }
+        $s1 = & $mk 16.667 1.0 800; $s2 = & $mk 16.667 1.0 800
+        $vSame = Get-AXEFpsVerdict -Before $s1 -After $s2
+        if($vSame.Conclusive){ [void]$fails.Add('S25: dos capturas identicas salieron CONCLUYENTES (umbral de ruido roto)') }
+        $vBig = Get-AXEFpsVerdict -Before (& $mk 20.0 0.5 800) -After (& $mk 16.667 0.5 800)
+        if(-not $vBig.Conclusive){ [void]$fails.Add('S25: 50->60 FPS limpios NO salieron concluyentes') }
+        # El aviso de misma-escena tiene que ir tambien cuando el resultado es bueno.
+        if($vBig.Warning -notmatch 'MISMA escena'){ [void]$fails.Add('S25: falta el aviso de misma-escena en un veredicto positivo') }
+        # Columna de PresentMon: las dos versiones, y null si no la reconoce.
+        if((Get-AXEFrameTimeColumn ([pscustomobject]@{msBetweenPresents='1'})) -ne 'msBetweenPresents'){ [void]$fails.Add('S25: no reconoce la columna de PresentMon 1.x') }
+        if((Get-AXEFrameTimeColumn ([pscustomobject]@{FrameTime='1'})) -ne 'FrameTime'){ [void]$fails.Add('S25: no reconoce la columna de PresentMon 2.x') }
+        if($null -ne (Get-AXEFrameTimeColumn ([pscustomobject]@{Nada='1'}))){ [void]$fails.Add('S25: adivina columna desconocida en vez de devolver null') }
+        if(-not (Get-Command Measure-AXEFps -EA SilentlyContinue)){ [void]$fails.Add('S25: Measure-AXEFps no definida') }
+    } catch { [void]$fails.Add("S25: medicion de FPS lanzo: $($_.Exception.Message)") }
+
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
     Write-Host "========================================="
@@ -348,6 +376,46 @@ if($OptimizeGame){
     foreach($line in (Optimize-AXEGame -Exe $full -NoFSO:$NoFSO)){ Write-Host "  $line" }
     Write-Host ''
     Write-Host "Deshacer: -RevertGame `"$full`""
+    exit 0
+}
+if($Fps){
+    Write-Host '== AXE - FPS REALES (PresentMon) =='
+    if(-not (Get-AXEPresentMon)){
+        # Se sale sin medir en vez de ensenar ceros: un informe de FPS vacio presentado como
+        # medicion es peor que no medir.
+        Write-Host '  PresentMon no encontrado.'
+        Write-Host '  Bajalo de https://github.com/GameTechDev/PresentMon/releases'
+        Write-Host '  y deja PresentMon.exe junto a AXE (o define AXE_PRESENTMON).'
+        Write-Host '  AXE no lo descarga solo: bajar y ejecutar binarios de internet no es cosa de una herramienta que corre como admin.'
+        exit 1
+    }
+    if(-not $FpsCompare){
+        Write-Host "Capturando $FpsSeconds s de '$Fps'..."
+        foreach($l in (Format-AXEFpsStats (Measure-AXEFps -ProcessName $Fps -Seconds $FpsSeconds) 'Captura')){ Write-Host $l }
+        exit 0
+    }
+    # Modo comparacion: dos capturas con una pausa manual en medio. La pausa es a posta y NO se
+    # automatiza: entre una y otra hay que aplicar el cambio Y volver a la MISMA escena, y eso
+    # solo lo puede hacer una persona. Automatizarlo produciria comparaciones de escenas
+    # distintas con pinta de rigor, que es peor que no medir.
+    #   OJO: este modo BLOQUEA en Read-Host. Solo se llega con -Fps explicito, asi que ni el
+    # gate de build.ps1 ni la GUI lo tocan; no meterlo nunca en un runspace de fondo.
+    Write-Host "1/2 - captura ANTES ($FpsSeconds s). Ponte en la escena que vas a repetir."
+    Read-Host '     Enter cuando estes listo' | Out-Null
+    $b = Measure-AXEFps -ProcessName $Fps -Seconds $FpsSeconds
+    foreach($l in (Format-AXEFpsStats $b 'ANTES')){ Write-Host $l }
+    if(-not $b.Ok){ exit 1 }
+    Write-Host ''
+    Write-Host '2/2 - aplica el cambio, vuelve a la MISMA escena y repite el mismo recorrido.'
+    Read-Host '     Enter cuando estes listo' | Out-Null
+    $a = Measure-AXEFps -ProcessName $Fps -Seconds $FpsSeconds
+    foreach($l in (Format-AXEFpsStats $a 'DESPUES')){ Write-Host $l }
+    if(-not $a.Ok){ exit 1 }
+    $v = Get-AXEFpsVerdict -Before $b -After $a
+    Write-Host ''
+    Write-Host '-- VEREDICTO --'
+    Write-Host $(if($v.Conclusive){ "  CONCLUYENTE: $($v.Reason)" } else { "  NO CONCLUYENTE: $($v.Reason)" })
+    if($v.Warning){ Write-Host "  AVISO: $($v.Warning)" }
     exit 0
 }
 if($RevertGame){
