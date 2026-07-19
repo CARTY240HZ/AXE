@@ -34,6 +34,12 @@ function Push-SvcBackup($n){
     $st=Get-SvcStart $n
     $map=@{Automatic='auto'; Manual='demand'; Disabled='disabled'; Boot='boot'; System='system'}
     $tok=if($st -and $map.ContainsKey("$st")){ $map["$st"] } else { $null }
+    # 'Automatic' de .StartType cubre auto normal Y auto-RETRASADO: el cmdlet no los distingue.
+    # El bit real vive en DelayedAutostart bajo la clave del servicio. Sin esto, restaurar un
+    # servicio que venia retrasado (DiagTrack, MapsBroker...) lo devolvia como auto normal, o sea
+    # arrancando ANTES que antes: el snapshot decia "estado previo" y no lo era del todo.
+    # 'delayed-auto' es el token que entiende sc.exe, que es lo que usa Restore-TweakState.
+    if($tok -eq 'auto' -and (Get-RV "HKLM:\SYSTEM\CurrentControlSet\Services\$n" 'DelayedAutostart') -eq 1){ $tok='delayed-auto' }
     $script:capBuf[$script:capTweak][$key]=@{T='svc'; N=$n; Start=$tok}
 }
 function Get-RV($p,$n){ try { (Get-ItemProperty -Path $p -Name $n -ErrorAction Stop).$n } catch { $null } }
