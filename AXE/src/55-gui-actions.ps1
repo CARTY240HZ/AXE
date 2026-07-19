@@ -205,6 +205,13 @@ function Build-ActionView($catName){
             })
             & $fillProcs; & $fillPlans; & $script:profRefreshList
 
+        }
+        'FPS' {
+            # ================= FPS: subirlos (10c) y MEDIRLOS (10d) =================
+            # Pestana propia y no un apartado de PERFILES: es lo unico de toda la suite que
+            # sube FPS de verdad, y estaba enterrado bajo los planes de energia. Aparte, aqui
+            # conviven la palanca y su medicion a proposito -- aplicar sin medir es como se
+            # llega a un catalogo lleno de placebos, que es justo lo que este proyecto corrigio.
             # ================= GPU POR JUEGO (region 10c) =================
             # Va en esta pestana y no en una nueva porque es la misma idea (ajuste por juego,
             # no global), pero OJO: los perfiles de arriba guardan NOMBRE DE PROCESO y esto
@@ -305,6 +312,63 @@ function Build-ActionView($catName){
                 & $script:gpuRefreshList
             })
             & $fillExes; & $script:gpuRefreshList
+
+            # --- MEDICION REAL (region 10d) ---
+            $mHdr=New-Object System.Windows.Controls.TextBlock; $mHdr.Text='Medir FPS reales'; $mHdr.FontWeight='SemiBold'; $mHdr.FontSize=15; $mHdr.Foreground=New-AXEBrush 'Fg'; $mHdr.Margin=New-Object System.Windows.Thickness(0,18,0,4); [void]$panel.Children.Add($mHdr)
+            $mInfo=New-Object System.Windows.Controls.TextBlock; $mInfo.Foreground=New-AXEBrush 'Muted'; $mInfo.FontSize=12; $mInfo.TextWrapping='Wrap'; $mInfo.Margin=New-Object System.Windows.Thickness(0,0,0,10); [void]$panel.Children.Add($mInfo)
+            $pmPath=Get-AXEPresentMon
+            $mInfo.Text = if($pmPath){
+                "PresentMon: $pmPath`nMide el tiempo entre frames PRESENTADOS (la fuente que usan las reviews). El 1% low es lo que mueven los ajustes de esta suite; la media casi no se entera."
+            } else {
+                'PresentMon no encontrado. Bajalo de github.com/GameTechDev/PresentMon/releases y deja PresentMon.exe junto a AXE. AXE no lo descarga solo: bajar y ejecutar binarios de internet no es cosa de una herramienta que corre como admin.'
+            }
+            $mOut=New-Object System.Windows.Controls.TextBox; $mOut.IsReadOnly=$true; $mOut.Background=New-AXEBrush 'Surface'; $mOut.Foreground=New-AXEBrush 'Fg'; $mOut.BorderBrush=New-AXEBrush 'Line'; $mOut.BorderThickness=New-Object System.Windows.Thickness(1); $mOut.FontFamily='Consolas'; $mOut.FontSize=12; $mOut.MinHeight=110; $mOut.TextWrapping='NoWrap'; $mOut.VerticalScrollBarVisibility='Auto'; $mOut.Padding=New-Object System.Windows.Thickness(10,10,10,10); $mOut.Margin=New-Object System.Windows.Thickness(0,0,0,8)
+            $mOut.Text='Sin medir todavia.'
+            $script:fpsOut=$mOut; [void]$panel.Children.Add($mOut)
+            $mRow=New-Object System.Windows.Controls.StackPanel; $mRow.Orientation='Horizontal'
+            $mBtn=New-Object System.Windows.Controls.Button; $mBtn.Style=$win.FindResource('Pill'); $mBtn.Background=New-AXEBrush 'Accent'; $mBtn.Content='Medir 20s'; $mBtn.Margin=New-Object System.Windows.Thickness(0,0,6,0)
+            [System.Windows.Automation.AutomationProperties]::SetName($mBtn,'Medir FPS del juego seleccionado durante 20 segundos')
+            $mBase=New-Object System.Windows.Controls.Button; $mBase.Style=$win.FindResource('PillGhost'); $mBase.Content='Guardar como ANTES'; $mBase.Margin=New-Object System.Windows.Thickness(0,0,6,0)
+            [System.Windows.Automation.AutomationProperties]::SetName($mBase,'Guardar la ultima medicion como referencia ANTES')
+            $mCmp=New-Object System.Windows.Controls.Button; $mCmp.Style=$win.FindResource('PillGhost'); $mCmp.Content='Comparar con ANTES'
+            [System.Windows.Automation.AutomationProperties]::SetName($mCmp,'Comparar la ultima medicion con la referencia ANTES')
+            [void]$mRow.Children.Add($mBtn); [void]$mRow.Children.Add($mBase); [void]$mRow.Children.Add($mCmp); [void]$panel.Children.Add($mRow)
+
+            # El flujo es en TRES pasos manuales (medir / guardar ANTES / comparar) y no un
+            # boton unico de "antes y despues", porque entre las dos capturas hay que aplicar el
+            # cambio Y volver a la MISMA escena. Un boton que lo hiciera solo produciria
+            # comparaciones de escenas distintas con pinta de rigor.
+            $mBtn.Add_Click({ param($s,$e)
+                if($script:busy){ Write-AXELog 'Otra operacion en curso, espera.' 'WARN'; return }   # H10/H11 mutex
+                $ex=[string]$exeCombo.Text; if([string]::IsNullOrWhiteSpace($ex) -and $exeCombo.SelectedItem){ $ex=[string]$exeCombo.SelectedItem }
+                if([string]::IsNullOrWhiteSpace($ex)){ Write-AXELog 'Elige arriba el ejecutable del juego que quieres medir.' 'WARN'; return }
+                $name=[System.IO.Path]::GetFileNameWithoutExtension($ex)
+                $script:fpsOut.Text="Midiendo 20s de $name... (la ventana se queda quieta mientras tanto)"
+                $script:fpsOut.Dispatcher.Invoke([action]{},'Render')   # pinta el aviso antes de bloquear
+                $r=Measure-AXEFps -ProcessName $name -Seconds 20
+                $script:fpsLast=$r
+                $script:fpsOut.Text=((Format-AXEFpsStats $r 'Ultima') -join "`r`n")
+                foreach($l in (Format-AXEFpsStats $r 'FPS')){ Write-AXELog $l }
+            })
+            $mBase.Add_Click({ param($s,$e)
+                if(-not $script:fpsLast -or -not $script:fpsLast.Ok){ Write-AXELog 'No hay una medicion valida que guardar. Mide primero.' 'WARN'; return }
+                $script:fpsBefore=$script:fpsLast
+                $script:fpsOut.Text=(((Format-AXEFpsStats $script:fpsBefore 'ANTES (guardado)') -join "`r`n") + "`r`n`r`nAhora aplica el cambio, vuelve a la MISMA escena y pulsa Medir otra vez.")
+                Write-AXELog 'Referencia ANTES guardada.'
+            })
+            $mCmp.Add_Click({ param($s,$e)
+                if(-not $script:fpsBefore){ Write-AXELog 'Falta la referencia ANTES. Mide, pulsa Guardar como ANTES, aplica el cambio y vuelve a medir.' 'WARN'; return }
+                if(-not $script:fpsLast -or -not $script:fpsLast.Ok){ Write-AXELog 'Falta una medicion valida DESPUES.' 'WARN'; return }
+                $v=Get-AXEFpsVerdict -Before $script:fpsBefore -After $script:fpsLast
+                $txt=@()
+                $txt+=(Format-AXEFpsStats $script:fpsBefore 'ANTES')
+                $txt+=(Format-AXEFpsStats $script:fpsLast  'DESPUES')
+                $txt+=''
+                $txt+=$(if($v.Conclusive){ "VEREDICTO: CONCLUYENTE - $($v.Reason)" } else { "VEREDICTO: NO CONCLUYENTE - $($v.Reason)" })
+                if($v.Warning){ $txt+="AVISO: $($v.Warning)" }
+                $script:fpsOut.Text=($txt -join "`r`n")
+                foreach($l in $txt){ if($l){ Write-AXELog $l } }
+            })
         }
         'ASISTENTE IA' {
             $script:aiOut=New-Object System.Windows.Controls.TextBox; $script:aiOut.IsReadOnly=$true; $script:aiOut.Background=New-AXEBrush 'Surface'; $script:aiOut.Foreground=New-AXEBrush 'Fg'

@@ -93,6 +93,17 @@ if($env:AXE_GUITEST -eq '1'){
         if(-not $gvOk){ $allOk=$false }
         if($hyb -isnot [bool]){ $allOk=$false }
     } catch { Write-Host "GPU-juego view    : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
+    # regresion PESTANA FPS: existe como vista propia (no enterrada en PERFILES) y trae el
+    # cuadro de medicion cableado. Se comprueba la vista Y el control, porque registrar la
+    # categoria sin construir nada daria una pestana vacia que igual pasaba el resto de checks.
+    try {
+        $fpsTabOk = ($script:actionCats -contains 'FPS') -and ($null -ne $script:views['FPS'])
+        $fpsUiOk  = ($null -ne $script:fpsOut)
+        # Las funciones de la region 10d tienen que estar cargadas antes que la GUI (33 < 55).
+        $fpsFnOk  = [bool](Get-Command Measure-AXEFps -EA SilentlyContinue) -and [bool](Get-Command Get-AXEFpsVerdict -EA SilentlyContinue)
+        Write-Host "Pestana FPS       : vista=$fpsTabOk salida=$fpsUiOk funciones=$fpsFnOk (esperado True/True/True)"
+        if(-not ($fpsTabOk -and $fpsUiOk -and $fpsFnOk)){ $allOk=$false }
+    } catch { Write-Host "Pestana FPS       : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: ejercer handler ASISTENTE (bug de scope $out/$doAsk null)
     try {
         $before=$script:aiOut.Text.Length

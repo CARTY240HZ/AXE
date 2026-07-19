@@ -73,7 +73,7 @@ function Pulse-Tile($tile){
 }
 $script:tweakCats = New-Object System.Collections.ArrayList
 foreach($tw in $script:CAT){ if(-not $script:tweakCats.Contains($tw.Cat)){ [void]$script:tweakCats.Add($tw.Cat) } }
-$script:actionCats = @('MEDICION','REGISTRO','LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
+$script:actionCats = @('FPS','MEDICION','REGISTRO','LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
 # Badge "Recomendado" = §3.4, calculado contra ESTA maquina (Get-AXERecommended en 20-tweaks).
 # Al arrancar el HW aun no esta (runspace); sale el nucleo universal y Apply-AXEGating
 # lo recalcula en cuanto la deteccion termina. $script:recBadges guarda el Border de cada
