@@ -79,6 +79,20 @@ if($env:AXE_GUITEST -eq '1'){
         if(-not $pvOk){ $allOk=$false }
         if($null -ne $tickNull){ $allOk=$false }   # sin juego corriendo no debe activar nada
     } catch { Write-Host "Perfiles view     : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
+    # regresion GPU POR JUEGO (region 10c): la misma vista PERFILES cablea el refresh de la
+    # lista de ejecutables. Se EJERCE el scriptblock, no solo se comprueba que exista: construir
+    # las tarjetas es donde se lee el registro y se parsea la cadena "K=V;", que es lo que se
+    # puede romper. Ojo con confiar en el PNG para esto: el render sale en blanco (el bitmap se
+    # toma sin pasar por ShowDialog), asi que la unica prueba real de que la seccion se construye
+    # es el Build-ActionView de arriba mas este ejercicio. Solo LEE el registro.
+    try {
+        $gvOk = ($script:gpuRefreshList -is [scriptblock])
+        if($gvOk){ & $script:gpuRefreshList }   # si el parser o la lectura del registro revientan, cae al catch
+        $hyb = Test-AXEHybridGpu
+        Write-Host "GPU-juego view    : refresh=$gvOk hibrida=$hyb gpus=$((Get-AXEGpuList).Count)"
+        if(-not $gvOk){ $allOk=$false }
+        if($hyb -isnot [bool]){ $allOk=$false }
+    } catch { Write-Host "GPU-juego view    : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: ejercer handler ASISTENTE (bug de scope $out/$doAsk null)
     try {
         $before=$script:aiOut.Text.Length
