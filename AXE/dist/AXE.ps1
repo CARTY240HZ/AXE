@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-19 13:41:22Z
+# Build UTC: 2026-07-19 14:29:45Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 34-safety.ps1, 36-report.ps1, 38-regedit.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -3690,10 +3690,10 @@ function Build-ActionView($catName){
                     $t=New-Object System.Windows.Controls.TextBlock; $t.Text="$($p.Name)    [$($p.Exe)]    ->  $($p.PlanName)"; $t.Foreground=New-AXEBrush 'Fg'; $t.VerticalAlignment='Center'; $t.TextWrapping='Wrap'
                     [System.Windows.Controls.Grid]::SetColumn($t,0); [void]$g.Children.Add($t)
                     $bb=New-Object System.Windows.Controls.StackPanel; $bb.Orientation='Horizontal'; [System.Windows.Controls.Grid]::SetColumn($bb,1)
-                    $ba=New-Object System.Windows.Controls.Button; $ba.Style=$win.FindResource('Pill'); $ba.Background=New-AXEBrush 'Accent'; $ba.Content='Aplicar'; $ba.Height=28; $ba.Padding=New-Object System.Windows.Thickness(12,0); $ba.Margin=New-Object System.Windows.Thickness(0,0,6,0); $ba.Tag=$p
+                    $ba=New-Object System.Windows.Controls.Button; $ba.Style=$win.FindResource('Pill'); $ba.Background=New-AXEBrush 'Accent'; $ba.Content='Aplicar'; $ba.Height=28; $ba.Padding=New-Object System.Windows.Thickness(12,0,12,0); $ba.Margin=New-Object System.Windows.Thickness(0,0,6,0); $ba.Tag=$p
                     [System.Windows.Automation.AutomationProperties]::SetName($ba,"Aplicar perfil $($p.Name) ahora")
                     $ba.Add_Click({ param($s,$e) if($script:busy){ Write-AXELog 'Otra operacion en curso, espera.' 'WARN'; return }; Apply-GameProfile $s.Tag })
-                    $bd=New-Object System.Windows.Controls.Button; $bd.Style=$win.FindResource('PillDanger'); $bd.Content='Borrar'; $bd.Height=28; $bd.Padding=New-Object System.Windows.Thickness(12,0); $bd.Tag=$p.Name
+                    $bd=New-Object System.Windows.Controls.Button; $bd.Style=$win.FindResource('PillDanger'); $bd.Content='Borrar'; $bd.Height=28; $bd.Padding=New-Object System.Windows.Thickness(12,0,12,0); $bd.Tag=$p.Name
                     [System.Windows.Automation.AutomationProperties]::SetName($bd,"Borrar perfil $($p.Name)")
                     $bd.Add_Click({ param($s,$e) if($script:profActive -eq $s.Tag){ Revert-GameProfile }; Remove-GameProfile $s.Tag; & $script:profRefreshList; Write-AXELog "Perfil '$($s.Tag)' borrado." })
                     [void]$bb.Children.Add($ba); [void]$bb.Children.Add($bd); [void]$g.Children.Add($bb)
@@ -3733,6 +3733,107 @@ function Build-ActionView($catName){
                 & $script:profRefreshList
             })
             & $fillProcs; & $fillPlans; & $script:profRefreshList
+
+            # ================= GPU POR JUEGO (region 10c) =================
+            # Va en esta pestana y no en una nueva porque es la misma idea (ajuste por juego,
+            # no global), pero OJO: los perfiles de arriba guardan NOMBRE DE PROCESO y esto
+            # necesita RUTA COMPLETA. Windows indexa UserGpuPreferences por ruta, asi que un
+            # nombre suelto crearia una entrada que el sistema no mira nunca. De ahi el
+            # selector de fichero y que el combo muestre la ruta resuelta, no solo el nombre.
+            $gpuHdr=New-Object System.Windows.Controls.TextBlock; $gpuHdr.Text='GPU por juego'; $gpuHdr.FontWeight='SemiBold'; $gpuHdr.FontSize=15; $gpuHdr.Foreground=New-AXEBrush 'Fg'; $gpuHdr.Margin=New-Object System.Windows.Thickness(0,18,0,4); [void]$panel.Children.Add($gpuHdr)
+
+            $gpuInfo=New-Object System.Windows.Controls.TextBlock; $gpuInfo.Foreground=New-AXEBrush 'Muted'; $gpuInfo.FontSize=12; $gpuInfo.TextWrapping='Wrap'; $gpuInfo.Margin=New-Object System.Windows.Thickness(0,0,0,10)
+            # El texto NO promete ganancia: la dice segun la maquina. En equipo de una sola
+            # GPU, forzar la "dedicada" no existe y fingirlo seria justo el fallo que este
+            # proyecto persigue en el resto del catalogo.
+            $gpuInfo.Text = if(Test-AXEHybridGpu){
+                "Equipo HIBRIDO ($(((Get-AXEGpuList | Select-Object -Expand Name) -join ' + '))). Forzar la GPU dedicada en un juego es el mayor lever de FPS de toda la suite: si Windows lo estaba corriendo en la integrada, no es un 3%, son 2-5x. Los cambios entran al ARRANCAR el juego."
+            } else {
+                "Una sola GPU ($((Get-AXEGpuList | Select-Object -First 1 -Expand Name))). 'GPU alto rendimiento' no aplica aqui: no hay otra entre la que elegir, ganancia por esa via = 0. El flip model (juegos en ventana) si sirve."
+            }
+            [void]$panel.Children.Add($gpuInfo)
+
+            # El panel va en scope SCRIPT, no local. $script:gpuRefreshList se invoca despues de
+            # que Build-ActionView haya retornado (desde el boton 'Deshacer' y desde el harness),
+            # y PowerShell resuelve las variables de un scriptblock EN EL MOMENTO DE LLAMARLO: una
+            # local ya no existe entonces y '.Children.Clear()' revienta con "No se puede llamar a
+            # un metodo en una expresion con valor NULL".
+            #   .GetNewClosure() tampoco vale aqui: crea un scope de modulo propio donde los
+            # '$script:*' de este fichero (GpuPrefKey, LayersKey) dejan de resolver, y el fallo se
+            # muda a "No se puede enlazar el argumento al parametro 'Path' porque es nulo".
+            # Scope script es ademas el idiom que ya usa el resto de la GUI ($script:profMonTog,
+            # $script:aiOut, $script:scoreLbl).
+            $script:gpuListPanel=New-Object System.Windows.Controls.StackPanel; $script:gpuListPanel.Margin=New-Object System.Windows.Thickness(0,0,0,10); [void]$panel.Children.Add($script:gpuListPanel)
+            $script:gpuRefreshList={
+                $script:gpuListPanel.Children.Clear()
+                $k=Get-Item $script:GpuPrefKey -EA SilentlyContinue
+                $names=if($k){ @($k.GetValueNames()) } else { @() }
+                if($names.Count -eq 0){
+                    $e=New-Object System.Windows.Controls.TextBlock; $e.Text='Sin ajustes por juego. Windows decide la GPU de todo por heuristica.'; $e.Foreground=New-AXEBrush 'Muted'; $e.FontSize=12; [void]$script:gpuListPanel.Children.Add($e); return
+                }
+                foreach($n in $names){
+                    $st=Get-AXEGameGpuState $n
+                    # 'Windows decide' (clave ausente) != 'delegado' (0 explicito). Se distinguen
+                    # a posta: uno es estado de fabrica, el otro lo escribio alguien.
+                    $pv=(ConvertFrom-AXEGpuPref $st.Raw)['GpuPreference']
+                    $gtxt=switch($pv){ '2'{'dGPU'} '1'{'iGPU'} '0'{'delegado'} default{'Windows decide'} }
+                    $card=New-Object System.Windows.Controls.Border; $card.Background=New-AXEBrush 'Surface'; $card.BorderBrush=New-AXEBrush 'Line'; $card.BorderThickness=New-Object System.Windows.Thickness(1); $card.CornerRadius=New-Object System.Windows.CornerRadius(8); $card.Padding=New-Object System.Windows.Thickness(14,10,14,10); $card.Margin=New-Object System.Windows.Thickness(0,0,0,6)
+                    $g=New-Object System.Windows.Controls.Grid
+                    $c0=New-Object System.Windows.Controls.ColumnDefinition; $c0.Width='*'; $c1=New-Object System.Windows.Controls.ColumnDefinition; $c1.Width='Auto'
+                    [void]$g.ColumnDefinitions.Add($c0); [void]$g.ColumnDefinitions.Add($c1)
+                    $t=New-Object System.Windows.Controls.TextBlock; $t.Text="$(Split-Path $n -Leaf)    [$gtxt]    flip: $(if($st.FlipModel){'si'}else{'no'})    FSO: $(if($st.NoFSO){'off'}else{'on'})"; $t.Foreground=New-AXEBrush 'Fg'; $t.VerticalAlignment='Center'; $t.TextWrapping='Wrap'; $t.ToolTip=$n
+                    [System.Windows.Controls.Grid]::SetColumn($t,0); [void]$g.Children.Add($t)
+                    $bu=New-Object System.Windows.Controls.Button; $bu.Style=$win.FindResource('PillDanger'); $bu.Content='Deshacer'; $bu.Height=28; $bu.Padding=New-Object System.Windows.Thickness(12,0,12,0); $bu.Tag=$n
+                    [System.Windows.Automation.AutomationProperties]::SetName($bu,"Deshacer ajustes de GPU de $(Split-Path $n -Leaf)")
+                    $bu.Add_Click({ param($s,$e)
+                        $r=Revert-AXEGameGpu $s.Tag
+                        # 0 = AXE nunca capturo ese exe (lo escribio Windows o el usuario). No se
+                        # inventa un original: se dice y se deja como esta.
+                        if($r -eq 0){ Write-AXELog "GPU '$(Split-Path $s.Tag -Leaf)': sin captura previa de AXE, no revierto (escribir un default seria dejarte un estado que quiza nunca tuviste)." 'WARN' }
+                        else { Write-AXELog "GPU '$(Split-Path $s.Tag -Leaf)': restauradas $r clave(s) al estado exacto anterior." }
+                        & $script:gpuRefreshList
+                    })
+                    [System.Windows.Controls.Grid]::SetColumn($bu,1); [void]$g.Children.Add($bu)
+                    $card.Child=$g; [void]$script:gpuListPanel.Children.Add($card)
+                }
+            }
+
+            # --- alta: selector de ejecutable ---
+            $gform=New-Object System.Windows.Controls.Border; $gform.Background=New-AXEBrush 'Surface'; $gform.BorderBrush=New-AXEBrush 'Line'; $gform.BorderThickness=New-Object System.Windows.Thickness(1); $gform.CornerRadius=New-Object System.Windows.CornerRadius(8); $gform.Padding=New-Object System.Windows.Thickness(14)
+            $gfp=New-Object System.Windows.Controls.StackPanel
+            $gft=New-Object System.Windows.Controls.TextBlock; $gft.Text='Optimizar un juego'; $gft.FontWeight='SemiBold'; $gft.Foreground=New-AXEBrush 'Fg'; $gft.Margin=New-Object System.Windows.Thickness(0,0,0,8); [void]$gfp.Children.Add($gft)
+            $exeRow=New-Object System.Windows.Controls.Grid; $er0=New-Object System.Windows.Controls.ColumnDefinition; $er0.Width='*'; $er1=New-Object System.Windows.Controls.ColumnDefinition; $er1.Width='Auto'; [void]$exeRow.ColumnDefinitions.Add($er0); [void]$exeRow.ColumnDefinitions.Add($er1); $exeRow.Margin=New-Object System.Windows.Thickness(0,0,0,6)
+            $exeCombo=New-Object System.Windows.Controls.ComboBox; $exeCombo.IsEditable=$true; $exeCombo.Margin=New-Object System.Windows.Thickness(0,0,6,0)
+            [System.Windows.Automation.AutomationProperties]::SetName($exeCombo,'Ruta del ejecutable del juego'); [System.Windows.Controls.Grid]::SetColumn($exeCombo,0); [void]$exeRow.Children.Add($exeCombo)
+            $exeBtn=New-Object System.Windows.Controls.Button; $exeBtn.Style=$win.FindResource('PillGhost'); $exeBtn.Content='Examinar...'; $exeBtn.Height=32; [System.Windows.Controls.Grid]::SetColumn($exeBtn,1); [void]$exeRow.Children.Add($exeBtn); [void]$gfp.Children.Add($exeRow)
+            $exeHint=New-Object System.Windows.Controls.TextBlock; $exeHint.Text='Ruta COMPLETA del .exe. El combo lista los juegos abiertos ahora con su ruta ya resuelta; si no esta, usa Examinar.'; $exeHint.Foreground=New-AXEBrush 'Muted'; $exeHint.FontSize=11; $exeHint.TextWrapping='Wrap'; $exeHint.Margin=New-Object System.Windows.Thickness(2,0,0,8); [void]$gfp.Children.Add($exeHint)
+            $fsoChk=New-Object System.Windows.Controls.CheckBox; $fsoChk.Content='Apagar tambien Fullscreen Optimizations (opt-in)'; $fsoChk.Foreground=New-AXEBrush 'Fg'; $fsoChk.Margin=New-Object System.Windows.Thickness(0,0,0,4); [void]$gfp.Children.Add($fsoChk)
+            $fsoHint=New-Object System.Windows.Controls.TextBlock; $fsoHint.Text='Sin marcar por defecto: en muchos juegos FSO ya usa flip model y quitarlo NO da FPS, solo empeora el alt-tab. Marcalo si mides que te mejora.'; $fsoHint.Foreground=New-AXEBrush 'Muted'; $fsoHint.FontSize=11; $fsoHint.TextWrapping='Wrap'; $fsoHint.Margin=New-Object System.Windows.Thickness(2,0,0,10); [void]$gfp.Children.Add($fsoHint)
+            $gpuBtn=New-Object System.Windows.Controls.Button; $gpuBtn.Style=$win.FindResource('Pill'); $gpuBtn.Background=New-AXEBrush 'Accent'; $gpuBtn.Content='Optimizar GPU'; $gpuBtn.HorizontalAlignment='Left'
+            [System.Windows.Automation.AutomationProperties]::SetName($gpuBtn,'Optimizar la GPU de este juego'); [void]$gfp.Children.Add($gpuBtn)
+            $gform.Child=$gfp; [void]$panel.Children.Add($gform)
+
+            # Procesos con ventana Y ruta legible. El .Path de un proceso elevado o protegido
+            # lanza, por eso el try: se omite en vez de tumbar el rellenado entero.
+            $fillExes={
+                $exeCombo.Items.Clear()
+                foreach($pr in @(Get-Process -EA SilentlyContinue | Where-Object { $_.MainWindowTitle })){
+                    try { if($pr.Path){ [void]$exeCombo.Items.Add($pr.Path) } } catch {}
+                }
+            }
+            $exeBtn.Add_Click({ param($s,$e)
+                $dlg=New-Object Microsoft.Win32.OpenFileDialog
+                $dlg.Filter='Ejecutables (*.exe)|*.exe'; $dlg.Title='Elige el ejecutable del juego'
+                if($dlg.ShowDialog()){ $exeCombo.Text=$dlg.FileName }
+            })
+            $gpuBtn.Add_Click({ param($s,$e)
+                $ex=[string]$exeCombo.Text; if([string]::IsNullOrWhiteSpace($ex) -and $exeCombo.SelectedItem){ $ex=[string]$exeCombo.SelectedItem }
+                if([string]::IsNullOrWhiteSpace($ex)){ Write-AXELog 'Elige el ejecutable del juego.' 'WARN'; return }
+                # Optimize-AXEGame ya valida que la ruta exista y devuelve el motivo si no.
+                foreach($l in (Optimize-AXEGame -Exe $ex -NoFSO:([bool]$fsoChk.IsChecked))){ Write-AXELog $l }
+                & $script:gpuRefreshList
+            })
+            & $fillExes; & $script:gpuRefreshList
         }
         'ASISTENTE IA' {
             $script:aiOut=New-Object System.Windows.Controls.TextBox; $script:aiOut.IsReadOnly=$true; $script:aiOut.Background=New-AXEBrush 'Surface'; $script:aiOut.Foreground=New-AXEBrush 'Fg'
@@ -4428,6 +4529,20 @@ if($env:AXE_GUITEST -eq '1'){
         if(-not $pvOk){ $allOk=$false }
         if($null -ne $tickNull){ $allOk=$false }   # sin juego corriendo no debe activar nada
     } catch { Write-Host "Perfiles view     : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
+    # regresion GPU POR JUEGO (region 10c): la misma vista PERFILES cablea el refresh de la
+    # lista de ejecutables. Se EJERCE el scriptblock, no solo se comprueba que exista: construir
+    # las tarjetas es donde se lee el registro y se parsea la cadena "K=V;", que es lo que se
+    # puede romper. Ojo con confiar en el PNG para esto: el render sale en blanco (el bitmap se
+    # toma sin pasar por ShowDialog), asi que la unica prueba real de que la seccion se construye
+    # es el Build-ActionView de arriba mas este ejercicio. Solo LEE el registro.
+    try {
+        $gvOk = ($script:gpuRefreshList -is [scriptblock])
+        if($gvOk){ & $script:gpuRefreshList }   # si el parser o la lectura del registro revientan, cae al catch
+        $hyb = Test-AXEHybridGpu
+        Write-Host "GPU-juego view    : refresh=$gvOk hibrida=$hyb gpus=$((Get-AXEGpuList).Count)"
+        if(-not $gvOk){ $allOk=$false }
+        if($hyb -isnot [bool]){ $allOk=$false }
+    } catch { Write-Host "GPU-juego view    : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: ejercer handler ASISTENTE (bug de scope $out/$doAsk null)
     try {
         $before=$script:aiOut.Text.Length
