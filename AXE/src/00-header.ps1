@@ -25,7 +25,8 @@ param(
     [string]$Import,
     [switch]$Measure,
     [switch]$Score,
-    [string]$Report
+    [string]$Report,
+    [switch]$TimerSweep
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).

@@ -1,7 +1,7 @@
 # ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-18 18:45:04Z
-# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 32-measure.ps1, 34-safety.ps1, 36-report.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
+# Build UTC: 2026-07-19 03:17:13Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 32-measure.ps1, 34-safety.ps1, 36-report.ps1, 38-regedit.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
@@ -32,7 +32,8 @@ param(
     [string]$Import,
     [switch]$Measure,
     [switch]$Score,
-    [string]$Report
+    [string]$Report,
+    [switch]$TimerSweep
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
@@ -434,25 +435,25 @@ Add-Tweak @{Id='gpu_vrr';Cat='GPU';Tier=1;Reboot=$true;Name='Optimizaciones para
  Test={(Get-RV $GD 'VRROptimizeEnable') -eq 1};Apply={Set-RD $GD 'VRROptimizeEnable' 1};Revert={Del-RV $GD 'VRROptimizeEnable'}}
 
 # --- RED (Tier 1) ---
-Add-Tweak @{Id='net_throttle';Cat='RED';Tier=1;Reboot=$false;Name='Network Throttling OFF';Desc='Sin limite de paquetes con multimedia';Requires=@{};
+Add-Tweak @{Id='net_throttle';Cat='RED';Tier=1;Reboot=$false;Name='Network Throttling OFF';Desc='Sin limite de paquetes con multimedia. MMCSS limita a 10 paq/ms cuando hay reproduccion; 0xFFFFFFFF lo desactiva. Default MS = 10';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/win32/procthread/multimedia-class-scheduler-service';
  Test={(Get-RV $SP 'NetworkThrottlingIndex') -eq 4294967295};Apply={Set-RD $SP 'NetworkThrottlingIndex' 4294967295};Revert={Del-RV $SP 'NetworkThrottlingIndex'}}
 Add-Tweak @{Id='net_nagle';Cat='RED';Tier=2;Reboot=$false;Name='Nagle OFF (adaptador activo)';Desc='TcpAckFrequency=1 + TCPNoDelay=1. Placebo probable en NIC modernas con offload NDIS; MS no recomienda cambiarlo sin estudio';Requires=@{};Source='https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/registry-entry-control-tcp-acknowledgment-behavior';SourceType='official';PlaceboLikely=$true;NotesEng='Disabling delayed ACK / Nagle rarely helps on modern hardware with NDIS offload and can hurt bulk throughput. MS: do not change the default without careful study. Demoted to Tier 2 opt-in. Measure ping/jitter before/after.';
  Test={ $ifs=Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces' -EA SilentlyContinue; $any=$false; foreach($i in $ifs){ $p=Get-ItemProperty $i.PSPath -EA SilentlyContinue; if($p.DhcpIPAddress -or $p.IPAddress){ if((Get-RV $i.PSPath 'TcpAckFrequency') -eq 1 -and (Get-RV $i.PSPath 'TCPNoDelay') -eq 1){$any=$true} } }; $any };
  Apply={ $ifs=Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'; foreach($i in $ifs){ $p=Get-ItemProperty $i.PSPath -EA SilentlyContinue; if($p.DhcpIPAddress -or $p.IPAddress){ Set-RD $i.PSPath 'TcpAckFrequency' 1; Set-RD $i.PSPath 'TCPNoDelay' 1 } } };
  Revert={ $ifs=Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'; foreach($i in $ifs){ Del-RV $i.PSPath 'TcpAckFrequency'; Del-RV $i.PSPath 'TCPNoDelay' } }}
-Add-Tweak @{Id='net_rss';Cat='RED';Tier=1;Reboot=$false;Name='RSS activado';Desc='Reparte trafico de red entre nucleos';Requires=@{};
+Add-Tweak @{Id='net_rss';Cat='RED';Tier=1;Reboot=$false;Name='RSS activado';Desc='Reparte trafico de red entre nucleos. NO-OP EN LA MAYORIA: RSS viene activado de fabrica en Windows 10/11 (medido aqui: ya Enabled). Solo sirve si algo lo apago antes';Requires=@{};Source='https://learn.microsoft.com/en-us/windows-hardware/drivers/network/introduction-to-receive-side-scaling';
  Test={try{(Get-NetOffloadGlobalSetting -EA Stop).ReceiveSideScaling -eq 'Enabled'}catch{$false}};Apply={netsh interface tcp set global rss=enabled | Out-Null};Revert={netsh interface tcp set global rss=default | Out-Null}}
-Add-Tweak @{Id='net_ctcp';Cat='RED';Tier=1;Reboot=$false;Name='CTCP (congestion gaming)';Desc='Recupera antes tras perdida de paquetes';Requires=@{};
+Add-Tweak @{Id='net_ctcp';Cat='RED';Tier=1;Reboot=$false;Name='CTCP (congestion gaming)';Desc='OJO: CUBIC es el default de Windows desde 10 1709 y es MAS moderno que CTCP. Esto RETROCEDE la plantilla Internet a un algoritmo viejo. No lo actives sin medir que te mejora';Requires=@{};Source='https://learn.microsoft.com/en-us/powershell/module/nettcpip/set-nettcpsetting';
  Test={ $t=Get-AXECache 'nettcp' { try{Get-NetTCPSetting -SettingName Internet -EA Stop}catch{$null} }; if(-not $t){$false}else{$t.CongestionProvider -eq 'CTCP'} };Apply={netsh int tcp set supplemental template=internet congestionprovider=ctcp | Out-Null};Revert={netsh int tcp set supplemental template=internet congestionprovider=cubic | Out-Null}}
-Add-Tweak @{Id='net_ecn';Cat='RED';Tier=1;Reboot=$false;Name='ECN OFF';Desc='Evita conflictos con routers viejos';Requires=@{};
+Add-Tweak @{Id='net_ecn';Cat='RED';Tier=1;Reboot=$false;Name='ECN OFF';Desc='Evita conflictos con routers viejos. NO-OP EN LA MAYORIA: ECN ya viene Disabled de fabrica en Win10/11 (medido aqui: Disabled en las 3 plantillas)';Requires=@{};Source='https://learn.microsoft.com/en-us/powershell/module/nettcpip/set-nettcpsetting';
  Test={ $t=Get-AXECache 'nettcp' { try{Get-NetTCPSetting -SettingName Internet -EA Stop}catch{$null} }; if(-not $t){$false}else{$t.EcnCapability -eq 'Disabled'} };Apply={netsh int tcp set global ecncapability=disabled | Out-Null};Revert={netsh int tcp set global ecncapability=default | Out-Null}}
-Add-Tweak @{Id='net_qos';Cat='RED';Tier=1;Reboot=$true;Name='QoS sin reserva de banda';Desc='NonBestEffortLimit=0 (REINICIO)';Requires=@{};
+Add-Tweak @{Id='net_qos';Cat='RED';Tier=1;Reboot=$true;Name='QoS sin reserva de banda';Desc='NonBestEffortLimit=0 (REINICIO). EFECTO DISCUTIDO: la reserva del 20% solo la consumen apps que usan la API de QoS; si ninguna reserva, el ancho ya esta disponible. Ganancia probable ~0 en un PC domestico';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-qos';
  Test={(Get-RV 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit') -eq 0};Apply={Set-RD 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit' 0};Revert={Del-RV 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit'}}
-Add-Tweak @{Id='net_intmod';Cat='RED';Tier=1;Reboot=$false;Name='Interrupt Moderation NIC OFF';Desc='Menos buffering en el adaptador activo';Requires=@{};
+Add-Tweak @{Id='net_intmod';Cat='RED';Tier=1;Reboot=$false;Name='Interrupt Moderation NIC OFF';Desc='Menos buffering en el adaptador activo. COMPROMISO REAL: baja latencia a cambio de MAS uso de CPU por interrupciones. En CPU justa puede salir peor';Requires=@{};Source='https://learn.microsoft.com/en-us/windows-server/networking/technologies/network-subsystem/net-sub-performance-tuning-nics';
  Test={ if(-not $script:HW.NicName){return $true}; try{ $v=(Get-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -EA Stop).RegistryValue; $v -eq 0 }catch{ $true } };
  Apply={ if($script:HW.NicName){ Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 0 -EA SilentlyContinue } };
  Revert={ if($script:HW.NicName){ Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 1 -EA SilentlyContinue } }}
-Add-Tweak @{Id='net_dns';Cat='RED';Tier=1;Reboot=$false;Name='[OPT] DNS rapidos 1.1.1.1 / 8.8.8.8';Desc='OJO: rompe DNS local/VPN. No va en preset';Requires=@{};
+Add-Tweak @{Id='net_dns';Cat='RED';Tier=1;Reboot=$false;Name='[OPT] DNS rapidos 1.1.1.1 / 8.8.8.8';Desc='OJO: rompe DNS local/VPN. No va en preset. Afecta a la RESOLUCION de nombres, no al ping ni al throughput: no da FPS';Requires=@{};Source='https://developers.cloudflare.com/1.1.1.1/';
  Test={ if(-not $script:HW.NicName){return $false}; try{(Get-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -AddressFamily IPv4 -EA Stop).ServerAddresses -contains '1.1.1.1'}catch{$false} };
  Apply={ if($script:HW.NicName){ Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ServerAddresses @('1.1.1.1','8.8.8.8') } };Revert={ if($script:HW.NicName){ Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ResetServerAddresses } }}
 
@@ -463,7 +464,11 @@ Add-Tweak @{Id='mem_ntfsmem';Cat='MEMORIA';Tier=1;Reboot=$true;Name='Cache de me
  Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsMemoryUsage') -eq 2};Apply={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsMemoryUsage' 2};Revert={Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsMemoryUsage'}}
 Add-Tweak @{Id='mem_lastaccess';Cat='MEMORIA';Tier=0;Reboot=$false;Name='NTFS last-access OFF';Desc='Menos escrituras de metadatos al leer';Requires=@{};
  Test={ (& fsutil behavior query disablelastaccess) -match 'Disabled|= 1' };Apply={fsutil behavior set disablelastaccess 1 | Out-Null};Revert={fsutil behavior set disablelastaccess 0 | Out-Null}}
-Add-Tweak @{Id='mem_compression';Cat='MEMORIA';Tier=1;Reboot=$false;Name='Compresion de memoria OFF';Desc='Disable-MMAgent -mc: sin compresion de RAM = menos CPU en paginado, menos micro-stutter. OJO: gasta mas RAM, solo con RAM holgada (16GB+)';Requires=@{MinRam=16};
+Add-Tweak @{Id='mem_8dot3';Cat='MEMORIA';Tier=0;Reboot=$false;Name='Nombres 8.3 NTFS OFF';Desc='NtfsDisable8dot3NameCreation=1: Windows deja de generar el alias corto (PROGRA~1) por cada archivo nuevo. Menos trabajo de metadatos en carpetas grandes. Solo afecta archivos NUEVOS';Requires=@{};Source='https://github.com/valleyofdoom/PC-Tuning';SourceType='community-measured';PlaceboLikely=$false;NotesEng='Listed as measured by valleyofdoom PC-Tuning alongside disablelastaccess. NTFS stops generating the legacy short-name alias per new file, cutting metadata work in large directories. Only affects NEW files: existing 8.3 aliases persist, so Revert does not restore aliases lost in between. Risk: 16-bit/legacy installers and old apps that hardcode short paths.';
+ Test={ (& fsutil 8dot3name query) -match 'disabled|= 1' };
+ Apply={Backup-RegKey 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem' 'FileSystem.reg'; Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsDisable8dot3NameCreation' 1};
+ Revert={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsDisable8dot3NameCreation' 2}}
+Add-Tweak @{Id='mem_compression';Cat='MEMORIA';Tier=2;Reboot=$false;Name='Compresion de memoria OFF';Desc='Disable-MMAgent -mc. CONTROVERTIDO: sin compresion, la RAM que no cabe va a DISCO, mucho mas lento que descomprimir. Solo con RAM muy holgada y midiendo antes/despues';Requires=@{MinRam=16};Source='https://learn.microsoft.com/en-us/windows/win32/memory/memory-compression';SourceType='community-measured';PlaceboLikely=$true;NotesEng='Memory compression trades a little CPU for avoiding disk paging, and disk paging is orders of magnitude slower than decompressing a page. Disabling only helps if the working set genuinely never approaches physical RAM; otherwise it converts cheap decompression into expensive hard faults. The MinRam=16 gate is necessary but NOT sufficient: a 16GB machine running a modern AAA title plus a browser can still exceed it. Demoted from Tier 1 to Tier 2 opt-in. Measure hard faults/sec and 1% lows before/after.';
  Test={ try{ (Get-MMAgent -EA Stop).MemoryCompression -eq $false }catch{ $false } };
  Apply={ Disable-MMAgent -mc -EA SilentlyContinue };Revert={ Enable-MMAgent -mc -EA SilentlyContinue }}
 
@@ -521,7 +526,7 @@ Add-Tweak @{Id='svc_telemetry';Cat='SERVICIOS';Tier=0;Reboot=$false;Name='Teleme
  Test={(Get-SvcStart 'DiagTrack') -eq 'Disabled'};Apply={Set-SvcStart 'DiagTrack' 'disabled'; Set-SvcStart 'dmwappushservice' 'disabled'; Set-SvcStart 'WerSvc' 'disabled'};Revert={Set-SvcStart 'DiagTrack' 'auto'; Set-SvcStart 'dmwappushservice' 'demand'; Set-SvcStart 'WerSvc' 'demand'}}
 Add-Tweak @{Id='svc_obsolete';Cat='SERVICIOS';Tier=0;Reboot=$false;Name='Servicios obsoletos OFF';Desc='RetailDemo, MapsBroker, Fax (SKU-safe)';Requires=@{};
  Test={(Get-SvcStart 'RetailDemo') -eq 'Disabled'};Apply={'RetailDemo','MapsBroker','Fax'|ForEach-Object{Set-SvcStart $_ 'disabled'}};Revert={Set-SvcStart 'RetailDemo' 'demand'; Set-SvcStart 'MapsBroker' 'demand'; Set-SvcStart 'Fax' 'demand'}}
-Add-Tweak @{Id='svc_sysmain';Cat='SERVICIOS';Tier=1;Reboot=$false;Name='Precarga/diagnostico OFF';Desc='SysMain, PcaSvc, DPS (con SSD, precarga aporta poco)';Requires=@{};
+Add-Tweak @{Id='svc_sysmain';Cat='SERVICIOS';Tier=2;Reboot=$false;Name='Precarga/diagnostico OFF';Desc='SysMain, PcaSvc, DPS. CONTRA RECOMENDACION DE MS: SysMain sigue aportando en SSD (precarga a RAM, que es 100x mas rapida que el SSD). Apagarlo suele SUBIR el tiempo de arranque de apps. Mide antes/despues';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/client-management/manage-windows-11-services';SourceType='official';PlaceboLikely=$true;NotesEng='Microsoft explicitly advises against disabling SysMain. The "SSD makes prefetch pointless" claim confuses the source and destination of the cache: SysMain preloads into RAM, which stays orders of magnitude faster than any NVMe drive, so the benefit survives the move to SSD. Disabling typically increases cold app-launch time, and the freed standby memory is not a gain (free RAM is wasted RAM). DPS additionally powers the network/audio troubleshooters and PcaSvc the Program Compatibility Assistant; both break silently when disabled. Demoted from Tier 1 to Tier 2 opt-in. Measure cold app-launch time before/after, not "free RAM".';
  Test={(Get-SvcStart 'SysMain') -eq 'Disabled'};Apply={'SysMain','PcaSvc','DPS'|ForEach-Object{Set-SvcStart $_ 'disabled'}};Revert={'SysMain','PcaSvc','DPS'|ForEach-Object{Set-SvcStart $_ 'auto'}}}
 Add-Tweak @{Id='svc_wsearch';Cat='SERVICIOS';Tier=1;Reboot=$false;Name='Indexacion de busqueda OFF';Desc='WSearch OFF: corta el I/O de disco de fondo del indexador. La busqueda sigue funcionando, solo mas lenta';Requires=@{};
  Test={(Get-SvcStart 'WSearch') -eq 'Disabled'};
@@ -602,36 +607,36 @@ Add-Tweak @{Id='app_vs';Cat='APPS';Tier=0;Reboot=$false;Name='Telemetria Visual 
 #    blind spot de seguridad para todo lo que caiga en la carpeta.
 # Tamper Protection OFF: prerequisito para que el resto de tweaks EXTREMO persistan
 # (en 24H2/25H2, si Tamper esta ON, Windows revierte los cambios de DeviceGuard al reiniciar).
-Add-Tweak @{Id='ext_tamper';Cat='EXTREMO';Tier=2;Reboot=$false;Name='Tamper Protection OFF';Desc='Prerequisito: deja persistir los cambios de VBS/CFG/ASLR. Apaga la proteccion anti-modificacion de Defender';Requires=@{};
+Add-Tweak @{Id='ext_tamper';Cat='EXTREMO';Tier=2;Reboot=$false;Name='Tamper Protection OFF';Desc='Prerequisito: deja persistir los cambios de VBS/CFG/ASLR. Apaga la proteccion anti-modificacion de Defender';Requires=@{};Source='https://learn.microsoft.com/en-us/defender-endpoint/prevent-changes-to-security-settings-with-tamper-protection';
  Test={(Get-RV 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Features' 'TamperProtection') -eq 0};
  Apply={Set-RD 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Features' 'TamperProtection' 0};
  Revert={Set-RD 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Features' 'TamperProtection' 1}}
 
 # Core Isolation / VBS / HVCI OFF: ~5-10% FPS (Tom's Hardware 2024-2026). Requiere ext_tamper antes.
-Add-Tweak @{Id='ext_vbs';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Core Isolation / Memory Integrity (VBS+HVCI) OFF';Desc='+5-10% FPS. Apaga VBS, HVCI y Credential Guard. Requiere Tamper Protection OFF primero';Requires=@{TamperOff=$true};
+Add-Tweak @{Id='ext_vbs';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Core Isolation / Memory Integrity (VBS+HVCI) OFF';Desc='+5-10% FPS. Apaga VBS, HVCI y Credential Guard. Requiere Tamper Protection OFF primero';Requires=@{TamperOff=$true};Source='https://learn.microsoft.com/en-us/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity';
  Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled') -eq 0 -and (Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity') -eq 0 -and (Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LsaCfgFlags') -in @($null,0)};
  Apply={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled' 0; Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity' 0; Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LsaCfgFlags' 0};
  Revert={Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled'; Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity'; Del-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LsaCfgFlags'}}
 
 # Control Flow Guard OFF: mitigacion de exploits. Ganancia pequena pero medible en CPU-bound.
-Add-Tweak @{Id='ext_cfg';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Control Flow Guard (CFG) OFF';Desc='Apaga proteccion de salto indirecto. Ganancia pequena en CPU-bound. Requiere reinicio';Requires=@{TamperOff=$true};
+Add-Tweak @{Id='ext_cfg';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Control Flow Guard (CFG) OFF';Desc='Apaga proteccion de salto indirecto. Ganancia pequena en CPU-bound. Requiere reinicio';Requires=@{TamperOff=$true};Source='https://learn.microsoft.com/en-us/windows/win32/secbp/control-flow-guard';
  Test={ $m=Get-AXECache 'procmit' { try{Get-ProcessMitigation -System -EA Stop}catch{$null} }; if(-not $m){$false}else{$m.Cfg.Enable -eq 'OFF'} };
  Apply={ Set-ProcessMitigation -System -Disable CFG };
  Revert={ Set-ProcessMitigation -System -Enable CFG }}
 
 # Mandatory ASLR OFF: desactiva el randomizado de memoria forzado del sistema.
-Add-Tweak @{Id='ext_aslr';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Mandatory ASLR OFF';Desc='Apaga randomizado de memoria del sistema. Expone a exploits de buffer overflow';Requires=@{TamperOff=$true};
+Add-Tweak @{Id='ext_aslr';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Mandatory ASLR OFF';Desc='Apaga randomizado de memoria del sistema. Expone a exploits de buffer overflow';Requires=@{TamperOff=$true};Source='https://learn.microsoft.com/en-us/defender-endpoint/customize-exploit-protection';
  Test={ $m=Get-AXECache 'procmit' { try{Get-ProcessMitigation -System -EA Stop}catch{$null} }; if(-not $m){$false}else{$m.Aslr.ForceRelocateImages -eq 'OFF'} };
  Apply={ Set-ProcessMitigation -System -Disable ForceRelocateImages };
  Revert={ Set-ProcessMitigation -System -Enable ForceRelocateImages }}
 
 # Vulnerable Driver Blocklist OFF: permite cargar drivers sin firma estricta (DMA, overlays custom).
-Add-Tweak @{Id='ext_driverblock';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Vulnerable Driver Blocklist OFF';Desc='Permite drivers bloqueados por Microsoft (overlays, inyectores). Riesgo: drivers vulnerables cargan';Requires=@{};
+Add-Tweak @{Id='ext_driverblock';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Vulnerable Driver Blocklist OFF';Desc='Permite drivers bloqueados por Microsoft (overlays, inyectores). Riesgo: drivers vulnerables cargan';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/design/microsoft-recommended-driver-block-rules';
  Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Config' 'VulnerableDriverBlocklistEnable') -eq 0};
  Apply={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Config' 'VulnerableDriverBlocklistEnable' 0};
  Revert={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Config' 'VulnerableDriverBlocklistEnable' 1}}
 
-Add-Tweak @{Id='ext_mitig';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Mitigaciones Spectre/Meltdown OFF';Desc='PIERDES proteccion CVE-2017-5715/5754';Requires=@{};
+Add-Tweak @{Id='ext_mitig';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Mitigaciones Spectre/Meltdown OFF';Desc='PIERDES proteccion CVE-2017-5715/5754';Requires=@{};Source='https://support.microsoft.com/en-us/topic/kb4072698-windows-server-and-azure-stack-hci-guidance-to-protect-against-silicon-based-microarchitectural-and-speculative-execution-side-channel-vulnerabilities-2f965763-00e2-8f98-b632-0d96f30c8c8e';
  Test={(Get-RV $MM 'FeatureSettingsOverride') -eq 3};
  Apply={Set-RD $MM 'FeatureSettingsOverride' 3; Set-RD $MM 'FeatureSettingsOverrideMask' 3};Revert={Del-RV $MM 'FeatureSettingsOverride'; Del-RV $MM 'FeatureSettingsOverrideMask'}}
 
@@ -639,19 +644,19 @@ Add-Tweak @{Id='ext_mitig';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Mitigaciones 
 # ext_hypervisor: apaga el hipervisor en el arranque. DISTINTO de ext_vbs (que solo pone la
 # POLITICA de registro de VBS): con Hyper-V/WSL2/Sandbox el hipervisor sigue arrancando y
 # mantiene overhead; esto lo mata de raiz. Test reusa el cache 'bcd' (mismo bcdedit /enum).
-Add-Tweak @{Id='ext_hypervisor';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Hypervisor OFF (mata VBS/CredGuard de raiz)';Desc='+3-8% FPS si usas Hyper-V/WSL2/Sandbox. ROMPE WSL2, Docker, Windows Sandbox, Hyper-V y Credential Guard. Reversible. REINICIO';Requires=@{};
+Add-Tweak @{Id='ext_hypervisor';Cat='EXTREMO';Tier=2;Reboot=$true;Name='Hypervisor OFF (mata VBS/CredGuard de raiz)';Desc='+3-8% FPS si usas Hyper-V/WSL2/Sandbox. ROMPE WSL2, Docker, Windows Sandbox, Hyper-V y Credential Guard. Reversible. REINICIO';Requires=@{};Source='https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/bcdedit--set';
  Test={ ((Get-AXECache 'bcd' { bcdedit /enum '{current}' | Out-String }) -match 'hypervisorlaunchtype\s+Off') };
  Apply={bcdedit /set hypervisorlaunchtype off | Out-Null};Revert={bcdedit /set hypervisorlaunchtype auto | Out-Null}}
 
 # ext_dep: NX/DEP AlwaysOff. HONESTO: ganancia FPS ~0 en hardware moderno (DEP es gratis en la
 # MMU). Incluido por peticion explicita. Reduce proteccion anti-exploit.
-Add-Tweak @{Id='ext_dep';Cat='EXTREMO';Tier=2;Reboot=$true;Name='DEP/NX OFF (placebo, ~0 FPS)';Desc='Desactiva Data Execution Prevention. Ganancia FPS ~0 en hardware moderno. Reduce proteccion anti-exploit. REINICIO';Requires=@{};
+Add-Tweak @{Id='ext_dep';Cat='EXTREMO';Tier=2;Reboot=$true;Name='DEP/NX OFF (placebo, ~0 FPS)';Desc='Desactiva Data Execution Prevention. Ganancia FPS ~0 en hardware moderno. Reduce proteccion anti-exploit. REINICIO';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/win32/memory/data-execution-prevention';
  Test={ ((Get-AXECache 'bcd' { bcdedit /enum '{current}' | Out-String }) -match 'nx\s+AlwaysOff') };
  Apply={bcdedit /set nx AlwaysOff | Out-Null};Revert={bcdedit /set nx OptIn | Out-Null}}
 
 # ext_sehop: SEHOP OFF. HONESTO: ganancia FPS ~0 (solo pesa en dispatch de excepciones).
 # Incluido por peticion. Reduce proteccion anti-exploit. 1=SEHOP off, 0=SEHOP on (default).
-Add-Tweak @{Id='ext_sehop';Cat='EXTREMO';Tier=2;Reboot=$true;Name='SEHOP OFF (placebo, ~0 FPS)';Desc='Desactiva Structured Exception Handling Overwrite Protection. Ganancia FPS ~0. Reduce proteccion anti-exploit. REINICIO';Requires=@{};
+Add-Tweak @{Id='ext_sehop';Cat='EXTREMO';Tier=2;Reboot=$true;Name='SEHOP OFF (placebo, ~0 FPS)';Desc='Desactiva Structured Exception Handling Overwrite Protection. Ganancia FPS ~0. Reduce proteccion anti-exploit. REINICIO';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/security/threat-protection/overview-of-threat-mitigations-in-windows-10';
  Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'DisableExceptionChainValidation') -eq 1};
  Apply={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'DisableExceptionChainValidation' 1};
  Revert={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'DisableExceptionChainValidation' 0}}
@@ -1201,6 +1206,34 @@ namespace AXE {
     [DllImport("ntdll.dll", SetLastError=true)]
     public static extern int NtQueryTimerResolution(out uint Min, out uint Max, out uint Current);
 
+    // Unidades de 100ns, igual que Query. SetResolution=false LIBERA el request de este proceso.
+    // OJO Win11 2004+: sin GlobalTimerResolutionRequests=1 el efecto es SOLO de este proceso.
+    [DllImport("ntdll.dll", SetLastError=true)]
+    public static extern int NtSetTimerResolution(uint DesiredResolution, bool SetResolution, out uint CurrentResolution);
+
+    // Nucleo del barrido: mide cuanto se PASA de largo un Sleep(1) a la resolucion actual.
+    // El DELTA (no el absoluto) es la senal: a mejor resolucion el scheduler despierta mas
+    // cerca del 1ms pedido. Debe ser nativo - un Sleep en bucle de PowerShell mediria el
+    // interprete. Devuelve {samples, avgDeltaMs, maxDeltaMs, stdevMs}.
+    public static double[] MeasureSleepDelta(int samples) {
+      if (samples < 1) samples = 1;
+      double toMs = 1000.0 / (double)Stopwatch.Frequency;
+      double[] vals = new double[samples];
+      double sum = 0.0, max = 0.0;
+      for (int i = 0; i < samples; i++) {
+        long t0 = Stopwatch.GetTimestamp();
+        System.Threading.Thread.Sleep(1);
+        double delta = ((Stopwatch.GetTimestamp() - t0) * toMs) - 1.0;
+        if (delta < 0.0) delta = 0.0;          // Sleep nunca vuelve antes; clamp del ruido de QPC
+        vals[i] = delta; sum += delta;
+        if (delta > max) max = delta;
+      }
+      double avg = sum / samples;
+      double sq = 0.0;
+      for (int i = 0; i < samples; i++) { double d = vals[i] - avg; sq += d * d; }
+      return new double[] { (double)samples, avg, max, Math.Sqrt(sq / samples) };
+    }
+
     // Devuelve {samples, meanMs, maxMs, p999Ms, stalls1ms}. Histograma acotado (memoria O(1)).
     public static double[] SampleJitter(int durationMs) {
       double freq = (double)Stopwatch.Frequency;
@@ -1274,12 +1307,339 @@ function Get-AXETimerResolution {
         $min=0; $max=0; $cur=0
         $rc = [AXE.Native]::NtQueryTimerResolution([ref]$min,[ref]$max,[ref]$cur)
         if($rc -ne 0){ return $null }
+        # Windows 10 2004 (build 19041) aisla los requests de resolucion POR PROCESO. Desde ahi,
+        # CurrentMs NO refleja configuracion: refleja lo que pida la app que este corriendo en
+        # ese instante. Lo unico accionable es GlobalTimerResolutionRequests, que devuelve el
+        # comportamiento global. Por eso se leen juntos: puntuar CurrentMs a secas castiga
+        # maquinas bien configuradas solo porque en ese segundo nadie pedia 0.5ms.
+        # Ref: https://learn.microsoft.com/en-us/windows/win32/api/timeapi/nf-timeapi-timebeginperiod
+        #   OJO: el aviso de Measure-AXETimerSweep usa 22000 (Win11) para lo mismo. El corte
+        #   real es 19041; los builds 19041-19045 tambien aislan y ese aviso no los cubre.
+        $isolated = ([Environment]::OSVersion.Version.Build -ge 19041)
+        $gtrr = $null
+        try {
+            # Cmdlet nativo a posta, sin Get-RV: esta funcion corre tambien en runspaces de
+            # fondo (GUI) donde solo estan las funciones de la lista blanca.
+            $gtrr = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' `
+                        -Name 'GlobalTimerResolutionRequests' -EA Stop).GlobalTimerResolutionRequests
+        } catch {}
         [pscustomobject]@{
-            CurrentMs = [math]::Round($cur/10000.0,4)
-            MinMs     = [math]::Round($min/10000.0,4)   # peor (mayor numero)
-            MaxMs     = [math]::Round($max/10000.0,4)   # mejor posible (menor numero)
+            CurrentMs        = [math]::Round($cur/10000.0,4)
+            MinMs            = [math]::Round($min/10000.0,4)   # peor (mayor numero)
+            MaxMs            = [math]::Round($max/10000.0,4)   # mejor posible (menor numero)
+            PerProcess       = $isolated                        # CurrentMs es ambiental, no config
+            GlobalRequests   = $gtrr                            # $null = clave ausente
         }
     } catch { $null }
+}
+
+function Set-AXETimerResolution {
+    # $Ms en milisegundos -> unidades de 100ns. -Release suelta el request de ESTE proceso.
+    # Devuelve la resolucion resultante en ms, o $null si el kernel la rechazo.
+    param([double]$Ms,[switch]$Release)
+    try {
+        $cur=0
+        if($Release){
+            # STATUS_TIMER_RESOLUTION_NOT_SET (0xC0000245) si no habia request nuestro: no es error.
+            [void][AXE.Native]::NtSetTimerResolution(0,$false,[ref]$cur)
+        } else {
+            $units=[uint32][math]::Round($Ms*10000.0)
+            if([AXE.Native]::NtSetTimerResolution($units,$true,[ref]$cur) -ne 0){ return $null }
+        }
+        [math]::Round($cur/10000.0,4)
+    } catch { $null }
+}
+
+function Get-AXESweepVerdict {
+    # Decide si el barrido encontro algo REAL o esta persiguiendo ruido. Pura (no mide) para
+    # poder testearla sin hardware: ver tests/TimerSweep.Tests.ps1.
+    #
+    # Reemplaza al test anterior ($spread -gt $best.StdevMs), que fallaba por dos motivos:
+    #
+    #  1. ARGMIN DE N PUNTOS RUIDOSOS. Coger el minimo de ~50 medias con ruido y luego
+    #     preguntar "el spread supera al ruido?" es la maldicion del ganador: el minimo de N
+    #     sorteos cae sistematicamente por debajo del minimo real, asi que sale un spread de
+    #     3-4 sigmas SOLO POR AZAR, sin que haya efecto. Medido en Win11 26200: declaro
+    #     concluyente ganando por 0.001ms (spread 0.250 vs stdev 0.249).
+    #     Arreglo: umbral Bonferroni sobre el numero de comparaciones, y el error estimado con
+    #     la varianza AGRUPADA entre pasadas (dof grande) en vez de la stdev intra-punto de un
+    #     solo punto, que con 2-3 pasadas no estima nada.
+    #
+    #  2. NO COMPROBABA LA FISICA. Sleep(1) con granularidad R despierta en el primer tick
+    #     >= 1ms, o sea ceil(1/R)*R, luego el delta teorico es ceil(1/R)*R-1: CRECIENTE entre
+    #     0.5 y 1.0ms. En la maquina medida el delta DECRECIA - curva invertida. Eso significa
+    #     que lo medido es overhead de despertar del scheduler (~0.4ms), no cuantizacion del
+    #     timer (rango total 0.2ms): la senal esta enterrada bajo el ruido.
+    #     Sin este chequeo la estadistica sola SI daba "concluyente" en ese barrido, o sea que
+    #     arreglar solo el punto 1 no habria bastado.
+    #
+    # Ambas condiciones son necesarias. Devuelve Reason para que la UI diga POR QUE.
+    param([object[]]$Points)
+
+    $P = @($Points | Where-Object { $_ -and @($_.PassMeans).Count -ge 1 })
+    if($P.Count -le 1){
+        return [pscustomobject]@{
+            Conclusive  = $false
+            Reason      = 'un solo punto concedido: el kernel cuantizo todo, no hay nada que elegir.'
+            Best        = $(if($P.Count -eq 1){ $P[0] } else { $null })
+            Worst       = $null
+            SpreadMs    = 0.0
+            ThresholdMs = 0.0
+            ModelR      = $null
+        }
+    }
+
+    $stats = @(foreach($p in $P){
+        $pm = @($p.PassMeans)
+        [pscustomobject]@{
+            Point     = $p
+            AppliedMs = [double]$p.AppliedMs
+            Mean      = ($pm | Measure-Object -Average).Average
+            N         = $pm.Count
+        }
+    })
+
+    # Varianza agrupada entre pasadas. Cada punto aporta pocos grados de libertad (2-3
+    # pasadas), pero el ruido del scheduler es el mismo en todas las resoluciones, asi que
+    # agrupar da dof ~= 2*N y una estimacion usable. Es el MSE de un ANOVA de un factor.
+    $ss = 0.0; $dof = 0
+    foreach($s in $stats){
+        if($s.N -lt 2){ continue }
+        foreach($x in @($s.Point.PassMeans)){ $d = [double]$x - $s.Mean; $ss += $d*$d }
+        $dof += ($s.N - 1)
+    }
+    $pooledVar = $(if($dof -gt 0){ $ss / $dof } else { 0.0 })
+
+    $best   = $stats | Sort-Object Mean | Select-Object -First 1
+    $worst  = $stats | Sort-Object Mean -Descending | Select-Object -First 1
+    $spread = $worst.Mean - $best.Mean
+    $seDiff = [math]::Sqrt($pooledVar * (1.0/$best.N + 1.0/$worst.N))
+
+    # Bonferroni: el mejor se compara contra los otros N-1 puntos, asi que el umbral sube con
+    # N. Valores = z bilateral a alpha=0.05/comparaciones. Interpolado con Get-AXEBand para no
+    # meter una inversa de la normal por 7 numeros. Aproximado a posta: entre z=3.3 y z=4.0
+    # casi nunca cambia el veredicto; lo que importa es que CREZCA con N.
+    $nComp = $stats.Count - 1
+    $k = Get-AXEBand -x $nComp -pairs @(@(1,1.96),@(2,2.24),@(5,2.58),@(10,2.81),@(20,3.02),@(50,3.29),@(100,3.48))
+    $threshold = $k * $seDiff
+    $statOk = $(if($seDiff -gt 0){ $spread -gt $threshold } else { $spread -gt 0 })
+
+    # Modelo fisico: delta teorico = ceil(1/R)*R - 1. Si las resoluciones concedidas predicen
+    # todas el mismo delta (p.ej. solo 0.500 y 1.000, ambas 0), el modelo no discrimina: el
+    # chequeo se salta porque no puede opinar. Si discrimina, exigimos correlacion positiva.
+    $modelR = $null; $modelOk = $true
+    $pred = @(foreach($s in $stats){ [math]::Ceiling(1.0/$s.AppliedMs)*$s.AppliedMs - 1.0 })
+    $meas = @(foreach($s in $stats){ $s.Mean })
+    $mx = ($pred | Measure-Object -Average).Average
+    $my = ($meas | Measure-Object -Average).Average
+    $sxy = 0.0; $sxx = 0.0; $syy = 0.0
+    for($i=0; $i -lt $pred.Count; $i++){
+        $dx = $pred[$i] - $mx; $dy = $meas[$i] - $my
+        $sxy += $dx*$dy; $sxx += $dx*$dx; $syy += $dy*$dy
+    }
+    if($sxx -gt 0 -and $syy -gt 0){
+        $modelR  = $sxy / [math]::Sqrt($sxx * $syy)
+        $modelOk = ($modelR -ge 0.3)
+    }
+
+    # Orden a posta: el fallo del modelo es mas fundamental que el estadistico. Si la curva no
+    # tiene la forma que dicta la fisica, que el spread sea "significativo" da igual.
+    $reason =
+        if(-not $modelOk){
+            "la curva medida no sigue el modelo de cuantizacion (r={0:F2}): domina el overhead del scheduler, no la resolucion." -f $modelR
+        } elseif(-not $statOk){
+            "spread {0:F3}ms no supera el umbral {1:F3}ms (ruido entre pasadas x{2:F2} por {3} comparaciones)." -f $spread,$threshold,$k,$nComp
+        } else {
+            "spread {0:F3}ms supera el umbral {1:F3}ms y la curva sigue el modelo (r={2:F2})." -f $spread,$threshold,$modelR
+        }
+
+    [pscustomobject]@{
+        Conclusive  = [bool]($modelOk -and $statOk)
+        Reason      = $reason
+        Best        = $best.Point
+        Worst       = $worst.Point
+        SpreadMs    = [math]::Round($spread,4)
+        ThresholdMs = [math]::Round($threshold,4)
+        ModelR      = $(if($null -eq $modelR){ $null } else { [math]::Round($modelR,3) })
+    }
+}
+
+function Measure-AXETimerSweep {
+    # §3.5 - Barrido de resolucion de timer. Motivo: la investigacion de valleyofdoom midio
+    # que 0.500ms NO es optima en todas las maquinas (a varios candidatos 0.507ms les daba
+    # MENOS delta, y un portatil necesitaba 0.600ms), sin poder explicar por que tras comparar
+    # BCD, hardware, timers y version de Windows. O sea: el optimo es POR MAQUINA y hay que
+    # medirlo. Esto lo mide en vez de asumirlo.
+    #   Senal = delta medio de un Sleep(1). Menor delta = el scheduler despierta mas cerca
+    #   de lo pedido. Se reporta tambien stdev: un delta bajo con stdev alta es ruido, no ganancia.
+    # Ref: https://github.com/valleyofdoom/TimerResolution
+    param(
+        [double]$StartMs = 0.5,
+        [double]$EndMs   = 0.6,
+        [double]$StepMs  = 0.002,
+        [int]$Samples    = 200,
+        [int]$Passes     = 3
+    )
+    if(-not ('AXE.Native' -as [type])){ return $null }
+    if(-not [AXE.Native].GetMethod('MeasureSleepDelta')){
+        Write-AXELog 'AXE.Native cargado sin MeasureSleepDelta (tipo obsoleto en esta sesion). Reinicia AXE.' 'ERR'
+        return $null
+    }
+    if($StepMs -le 0 -or $EndMs -lt $StartMs){ Write-AXELog 'Barrido: rango invalido.' 'ERR'; return $null }
+
+    # Aviso honesto: en Win11 2004+ el request es por-proceso salvo que este el flag global.
+    # Sin el, el optimo que encontremos vale para AXE, NO para el juego.
+    try {
+        if([Environment]::OSVersion.Version.Build -ge 22000 -and
+           (Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'GlobalTimerResolutionRequests') -ne 1){
+            Write-AXELog 'Win11 sin GlobalTimerResolutionRequests=1: el optimo medido aplica solo a este proceso. Activa lat_timerres y reinicia para que valga a nivel sistema.' 'WARN'
+        }
+    } catch {}
+
+    $orig = Get-AXETimerResolution
+    $proc = [System.Diagnostics.Process]::GetCurrentProcess()
+    $prio = $proc.PriorityClass
+    $out  = New-Object System.Collections.ArrayList
+    try {
+        # Prioridad alta: baja el ruido de otros procesos en el delta. No RealTime (puede colgar la UI).
+        try { $proc.PriorityClass='High' } catch {}
+        # ORDEN ALEATORIO, N PASADAS. Un barrido ascendente de una pasada CONFUNDE resolucion
+        # con tiempo: cualquier deriva del sistema durante el barrido (turbo, termica, otro
+        # proceso despertando) se leeria como si fuera efecto de la resolucion, porque ambas
+        # avanzan juntas. Medido: una pasada ascendente dibujo una curva en U preciosa que
+        # NO se puede distinguir de deriva. Aleatorizar rompe esa correlacion; repetir permite
+        # medir repetibilidad (ReproMs) en vez de suponerla.
+        $plan = New-Object System.Collections.ArrayList
+        for($p=0; $p -lt [math]::Max(1,$Passes); $p++){
+            for($ms=$StartMs; $ms -le ($EndMs + 1e-9); $ms += $StepMs){ [void]$plan.Add($ms) }
+        }
+        foreach($ms in ($plan | Sort-Object { Get-Random })){
+            $applied = Set-AXETimerResolution -Ms $ms
+            if($null -eq $applied){ continue }
+            [void][AXE.Native]::MeasureSleepDelta(5)          # warm-up, descartado
+            $r = [AXE.Native]::MeasureSleepDelta([int]$Samples)
+            [void]$out.Add([pscustomobject]@{
+                RequestedMs = [math]::Round($ms,4)
+                AppliedMs   = $applied
+                AvgDeltaMs  = [math]::Round($r[1],4)
+                MaxDeltaMs  = [math]::Round($r[2],4)
+                StdevMs     = [math]::Round($r[3],4)
+                Samples     = [int]$r[0]
+            })
+        }
+    } finally {
+        # Siempre soltar el request y restaurar prioridad, aunque el barrido reviente.
+        [void](Set-AXETimerResolution -Release)
+        try { $proc.PriorityClass=$prio } catch {}
+    }
+    if($out.Count -eq 0){ Write-AXELog 'Barrido: el kernel rechazo todas las resoluciones.' 'ERR'; return $null }
+
+    # El kernel CUANTIZA: varios Requested distintos aterrizan en el mismo Applied real.
+    # Comparar por Requested fabricaria un "optimo" entre puntos fisicamente identicos
+    # (medido: dos filas con Applied=0.50 dieron avgDelta 0.59 y 0.36 - eso es ruido puro).
+    # Se agrega por Applied, que es la unica magnitud que el hardware distingue de verdad.
+    $agg = New-Object System.Collections.ArrayList
+    foreach($grp in ($out | Group-Object AppliedMs)){
+        $m = $grp.Group | Measure-Object AvgDeltaMs -Average -Maximum
+        [void]$agg.Add([pscustomobject]@{
+            # NO usar [double]$grp.Name: Group-Object serializa con la cultura del sistema
+            # ("0,5" en es-ES) y el cast [double] parsea con InvariantCulture, donde la coma
+            # es separador de MILES -> 0,5 se convierte en 5 y 0,51 en 51. Silencioso y falso.
+            # El valor original del grupo no pasa por string, asi que es inmune al locale.
+            AppliedMs   = $grp.Group[0].AppliedMs
+            # Medias POR PASADA, sin agregar. Son la unidad de observacion del veredicto:
+            # pasadas separadas en el tiempo y en orden aleatorio, luego su dispersion SI
+            # estima el ruido real. La stdev intra-pasada no, porque las muestras dentro de
+            # una pasada estan autocorreladas (el sistema deriva durante los 200 sleeps).
+            PassMeans   = @($grp.Group | ForEach-Object AvgDeltaMs)
+            AvgDeltaMs  = [math]::Round($m.Average,4)
+            MaxDeltaMs  = [math]::Round(($grp.Group | Measure-Object MaxDeltaMs -Maximum).Maximum,4)
+            # Stdev intra-punto mas alta del grupo: cota superior honesta del ruido.
+            StdevMs     = [math]::Round(($grp.Group | Measure-Object StdevMs -Maximum).Maximum,4)
+            # Dispersion ENTRE repeticiones del mismo Applied: si es alta, la medida no es repetible.
+            ReproMs     = [math]::Round($m.Maximum - $m.Average,4)
+            Passes      = $grp.Count
+            Samples     = ($grp.Group | Measure-Object Samples -Sum).Sum
+        })
+    }
+    # Win11 2004+ aisla el request POR PROCESO. Cuando el nuestro no se concede, el sleep cae
+    # al default de 15.6ms AUNQUE NtSetTimerResolution reporte exito y devuelva la resolucion
+    # del SISTEMA (que otro proceso mantiene). Medido aqui: 10 de 13 puntos reportaron
+    # AppliedMs=1.0 mientras dormian 15.6ms reales. El valor reportado MIENTE; el delta no.
+    # Por eso el corte es por delta medido, no por lo que dice el kernel.
+    $granted    = @($agg | Where-Object { $_.AvgDeltaMs -lt 5.0 })
+    $notGranted = @($agg | Where-Object { $_.AvgDeltaMs -ge 5.0 })
+    if($notGranted.Count -gt 0){
+        Write-AXELog "Barrido: $($notGranted.Count) de $($agg.Count) resoluciones no se concedieron a este proceso (sleeps de ~15.6ms). Sintoma tipico del aislamiento por-proceso de Win11: activa lat_timerres y reinicia." 'WARN'
+    }
+    if($granted.Count -eq 0){
+        Write-AXELog 'Barrido: ningun request concedido. Sin datos utiles.' 'ERR'
+        return $null
+    }
+    # Comparar SOLO entre resoluciones concedidas. Mezclar concedidas con fallbacks a 15.6ms
+    # daria un spread enorme y un "Conclusive" falso: mediria "obtener el request vs no
+    # obtenerlo", que no es la pregunta. La pregunta es cual resolucion concedida es mejor.
+    # El veredicto vive en Get-AXESweepVerdict: logica pura, con tests, sin hardware. Aqui solo
+    # se mide. Antes se decidia inline y por eso el bug (comparar contra la stdev intra-punto)
+    # sobrevivio: no habia forma de testearlo sin un barrido real de 60s.
+    $v = Get-AXESweepVerdict -Points $granted
+    [pscustomobject]@{
+        Results      = @($granted)
+        NotGranted   = @($notGranted)
+        Raw          = @($out)
+        Best         = $v.Best
+        Worst        = $v.Worst
+        SpreadMs     = $v.SpreadMs
+        ThresholdMs  = $v.ThresholdMs
+        ModelR       = $v.ModelR
+        Reason       = $v.Reason
+        OriginalMs   = $(if($orig){ $orig.CurrentMs } else { $null })
+        DistinctRes  = $granted.Count
+        Passes       = $Passes
+        Conclusive   = $v.Conclusive
+    }
+}
+
+function Format-AXETimerSweep {
+    # Render compartido CLI (-TimerSweep) / GUI (boton "Barrido de timer"). Vive aqui y no en
+    # cada consumidor porque el texto dice si el resultado es concluyente o ruido: si cada UI
+    # se escribe el suyo, una acaba recomendando un valor que la otra declara no concluyente.
+    # Devuelve string[] (una linea por elemento); el consumidor decide como pintarlo.
+    param($Sweep)
+    # OJO: devolver '@(...)' pelado, NO ',@(...)'. La coma unaria envuelve el array en OTRO
+    # array, asi que el llamante recibe UN elemento (el array entero) en vez de N lineas: el
+    # foreach del CLI itera una vez y el -join de la GUI concatena con espacios. Resultado
+    # medido: las 6 lineas del informe salian pegadas en un renglon.
+    if(-not $Sweep){ return @('Sin datos utiles (ver log).') }
+    $L = New-Object System.Collections.ArrayList
+    [void]$L.Add('Resolucion  avgDelta   stdev    pasadas')
+    foreach($r in ($Sweep.Results | Sort-Object AppliedMs)){
+        [void]$L.Add(("  {0,6:F3}ms  {1,7:F3}ms {2,7:F3}ms  {3,4}" -f $r.AppliedMs,$r.AvgDeltaMs,$r.StdevMs,$r.Passes))
+    }
+    if($Sweep.NotGranted.Count -gt 0){
+        $np = ($Sweep.NotGranted | Measure-Object Passes -Sum).Sum
+        [void]$L.Add('')
+        [void]$L.Add("AVISO: $np request(s) no concedidos a este proceso (sleeps de ~15.6ms).")
+        [void]$L.Add('       Sintoma del aislamiento por-proceso de Win11. Activa lat_timerres y reinicia.')
+    }
+    [void]$L.Add('')
+    if($Sweep.Conclusive){
+        [void]$L.Add(("MEJOR : {0:F3}ms  (delta medio {1:F3}ms)" -f $Sweep.Best.AppliedMs,$Sweep.Best.AvgDeltaMs))
+        [void]$L.Add(("        {0}" -f $Sweep.Reason))
+    } else {
+        # Honestidad: el caso comun. valleyofdoom midio que el optimo es por-maquina y a
+        # menudo cae dentro del margen de error. Recomendar un valor aqui seria inventar.
+        # El motivo concreto lo da Get-AXESweepVerdict y puede ser de dos tipos: ruido
+        # estadistico, o que la curva no siga el modelo fisico (entonces lo que se esta
+        # midiendo es el overhead del scheduler, no la resolucion del timer).
+        # Se imprime Reason y NO $Sweep.Best.StdevMs: con un solo punto concedido Best es
+        # $null y el formato anterior reventaba justo en el caso que queria explicar.
+        [void]$L.Add(("NO CONCLUYENTE: {0}" -f $Sweep.Reason))
+        [void]$L.Add('       En esta maquina no hay diferencia real entre las resoluciones probadas.')
+        [void]$L.Add('       Dejalo como esta: afinar aqui seria perseguir ruido.')
+    }
+    [void]$L.Add(("Resolucion restaurada a: {0}ms" -f $Sweep.OriginalMs))
+    @($L)
 }
 
 function Measure-AXEJitter {
@@ -1346,8 +1706,30 @@ function Get-AXEScore {
     $lines=New-Object System.Collections.ArrayList
     $naCount=0
 
-    # Timer 30: mejor (menor ms) = mas puntos
+    # Timer 30. Se puntua la CONFIGURACION, no la resolucion instantanea.
+    #
+    # Antes se puntuaba Get-AXEBand(CurrentMs) a secas. En build 19041+ eso esta mal: el kernel
+    # aisla los requests por proceso, asi que CurrentMs dice lo que pedia OTRA app en ese
+    # segundo, no como esta configurado el equipo. Medido en Win11 26200 con lat_timerres YA
+    # aplicado (GlobalTimerResolutionRequests=1): marcaba 1ms -> 20/30, presentando como fallo
+    # de config algo que el usuario no puede arreglar y que ademas ya tenia bien.
+    #
+    # Ahi el unico ajuste accionable es GlobalTimerResolutionRequests, que es binario. En
+    # builds anteriores los requests SI son globales, luego CurrentMs refleja config de verdad
+    # y se mantiene la banda de siempre.
     if($snap.Timer -is [string]){ $timer='n/a'; $naCount++; [void]$lines.Add('Timer     : n/a') }
+    elseif($snap.Timer.PerProcess){
+        if($snap.Timer.GlobalRequests -eq 1){
+            $timer=30
+            [void]$lines.Add(("Timer     : {0,3}/30  (config OK; ahora {1}ms, lo fija la app en primer plano)" -f $timer,$snap.Timer.CurrentMs))
+        } else {
+            # No es 0: sin el flag el equipo funciona y las apps que piden resolucion la
+            # obtienen para si mismas. Lo que se pierde es que el ajuste valga a nivel sistema.
+            # Parcial, y el numero es un flag de config, no una medida.
+            $timer=15
+            [void]$lines.Add(("Timer     : {0,3}/30  (GlobalTimerResolutionRequests ausente: aplica lat_timerres y reinicia)" -f $timer))
+        }
+    }
     else {
         $timer=[int][math]::Round((Get-AXEBand ([double]$snap.Timer.CurrentMs) @(@(0.5,30),@(1.0,20),@(5.0,8),@(15.6,0))))
         [void]$lines.Add(("Timer     : {0,3}/30  ({1}ms)" -f $timer,$snap.Timer.CurrentMs))
@@ -1516,6 +1898,160 @@ function Export-AXEReport {
 }
 
 
+# >>>>> MODULE: 38-regedit.ps1 >>>>>
+# =====================================================
+# REGION 8c - REGEDIT (diagnostico): saltar al regedit.exe de Windows en la clave de un tweak
+# =====================================================
+# No es un editor propio: abre el Registry Editor de Microsoft posicionado en la clave exacta
+# que toca un tweak, para poder comprobar a mano lo que AXE dice. Escribir en el registro sigue
+# siendo responsabilidad de APLICAR (punto de restauracion + snapshot + gating); aqui solo se
+# mira. La unica escritura de este modulo es LastKey, que es el cursor del propio regedit.
+
+# Las rutas NO estan declaradas como campo del tweak: viven dentro de los scriptblocks
+# Test/Apply. Extraerlas del codigo (en vez de anadir un campo RegPath a los 78) evita que el
+# campo y el codigo se desincronicen, que es el fallo clasico: alguien cambia la ruta en Apply
+# y el RegPath declarado sigue apuntando a la vieja, asi que el boton abre la clave equivocada
+# y el usuario concluye que el tweak no se aplico.
+#   Cobertura medida sobre el catalogo actual (78): 43 con ruta literal, 12 via variable de
+#   modulo ($MM, $SP, $GD...), 23 sin registro (servicios / bcdedit) que no llevan boton.
+#   Las variables de BUCLE ($i, $p, $s, $_) son locales al scriptblock y no se pueden resolver
+#   estaticamente: esos tweaks iteran dispositivos PnP, donde no hay UNA clave que ensenar.
+function Get-AXERegPathsForTweak {
+    param($Tweak)
+    $paths = New-Object System.Collections.ArrayList
+    if(-not $Tweak){ return @() }
+    $code = ''
+    foreach($sb in @($Tweak.Test,$Tweak.Apply)){ if($sb){ $code += "`n" + $sb.ToString() } }
+
+    # 1. Rutas literales: 'HKLM:\Foo\Bar' entre comillas simples o dobles.
+    foreach($m in [regex]::Matches($code,"['`"](HK(?:LM|CU|CR|CC|U):\\[^'`"]+)['`"]")){
+        $p = $m.Groups[1].Value.Trim()
+        if($p -and -not $paths.Contains($p)){ [void]$paths.Add($p) }
+    }
+    # 2. Rutas via variable de modulo: Get-RV $MM 'Valor'. Se resuelve el valor ACTUAL de la
+    #    variable en el scope del modulo; si no existe o no parece ruta de registro, se ignora.
+    foreach($m in [regex]::Matches($code,'(?:Get-RV|Set-RD|Set-RS|Del-RV)\s+\$(\w+)')){
+        $name = $m.Groups[1].Value
+        if($name -in @('_','i','p','s')){ continue }   # variables de bucle: no resolubles
+        $val = $null
+        try { $val = Get-Variable $name -ValueOnly -Scope Script -EA SilentlyContinue } catch {}
+        if(-not $val){ try { $val = Get-Variable $name -ValueOnly -EA SilentlyContinue } catch {} }
+        if($val -is [string] -and $val -match '^HK(LM|CU|CR|CC|U):\\' -and -not $paths.Contains($val)){
+            [void]$paths.Add($val)
+        }
+    }
+    @($paths)
+}
+
+# Prefijo de LastKey. OJO: esta LOCALIZADO. Medido en Windows 11 es-ES: 'Equipo\HKEY_LOCAL_MACHINE'
+# (no 'Computer\'). Hardcodear el ingles hace que regedit ignore el valor y abra donde estaba,
+# sin error visible: el boton "funciona" pero no salta. Por eso se reutiliza el prefijo que ya
+# tiene el perfil, que por definicion esta en el idioma correcto.
+function Get-AXERegeditPrefix {
+    $k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Applets\Regedit'
+    $cur = Get-RV $k 'LastKey'
+    if($cur -is [string] -and $cur -match '^([^\\]+)\\'){ return $Matches[1] }
+    'Computer'   # perfil sin regedit abierto nunca; peor caso, abre en la raiz
+}
+
+# 'HKLM:\Foo\Bar' -> '<prefijo>\HKEY_LOCAL_MACHINE\Foo\Bar' (formato que espera LastKey).
+function ConvertTo-AXERegeditPath {
+    param([string]$Path)
+    if([string]::IsNullOrWhiteSpace($Path)){ return $null }
+    $hives = @{
+        'HKLM' = 'HKEY_LOCAL_MACHINE'; 'HKCU' = 'HKEY_CURRENT_USER'
+        'HKCR' = 'HKEY_CLASSES_ROOT';  'HKU'  = 'HKEY_USERS'
+        'HKCC' = 'HKEY_CURRENT_CONFIG'
+    }
+    if($Path -notmatch '^(HK(?:LM|CU|CR|CC|U)):\\(.*)$'){ return $null }
+    $hive = $hives[$Matches[1]]
+    if(-not $hive){ return $null }
+    $rest = $Matches[2].TrimEnd('\')
+    $prefix = Get-AXERegeditPrefix
+    if($rest){ "$prefix\$hive\$rest" } else { "$prefix\$hive" }
+}
+
+function Open-AXERegedit {
+    # Posiciona regedit.exe en $Path. Devuelve $true si se lanzo.
+    param([string]$Path)
+    $target = ConvertTo-AXERegeditPath $Path
+    if(-not $target){ Write-AXELog "Regedit: ruta no reconocida '$Path'." 'WARN'; return $false }
+    $k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Applets\Regedit'
+    try {
+        if(-not (Test-Path $k)){ New-Item -Path $k -Force -EA Stop | Out-Null }
+        # Escritura directa a posta, SIN Push-RegBackup: LastKey es la posicion del cursor de
+        # regedit, no un ajuste del sistema. Meterlo en el backup de tweaks ensuciaria el
+        # revert con una clave cosmetica que nadie quiere restaurar.
+        New-ItemProperty -Path $k -Name 'LastKey' -Value $target -PropertyType String -Force -EA Stop | Out-Null
+        # -m permite instancia nueva: sin el, un regedit ya abierto se lleva el foco y se
+        # queda donde estaba, ignorando LastKey (que solo se lee al arrancar).
+        Start-Process regedit.exe -ArgumentList '-m' -EA Stop | Out-Null
+        Write-AXELog "Regedit abierto en: $Path"
+        $true
+    } catch {
+        Write-AXELog "Regedit: no se pudo abrir -> $($_.Exception.Message)" 'ERR'
+        $false
+    }
+}
+
+# Foto del registro para la vista de diagnostico: una fila por (tweak, clave), con si la clave
+# existe y si el Test del tweak da por aplicado. NO ejecuta Apply ni toca nada.
+function Get-AXERegDiagnostic {
+    param($Catalog=$null)
+    if(-not $Catalog){ $Catalog = $script:CAT }
+    $rows = New-Object System.Collections.ArrayList
+    foreach($tw in @($Catalog)){
+        $paths = @(Get-AXERegPathsForTweak $tw)
+        if($paths.Count -eq 0){ continue }
+        # Test puede lanzar (clave inexistente, permisos): un diagnostico que revienta no
+        # diagnostica nada, asi que se degrada a $null y se sigue.
+        #   El centinela es $null y NO la cadena 'n/a'. Con 'n/a', el chequeo posterior
+        #   '$Applied -eq "n/a"' coacciona la cadena a booleano ($true por no estar vacia), asi
+        #   que TODO tweak aplicado ($true -eq 'n/a' => True) se pintaba como indecidible.
+        #   Medido: 47 de 55 filas aplicadas se mostraban como [?]. Con $null no hay coercion.
+        $applied = $null
+        try { $applied = [bool](& $tw.Test) } catch {}
+        foreach($p in $paths){
+            [void]$rows.Add([pscustomobject]@{
+                Id      = $tw.Id
+                Cat     = $tw.Cat
+                Tier    = $tw.Tier
+                Name    = $tw.Name
+                Path    = $p
+                Exists  = [bool](Test-Path $p)
+                Applied = $applied
+            })
+        }
+    }
+    @($rows)
+}
+
+function Format-AXERegDiagnostic {
+    # Render de la vista. Agrupa por clave y no por tweak: varios tweaks comparten ruta
+    # (Memory Management, SystemProfile), y verlos juntos es justo lo que hace falta para
+    # entender por que dos ajustes se pisan.
+    param($Rows)
+    $Rows = @($Rows)
+    if($Rows.Count -eq 0){ return @('Sin claves de registro en el catalogo cargado.') }
+    $L = New-Object System.Collections.ArrayList
+    [void]$L.Add("$($Rows.Count) entradas sobre $(@($Rows | Select-Object -ExpandProperty Path -Unique).Count) claves distintas.")
+    [void]$L.Add('  [x] = Test dice aplicado   [ ] = no aplicado   [?] = el Test no pudo decidir')
+    [void]$L.Add('  (falta) = la clave no existe todavia en este equipo')
+    [void]$L.Add('')
+    foreach($grp in ($Rows | Group-Object Path | Sort-Object Name)){
+        $miss = if($grp.Group[0].Exists){ '' } else { '   (falta)' }
+        [void]$L.Add("$($grp.Name)$miss")
+        foreach($r in ($grp.Group | Sort-Object Id)){
+            # '$null -eq' delante a proposito: al reves, PowerShell coacciona y falla raro.
+            $mark = if($null -eq $r.Applied){ '?' } elseif($r.Applied){ 'x' } else { ' ' }
+            [void]$L.Add(("    [{0}] {1,-22} T{2}  {3}" -f $mark,$r.Id,$r.Tier,$r.Name))
+        }
+        [void]$L.Add('')
+    }
+    @($L)
+}
+
+
 # >>>>> MODULE: 45-cli.ps1 >>>>>
 # =====================================================
 # REGION 11 - MODOS CLI (headless)
@@ -1524,7 +2060,7 @@ function Export-AXEReport {
 #     GUI se DEFIERE a un runspace de fondo (Start-AXEHardwareLoad, region 12) para que
 #     la ventana no espere ~3.7s de CIM (Win32_Processor + Get-NetAdapter pagan cold-init WMI).
 $script:HW = $null
-if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report){
+if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep){
     try { $script:HW = Get-AXEHardware } catch { $script:HW = $null }
 }
 
@@ -1772,6 +2308,19 @@ if($Score){
 if($Report){
     $s0=Get-AXESnapshot; $s1=Get-AXESnapshot
     Write-Host (Export-AXEReport $s0 $s1 $Report)
+    exit 0
+}
+if($TimerSweep){
+    # Barrido de resolucion de timer. NO recomienda un valor a ciegas: si el resultado cae
+    # dentro del ruido de medicion lo dice y no recomienda nada. Ver Measure-AXETimerSweep.
+    Write-Host '== AXE BARRIDO DE TIMER =='
+    Write-Host 'Midiendo delta de Sleep(1) por resolucion. Tarda unos segundos...'
+    $sw = Measure-AXETimerSweep
+    if(-not $sw){ Write-Host 'Sin datos utiles (ver log).'; exit 1 }
+
+    # Render via Format-AXETimerSweep (32-measure.ps1): mismo texto que el boton de la GUI.
+    Write-Host ''
+    foreach($line in (Format-AXETimerSweep $sw)){ Write-Host $line }
     exit 0
 }
 
@@ -2316,7 +2865,7 @@ $script:glyphs = @{
     'CPU'=[char]0xE950; 'LATENCIA'=[char]0xE945; 'GPU'=[char]0xE7F4; 'RED'=[char]0xE774;
     'MEMORIA'=[char]0xE964; 'SISTEMA'=[char]0xE770; 'RENDIMIENTO'=[char]0xE9D9; 'SERVICIOS'=[char]0xE90F;
     'PRIVACIDAD'=[char]0xE72E; 'APPS'=[char]0xE71D; 'EXTREMO'=[char]0xE7BA;
-    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2
+    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2; 'REGISTRO'=[char]0xE71D
 }
 # Sombra suave compartida (solo se aplica en hover -> 1 card a la vez, sin coste en reposo)
 $script:cardShadow = New-Object System.Windows.Media.Effects.DropShadowEffect
@@ -2354,7 +2903,7 @@ function Pulse-Tile($tile){
 }
 $script:tweakCats = New-Object System.Collections.ArrayList
 foreach($tw in $script:CAT){ if(-not $script:tweakCats.Contains($tw.Cat)){ [void]$script:tweakCats.Add($tw.Cat) } }
-$script:actionCats = @('MEDICION','LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
+$script:actionCats = @('MEDICION','REGISTRO','LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
 # Badge "Recomendado" = §3.4, calculado contra ESTA maquina (Get-AXERecommended en 20-tweaks).
 # Al arrancar el HW aun no esta (runspace); sale el nucleo universal y Apply-AXEGating
 # lo recalcula en cuanto la deteccion termina. $script:recBadges guarda el Border de cada
@@ -2459,6 +3008,29 @@ function New-TweakCard($tw){
     $recB.Child=$recT; [void]$nameRow.Children.Add($recB)
     $recB.Visibility = if(-not $blk -and ($script:RECOMMENDED -contains $tw.Id)){'Visible'}else{'Collapsed'}
     $script:recBadges[$tw.Id] = $recB
+    # Atajo a regedit.exe. Solo si el tweak TIENE clave: 23 de 78 son servicios o bcdedit y un
+    # boton que abre la raiz del registro seria peor que no tenerlo. La ruta se extrae del
+    # Test/Apply (ver 38-regedit.ps1), no de un campo declarado que podria quedar desfasado.
+    $regPaths = @(Get-AXERegPathsForTweak $tw)
+    if($regPaths.Count -gt 0){
+        $regB = New-Object System.Windows.Controls.Border
+        $regB.Background=New-TintBrush 'Accent' 26
+        $regB.CornerRadius=New-Object System.Windows.CornerRadius(5); $regB.Padding=New-Object System.Windows.Thickness(6,1,6,2)
+        $regB.Margin=New-Object System.Windows.Thickness(6,0,0,0); $regB.VerticalAlignment='Center'
+        $regB.Cursor='Hand'
+        $regB.ToolTip="Abrir regedit.exe en:`n$($regPaths -join "`n")"
+        $regT = New-Object System.Windows.Controls.TextBlock
+        $regT.Text='regedit'; $regT.Foreground=New-AXEBrush 'Accent'; $regT.FontSize=10; $regT.FontWeight='SemiBold'
+        $regB.Child=$regT
+        # Handled=$true OBLIGATORIO: la tarjeta entera es clicable (MouseLeftButtonUp conmuta
+        # el tweak). Sin esto, abrir regedit marcaria ademas el ajuste para aplicar, que es
+        # justo lo contrario de "solo quiero mirar la clave".
+        $regB.Add_MouseLeftButtonUp({ param($s,$e)
+            $e.Handled=$true
+            [void](Open-AXERegedit $regPaths[0])
+        }.GetNewClosure())
+        [void]$nameRow.Children.Add($regB)
+    }
     # Card clickable (patron Fluent SettingsCard) + hover ANIMADO: eleva (lift) + fade de fondo + sombra.
     # NO toca BorderBrush -> no pisa el borde accent de "cambio pendiente" (Update-AXEPending).
     if(-not $blk){
@@ -2512,6 +3084,21 @@ Build-TweakViews
 # de log (string[]); al completar se escriben con Write-AXELog en el UI thread. Args solo
 # ESCALARES (une arrays con coma; el $Work los separa) para evitar aplanado de PowerShell.
 $script:jobPS=$null
+# Bombea la cola del dispatcher hasta idle (permite que DispatcherTimer ticke sin ShowDialog).
+# Vive AQUI y no dentro del selftest a proposito. Estaba definida como funcion anidada en
+# 60-gui-selftest.ps1, o sea que existia SOLO mientras corria el harness: cualquier handler que
+# la llamase pasaba el gate en verde y reventaba con CommandNotFoundException en el primer clic
+# del usuario. Paso de verdad. Un helper que solo existe en tests convierte el test en un
+# entorno distinto del de produccion, que es justo lo que un test no debe ser.
+#   OJO al usarla: PushFrame es REENTRANTE y procesa entrada, asi que durante el bombeo se
+#   pueden pulsar otros botones. Para "solo repintar antes de una tarea larga" NO uses esto:
+#   usa Dispatcher.Invoke([action]{},'Render'), que repinta sin dejar pasar clics.
+function Invoke-AXEDoEvents {
+    $frame=New-Object System.Windows.Threading.DispatcherFrame
+    [void]$win.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::SystemIdle,[action]{ $frame.Continue=$false })
+    [System.Windows.Threading.Dispatcher]::PushFrame($frame)
+}
+
 function Start-AXEJob {
     param([scriptblock]$Work,[string[]]$JobArgs=@(),$Button)
     # H10: mutex unico con APLICAR/MASTER. $script:busy cubre tambien Limpieza/DNS/Debloat/
@@ -2770,6 +3357,48 @@ function Build-ActionView($catName){
             $ana.Add_Click({ if($script:busy){ $script:aiOut.AppendText(">> (operacion en curso; espera a que termine)`r`n"); $script:aiOut.ScrollToEnd(); return }; $script:aiOut.AppendText(">> Analisis del sistema`r`n"); $script:aiOut.AppendText(((Get-AXERecommendations) -join "`r`n")+"`r`n`r`n"); $script:aiOut.ScrollToEnd() })
             [void]$panel.Children.Add($script:aiOut); [void]$panel.Children.Add($inRow)
         }
+        'REGISTRO' {
+            # Foto global: que clave toca cada tweak y si el Test la da por aplicada. Solo
+            # lectura; escribir sigue siendo cosa de APLICAR (punto de restauracion + snapshot).
+            $hint=New-Object System.Windows.Controls.TextBlock
+            $hint.Text='Claves del registro que toca el catalogo, agrupadas por ruta. Solo lectura: aqui no se cambia nada. Cada tarjeta de ajuste tiene ademas su propio atajo "regedit".'
+            $hint.Foreground=New-AXEBrush 'Muted'; $hint.TextWrapping='Wrap'; $hint.FontSize=12; $hint.Margin=New-Object System.Windows.Thickness(0,0,0,10)
+            [void]$panel.Children.Add($hint)
+
+            $script:regOut=New-Object System.Windows.Controls.TextBox
+            $script:regOut.IsReadOnly=$true; $script:regOut.Background=New-AXEBrush 'Surface'; $script:regOut.Foreground=New-AXEBrush 'Fg'
+            $script:regOut.BorderBrush=New-AXEBrush 'Line'; $script:regOut.BorderThickness=New-Object System.Windows.Thickness(1)
+            $script:regOut.Padding=New-Object System.Windows.Thickness(12,8,12,8); $script:regOut.Height=420
+            $script:regOut.VerticalScrollBarVisibility='Auto'; $script:regOut.HorizontalScrollBarVisibility='Auto'
+            $script:regOut.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:regOut.FontSize=12
+            $script:regOut.Text='Pulsa "Leer estado del registro".'
+
+            $script:regBtn=New-ActionButton 'Leer estado del registro' 'Accent'
+            $script:regBtn.Add_Click({
+                if($script:busy){ return }
+                # ~1.8s medido (ejecuta el Test de 55 tweaks). Corto para montar un runspace,
+                # largo para no avisar: se pinta el aviso y se fuerza UNA pasada de render.
+                #   Prioridad Render y NO un bombeo tipo PushFrame/DoEvents: el bombeo es
+                #   reentrante y procesa entrada, o sea que durante la lectura se podria pulsar
+                #   APLICAR y mutar el sistema en mitad del diagnostico. Render repinta sin
+                #   dejar pasar clics. (Invoke-AXEDoEvents, ademas, solo existe dentro del
+                #   selftest: usarlo aqui reventaba con CommandNotFoundException.)
+                $script:busy=$true
+                $script:regBtn.IsEnabled=$false
+                try {
+                    $script:regOut.Text='Leyendo el registro...'
+                    $script:regOut.Dispatcher.Invoke([action]{},[System.Windows.Threading.DispatcherPriority]::Render)
+                    $script:regOut.Text=((Format-AXERegDiagnostic (Get-AXERegDiagnostic)) -join "`r`n")
+                } catch {
+                    $script:regOut.Text="No se pudo leer: $($_.Exception.Message)"
+                } finally {
+                    $script:regBtn.IsEnabled=$true
+                    $script:busy=$false
+                }
+            })
+            [void]$panel.Children.Add($script:regBtn)
+            [void]$panel.Children.Add($script:regOut)
+        }
         'MEDICION' {
             # Numero grande del score
             $scoreRow=New-Object System.Windows.Controls.StackPanel; $scoreRow.Orientation='Horizontal'; $scoreRow.Margin=New-Object System.Windows.Thickness(0,0,0,4)
@@ -2821,6 +3450,13 @@ no para comparar entre maquinas distintas.
 "@
             })
             [void]$panel.Children.Add($script:latBtn)
+            # §3.5: barrido de resolucion de timer. Separado de "Medir ahora" a posta -- aquel
+            # tarda 1s y se puede pulsar a menudo; este tarda ~30s (3 pasadas) y sube el proceso
+            # a prioridad High, asi que no debe colarse dentro del flujo de medir-antes/despues.
+            # Corre en runspace de fondo: bloquearlo en el UI thread congelaria la ventana 30s.
+            $script:sweepBtn=New-ActionButton 'Barrido de timer (~30s)' 'Accent'
+            $script:sweepBtn.Add_Click({ Invoke-AXETimerSweepJob })
+            [void]$panel.Children.Add($script:sweepBtn)
             # Reporte / delta
             $script:measureOut=New-Object System.Windows.Controls.TextBox; $script:measureOut.IsReadOnly=$true; $script:measureOut.Background=New-AXEBrush 'Surface'; $script:measureOut.Foreground=New-AXEBrush 'Fg'; $script:measureOut.BorderBrush=New-AXEBrush 'Line'; $script:measureOut.BorderThickness=New-Object System.Windows.Thickness(1); $script:measureOut.Padding=New-Object System.Windows.Thickness(12,8,12,8); $script:measureOut.Height=260; $script:measureOut.TextWrapping='Wrap'; $script:measureOut.VerticalScrollBarVisibility='Auto'; $script:measureOut.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:measureOut.FontSize=12
             $script:measureOut.Text="Medicion local, 0 dependencias. El jitter es un PROXY de latencia (no atribuible a driver concreto)."
@@ -2854,7 +3490,7 @@ function Switch-View($catName){
     foreach($v in $script:views.Values){ $v.Visibility='Collapsed' }
     $ContentTitle.Text=$catName; $script:activeCat=$catName
     if($catName -in $script:actionCats){
-        $ContentSub.Text = switch($catName){ 'MEDICION'{'Mide latencia/timer y calcula el AXE Score'} 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
+        $ContentSub.Text = switch($catName){ 'MEDICION'{'Mide latencia/timer y calcula el AXE Score'} 'REGISTRO'{'Que claves toca el catalogo (solo lectura)'} 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
         if(-not $script:views.ContainsKey($catName)){ Build-ActionView $catName | Out-Null }
         $script:views[$catName].Visibility='Visible'; Start-AXEFade $script:views[$catName]; return
     }
@@ -3099,6 +3735,86 @@ function Invoke-AXEMeasure {
     $script:measureTimer.Start()
 }
 
+# Barrido de timer sin freeze. Mismo patron que Invoke-AXEMeasure, pero con un problema extra:
+# el jitter llama a [AXE.Native]::SampleJitter, que es un TIPO .NET y por tanto visible desde
+# cualquier runspace del AppDomain. Measure-AXETimerSweep es una FUNCION de PowerShell, y el
+# scope de funciones es por-runspace: un [PowerShell]::Create() nuevo no la ve. Por eso se envia
+# el codigo fuente de la funcion y sus dependencias, en vez de reimplementar el barrido aqui
+# (una copia derivaria del original justo en la logica que decide si el resultado es ruido).
+$script:sweepPS=$null; $script:sweepHandle=$null; $script:sweepTimer=$null; $script:sweepBtn=$null
+function Invoke-AXETimerSweepJob {
+    if($script:busy -or $script:measurePS -or $script:sweepPS){ Write-AXELog 'Otra operacion en curso, espera.' 'WARN'; return }
+    # Mutex H10 compartido con APLICAR/MASTER: durante el barrido el proceso sube a prioridad
+    # High y mantiene un request de resolucion de timer. Dejar que APLICAR corra a la vez
+    # mezclaria mutacion del sistema con la medicion que intenta caracterizarlo.
+    $script:busy=$true
+    if($script:sweepBtn){ $script:sweepBtn.IsEnabled=$false }
+    if($script:measureBtn){ $script:measureBtn.IsEnabled=$false }
+    if($script:measureOut){ $script:measureOut.Text="Barrido en curso: ~30s (3 pasadas en orden aleatorio).`r`nNo toques nada mientras mide o el delta recogera tu actividad." }
+    Write-AXELog 'Barrido de timer: midiendo delta de Sleep(1) por resolucion (~30s).'
+
+    $fnSrc = ''
+    # Get-AXESweepVerdict y Get-AXEBand van SI O SI: Measure-AXETimerSweep las llama y el scope
+    # de funciones es por-runspace, asi que sin enviarlas el barrido de la GUI muere con
+    # "termino no reconocido" DENTRO del runspace, donde el error no se ve. La CLI seguiria
+    # funcionando, que es justo lo que hace este fallo dificil de pillar.
+    foreach($n in 'Get-RV','Get-AXETimerResolution','Set-AXETimerResolution','Get-AXEBand','Get-AXESweepVerdict','Measure-AXETimerSweep'){
+        $fnSrc += "function $n {`r`n" + (Get-Command $n).Definition + "`r`n}`r`n"
+    }
+    $ps=[PowerShell]::Create()
+    [void]$ps.AddScript({
+        param($src)
+        # Shim de log: en un runspace nuevo no existen $script:AXELog ni $script:LogBox, asi que
+        # el Write-AXELog real escribiria Add-Content contra ruta vacia y perderia los avisos
+        # (el de GlobalTimerResolutionRequests y el de requests no concedidos, que son justo los
+        # que explican un resultado raro). Se recogen aqui y el UI thread los reemite.
+        $script:swLog = New-Object System.Collections.ArrayList
+        function Write-AXELog { param([string]$Msg,[string]$Level='INFO') [void]$script:swLog.Add("$Level|$Msg") }
+        . ([scriptblock]::Create($src))
+        [pscustomobject]@{ Sweep=(Measure-AXETimerSweep); Log=@($script:swLog) }
+    })
+    [void]$ps.AddArgument($fnSrc)
+    try { $script:sweepPS=$ps; $script:sweepHandle=$ps.BeginInvoke() }
+    catch {
+        # Si el arranque falla hay que soltar el mutex aqui: el tick de abajo nunca correra.
+        $ps.Dispose(); $script:sweepPS=$null; $script:busy=$false
+        if($script:sweepBtn){ $script:sweepBtn.IsEnabled=$true }
+        if($script:measureBtn){ $script:measureBtn.IsEnabled=$true }
+        Write-AXELog "Barrido: no arranco -> $($_.Exception.Message)" 'ERR'
+        return
+    }
+    $script:sweepTimer=New-Object System.Windows.Threading.DispatcherTimer
+    $script:sweepTimer.Interval=[TimeSpan]::FromMilliseconds(200)
+    $script:sweepTimer.Add_Tick({
+        if(-not $script:sweepHandle.IsCompleted){ return }
+        $script:sweepTimer.Stop()
+        $res=$null
+        try { $res=@($script:sweepPS.EndInvoke($script:sweepHandle)) | Select-Object -First 1 }
+        catch { Write-AXELog "Barrido: fallo en el runspace -> $($_.Exception.Message)" 'ERR' }
+        $script:sweepPS.Dispose(); $script:sweepPS=$null
+        # Reemitir los avisos del runspace con el logger real, ya en el UI thread.
+        if($res -and $res.Log){
+            foreach($e in $res.Log){
+                $p="$e" -split '\|',2
+                if($p.Count -eq 2){ Write-AXELog $p[1] $p[0] } else { Write-AXELog "$e" }
+            }
+        }
+        $sw = if($res){ $res.Sweep } else { $null }
+        if($script:measureOut){ $script:measureOut.Text = ((Format-AXETimerSweep $sw) -join "`r`n") }
+        if($sw){
+            Write-AXELog $(if($sw.Conclusive){
+                "Barrido: mejor resolucion {0:F3}ms (spread {1:F3}ms sobre el ruido)." -f $sw.Best.AppliedMs,$sw.SpreadMs
+            } else {
+                "Barrido: no concluyente (spread {0:F3}ms dentro del ruido). No se recomienda cambiar nada." -f $sw.SpreadMs
+            })
+        }
+        if($script:sweepBtn){ $script:sweepBtn.IsEnabled=$true }
+        if($script:measureBtn){ $script:measureBtn.IsEnabled=$true }
+        $script:busy=$false
+    })
+    $script:sweepTimer.Start()
+}
+
 # Apply sin freeze: DispatcherTimer procesa 1 tweak/tick
 $BtnApply.Add_Click({
     if($script:busy){ return }
@@ -3218,12 +3934,9 @@ if($env:AXE_GUITEST -eq '1'){
     Write-Host "Vistas tweaks     : $(($script:tweakCats).Count)"
     $allOk=$true
 
-    # Bombea la cola del dispatcher hasta idle (permite que DispatcherTimer ticke sin ShowDialog)
-    function Invoke-AXEDoEvents {
-        $frame=New-Object System.Windows.Threading.DispatcherFrame
-        [void]$win.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::SystemIdle,[action]{ $frame.Continue=$false })
-        [System.Windows.Threading.Dispatcher]::PushFrame($frame)
-    }
+    # Invoke-AXEDoEvents ya NO se define aqui: vive en 52-gui-build.ps1 con el resto de helpers
+    # de GUI. Definirla aqui la hacia existir solo durante el harness, asi que un handler que la
+    # usara pasaba el gate y fallaba en el primer clic real.
 
     # regresion A4+A1: init lanza Get-AXEHardware en runspace (la ventana NO espera ~3.7s de
     # CIM). Al llegar HW: chips + gating + Refresh-States async. Todo drena al bombear el
@@ -3310,7 +4023,56 @@ if($env:AXE_GUITEST -eq '1'){
         $measOk = ($null -ne $script:scoreLbl) -and ($null -ne $script:measureBtn) -and ($null -ne $script:measureOut) -and ([bool](Get-Command Invoke-AXEMeasure -EA SilentlyContinue))
         Write-Host "Medicion view     : score+boton+reporte+helper=$measOk (esperado True)"
         if(-not $measOk){ $allOk=$false }
+        # regresion §3.5: el barrido de timer vive en la GUI, no solo en el CLI. Se comprueba
+        # boton + handler + formateador compartido. El barrido NO se ejecuta aqui: tarda ~30s
+        # y sube la prioridad del proceso, que no es aceptable dentro de un selftest.
+        $swOk = ($null -ne $script:sweepBtn) -and
+                ([bool](Get-Command Invoke-AXETimerSweepJob -EA SilentlyContinue)) -and
+                ([bool](Get-Command Format-AXETimerSweep -EA SilentlyContinue))
+        Write-Host "Barrido timer view: boton+handler+formateador=$swOk (esperado True)"
+        if(-not $swOk){ $allOk=$false }
+        # Format-AXETimerSweep con $null (barrido sin datos utiles) debe degradar a un mensaje,
+        # no reventar: es el camino real cuando el kernel rechaza todos los requests.
+        try {
+            $fmtNull = @(Format-AXETimerSweep $null)
+            $fmtOk = ($fmtNull.Count -ge 1) -and -not [string]::IsNullOrWhiteSpace($fmtNull[0])
+        } catch { $fmtOk=$false }
+        Write-Host "Barrido fmt null  : degrada sin excepcion=$fmtOk (esperado True)"
+        if(-not $fmtOk){ $allOk=$false }
     } catch { Write-Host "Medicion view     : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
+    # regresion REGISTRO: la vista se construye y el extractor de rutas cubre el catalogo.
+    # NO se llama a Open-AXERegedit: lanzaria regedit.exe de verdad en medio del selftest.
+    try {
+        Build-ActionView 'REGISTRO' | Out-Null
+        $regViewOk = ($null -ne $script:regOut) -and ($null -ne $script:regBtn) -and
+                     ([bool](Get-Command Get-AXERegDiagnostic -EA SilentlyContinue)) -and
+                     ([bool](Get-Command Open-AXERegedit -EA SilentlyContinue))
+        Write-Host "Registro view     : salida+boton+helpers=$regViewOk (esperado True)"
+        if(-not $regViewOk){ $allOk=$false }
+        # El extractor debe encontrar clave en la MAYORIA del catalogo. Si un refactor rompe el
+        # regex, esto cae a ~0 y los atajos "regedit" desaparecen de las tarjetas en silencio.
+        $nPaths=0; foreach($tw in @($script:CAT)){ if((@(Get-AXERegPathsForTweak $tw)).Count){ $nPaths++ } }
+        $pathOk = ($nPaths -ge 40)
+        Write-Host "Registro rutas    : $nPaths/$(@($script:CAT).Count) tweaks con clave (esperado >=40)"
+        if(-not $pathOk){ $allOk=$false }
+        # Conversion al formato de LastKey, incluido el rechazo de basura.
+        $convOk = ((ConvertTo-AXERegeditPath 'HKLM:\SYSTEM\Foo') -match '\\HKEY_LOCAL_MACHINE\\SYSTEM\\Foo$') -and
+                  ($null -eq (ConvertTo-AXERegeditPath 'no-es-una-ruta'))
+        Write-Host "Registro convpath : hive+rechazo basura=$convOk (esperado True)"
+        if(-not $convOk){ $allOk=$false }
+        # PULSAR el boton de verdad, no solo comprobar que existe. Construir la vista NO ejecuta
+        # el cuerpo del handler, asi que un comando inexistente ahi dentro pasaba el gate y
+        # reventaba en el primer clic del usuario (caso real: Invoke-AXEDoEvents, que solo
+        # existe dentro de este selftest). Cuesta ~2s y cubre el camino entero.
+        try {
+            $script:regBtn.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+            $clickOk = ($script:regOut.Text -match 'claves distintas') -and (-not $script:busy) -and $script:regBtn.IsEnabled
+            Write-Host "Registro clic     : handler completo + mutex liberado=$clickOk (esperado True)"
+            if(-not $clickOk){ $allOk=$false; Write-Host "  salida: $($script:regOut.Text -split "`r?`n" | Select-Object -First 1)" }
+        } catch {
+            Write-Host "Registro clic     : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false
+        }
+    } catch { Write-Host "Registro view     : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: badge recomendado curado (no todo Tier<2)
     $recCount=0
     foreach($catName in $script:tweakCats){ foreach($e in $script:rows[$catName]){ if($script:RECOMMENDED -contains $e.Tw.Id){ $recCount++ } } }

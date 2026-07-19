@@ -35,7 +35,7 @@ $script:glyphs = @{
     'CPU'=[char]0xE950; 'LATENCIA'=[char]0xE945; 'GPU'=[char]0xE7F4; 'RED'=[char]0xE774;
     'MEMORIA'=[char]0xE964; 'SISTEMA'=[char]0xE770; 'RENDIMIENTO'=[char]0xE9D9; 'SERVICIOS'=[char]0xE90F;
     'PRIVACIDAD'=[char]0xE72E; 'APPS'=[char]0xE71D; 'EXTREMO'=[char]0xE7BA;
-    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2
+    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2; 'REGISTRO'=[char]0xE71D
 }
 # Sombra suave compartida (solo se aplica en hover -> 1 card a la vez, sin coste en reposo)
 $script:cardShadow = New-Object System.Windows.Media.Effects.DropShadowEffect
@@ -73,7 +73,7 @@ function Pulse-Tile($tile){
 }
 $script:tweakCats = New-Object System.Collections.ArrayList
 foreach($tw in $script:CAT){ if(-not $script:tweakCats.Contains($tw.Cat)){ [void]$script:tweakCats.Add($tw.Cat) } }
-$script:actionCats = @('MEDICION','LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
+$script:actionCats = @('MEDICION','REGISTRO','LIMPIEZA','DEBLOAT','DNS','STARTUP','PERFILES','ASISTENTE IA')
 # Badge "Recomendado" = §3.4, calculado contra ESTA maquina (Get-AXERecommended en 20-tweaks).
 # Al arrancar el HW aun no esta (runspace); sale el nucleo universal y Apply-AXEGating
 # lo recalcula en cuanto la deteccion termina. $script:recBadges guarda el Border de cada
@@ -178,6 +178,29 @@ function New-TweakCard($tw){
     $recB.Child=$recT; [void]$nameRow.Children.Add($recB)
     $recB.Visibility = if(-not $blk -and ($script:RECOMMENDED -contains $tw.Id)){'Visible'}else{'Collapsed'}
     $script:recBadges[$tw.Id] = $recB
+    # Atajo a regedit.exe. Solo si el tweak TIENE clave: 23 de 78 son servicios o bcdedit y un
+    # boton que abre la raiz del registro seria peor que no tenerlo. La ruta se extrae del
+    # Test/Apply (ver 38-regedit.ps1), no de un campo declarado que podria quedar desfasado.
+    $regPaths = @(Get-AXERegPathsForTweak $tw)
+    if($regPaths.Count -gt 0){
+        $regB = New-Object System.Windows.Controls.Border
+        $regB.Background=New-TintBrush 'Accent' 26
+        $regB.CornerRadius=New-Object System.Windows.CornerRadius(5); $regB.Padding=New-Object System.Windows.Thickness(6,1,6,2)
+        $regB.Margin=New-Object System.Windows.Thickness(6,0,0,0); $regB.VerticalAlignment='Center'
+        $regB.Cursor='Hand'
+        $regB.ToolTip="Abrir regedit.exe en:`n$($regPaths -join "`n")"
+        $regT = New-Object System.Windows.Controls.TextBlock
+        $regT.Text='regedit'; $regT.Foreground=New-AXEBrush 'Accent'; $regT.FontSize=10; $regT.FontWeight='SemiBold'
+        $regB.Child=$regT
+        # Handled=$true OBLIGATORIO: la tarjeta entera es clicable (MouseLeftButtonUp conmuta
+        # el tweak). Sin esto, abrir regedit marcaria ademas el ajuste para aplicar, que es
+        # justo lo contrario de "solo quiero mirar la clave".
+        $regB.Add_MouseLeftButtonUp({ param($s,$e)
+            $e.Handled=$true
+            [void](Open-AXERegedit $regPaths[0])
+        }.GetNewClosure())
+        [void]$nameRow.Children.Add($regB)
+    }
     # Card clickable (patron Fluent SettingsCard) + hover ANIMADO: eleva (lift) + fade de fondo + sombra.
     # NO toca BorderBrush -> no pisa el borde accent de "cambio pendiente" (Update-AXEPending).
     if(-not $blk){
@@ -231,6 +254,21 @@ Build-TweakViews
 # de log (string[]); al completar se escriben con Write-AXELog en el UI thread. Args solo
 # ESCALARES (une arrays con coma; el $Work los separa) para evitar aplanado de PowerShell.
 $script:jobPS=$null
+# Bombea la cola del dispatcher hasta idle (permite que DispatcherTimer ticke sin ShowDialog).
+# Vive AQUI y no dentro del selftest a proposito. Estaba definida como funcion anidada en
+# 60-gui-selftest.ps1, o sea que existia SOLO mientras corria el harness: cualquier handler que
+# la llamase pasaba el gate en verde y reventaba con CommandNotFoundException en el primer clic
+# del usuario. Paso de verdad. Un helper que solo existe en tests convierte el test en un
+# entorno distinto del de produccion, que es justo lo que un test no debe ser.
+#   OJO al usarla: PushFrame es REENTRANTE y procesa entrada, asi que durante el bombeo se
+#   pueden pulsar otros botones. Para "solo repintar antes de una tarea larga" NO uses esto:
+#   usa Dispatcher.Invoke([action]{},'Render'), que repinta sin dejar pasar clics.
+function Invoke-AXEDoEvents {
+    $frame=New-Object System.Windows.Threading.DispatcherFrame
+    [void]$win.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::SystemIdle,[action]{ $frame.Continue=$false })
+    [System.Windows.Threading.Dispatcher]::PushFrame($frame)
+}
+
 function Start-AXEJob {
     param([scriptblock]$Work,[string[]]$JobArgs=@(),$Button)
     # H10: mutex unico con APLICAR/MASTER. $script:busy cubre tambien Limpieza/DNS/Debloat/

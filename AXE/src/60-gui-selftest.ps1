@@ -5,12 +5,9 @@ if($env:AXE_GUITEST -eq '1'){
     Write-Host "Vistas tweaks     : $(($script:tweakCats).Count)"
     $allOk=$true
 
-    # Bombea la cola del dispatcher hasta idle (permite que DispatcherTimer ticke sin ShowDialog)
-    function Invoke-AXEDoEvents {
-        $frame=New-Object System.Windows.Threading.DispatcherFrame
-        [void]$win.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::SystemIdle,[action]{ $frame.Continue=$false })
-        [System.Windows.Threading.Dispatcher]::PushFrame($frame)
-    }
+    # Invoke-AXEDoEvents ya NO se define aqui: vive en 52-gui-build.ps1 con el resto de helpers
+    # de GUI. Definirla aqui la hacia existir solo durante el harness, asi que un handler que la
+    # usara pasaba el gate y fallaba en el primer clic real.
 
     # regresion A4+A1: init lanza Get-AXEHardware en runspace (la ventana NO espera ~3.7s de
     # CIM). Al llegar HW: chips + gating + Refresh-States async. Todo drena al bombear el
@@ -97,7 +94,56 @@ if($env:AXE_GUITEST -eq '1'){
         $measOk = ($null -ne $script:scoreLbl) -and ($null -ne $script:measureBtn) -and ($null -ne $script:measureOut) -and ([bool](Get-Command Invoke-AXEMeasure -EA SilentlyContinue))
         Write-Host "Medicion view     : score+boton+reporte+helper=$measOk (esperado True)"
         if(-not $measOk){ $allOk=$false }
+        # regresion §3.5: el barrido de timer vive en la GUI, no solo en el CLI. Se comprueba
+        # boton + handler + formateador compartido. El barrido NO se ejecuta aqui: tarda ~30s
+        # y sube la prioridad del proceso, que no es aceptable dentro de un selftest.
+        $swOk = ($null -ne $script:sweepBtn) -and
+                ([bool](Get-Command Invoke-AXETimerSweepJob -EA SilentlyContinue)) -and
+                ([bool](Get-Command Format-AXETimerSweep -EA SilentlyContinue))
+        Write-Host "Barrido timer view: boton+handler+formateador=$swOk (esperado True)"
+        if(-not $swOk){ $allOk=$false }
+        # Format-AXETimerSweep con $null (barrido sin datos utiles) debe degradar a un mensaje,
+        # no reventar: es el camino real cuando el kernel rechaza todos los requests.
+        try {
+            $fmtNull = @(Format-AXETimerSweep $null)
+            $fmtOk = ($fmtNull.Count -ge 1) -and -not [string]::IsNullOrWhiteSpace($fmtNull[0])
+        } catch { $fmtOk=$false }
+        Write-Host "Barrido fmt null  : degrada sin excepcion=$fmtOk (esperado True)"
+        if(-not $fmtOk){ $allOk=$false }
     } catch { Write-Host "Medicion view     : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
+    # regresion REGISTRO: la vista se construye y el extractor de rutas cubre el catalogo.
+    # NO se llama a Open-AXERegedit: lanzaria regedit.exe de verdad en medio del selftest.
+    try {
+        Build-ActionView 'REGISTRO' | Out-Null
+        $regViewOk = ($null -ne $script:regOut) -and ($null -ne $script:regBtn) -and
+                     ([bool](Get-Command Get-AXERegDiagnostic -EA SilentlyContinue)) -and
+                     ([bool](Get-Command Open-AXERegedit -EA SilentlyContinue))
+        Write-Host "Registro view     : salida+boton+helpers=$regViewOk (esperado True)"
+        if(-not $regViewOk){ $allOk=$false }
+        # El extractor debe encontrar clave en la MAYORIA del catalogo. Si un refactor rompe el
+        # regex, esto cae a ~0 y los atajos "regedit" desaparecen de las tarjetas en silencio.
+        $nPaths=0; foreach($tw in @($script:CAT)){ if((@(Get-AXERegPathsForTweak $tw)).Count){ $nPaths++ } }
+        $pathOk = ($nPaths -ge 40)
+        Write-Host "Registro rutas    : $nPaths/$(@($script:CAT).Count) tweaks con clave (esperado >=40)"
+        if(-not $pathOk){ $allOk=$false }
+        # Conversion al formato de LastKey, incluido el rechazo de basura.
+        $convOk = ((ConvertTo-AXERegeditPath 'HKLM:\SYSTEM\Foo') -match '\\HKEY_LOCAL_MACHINE\\SYSTEM\\Foo$') -and
+                  ($null -eq (ConvertTo-AXERegeditPath 'no-es-una-ruta'))
+        Write-Host "Registro convpath : hive+rechazo basura=$convOk (esperado True)"
+        if(-not $convOk){ $allOk=$false }
+        # PULSAR el boton de verdad, no solo comprobar que existe. Construir la vista NO ejecuta
+        # el cuerpo del handler, asi que un comando inexistente ahi dentro pasaba el gate y
+        # reventaba en el primer clic del usuario (caso real: Invoke-AXEDoEvents, que solo
+        # existe dentro de este selftest). Cuesta ~2s y cubre el camino entero.
+        try {
+            $script:regBtn.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+            $clickOk = ($script:regOut.Text -match 'claves distintas') -and (-not $script:busy) -and $script:regBtn.IsEnabled
+            Write-Host "Registro clic     : handler completo + mutex liberado=$clickOk (esperado True)"
+            if(-not $clickOk){ $allOk=$false; Write-Host "  salida: $($script:regOut.Text -split "`r?`n" | Select-Object -First 1)" }
+        } catch {
+            Write-Host "Registro clic     : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false
+        }
+    } catch { Write-Host "Registro view     : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: badge recomendado curado (no todo Tier<2)
     $recCount=0
     foreach($catName in $script:tweakCats){ foreach($e in $script:rows[$catName]){ if($script:RECOMMENDED -contains $e.Tw.Id){ $recCount++ } } }
