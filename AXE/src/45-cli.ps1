@@ -203,6 +203,45 @@ if($SelfTest){
     # preflight de verdad, el check debe EJECUTARLO y mirar lo que devuelve -- como S21 con
     # Get-AXEEnvBanner, o el harness GUI pulsando de verdad el boton de REGISTRO.
 
+    # S23: GPU por juego (region 10c). Siguiendo la leccion de S22: no se comprueba que las
+    # funciones EXISTAN, se EJECUTAN sobre una ruta sintetica y se mira lo que devuelven.
+    # Nada de esto toca una entrada de juego real.
+    $checks++
+    try {
+        # Parser: roundtrip sobre el formato real, incluida la cadena que empieza por ';'.
+        $rt = ConvertTo-AXEGpuPref (ConvertFrom-AXEGpuPref 'AppStatus=4096;GpuPreference=2;')
+        if($rt -ne 'AppStatus=4096;GpuPreference=2;'){ [void]$fails.Add("S23: parser no hace roundtrip: '$rt'") }
+        if((ConvertFrom-AXEGpuPref ';SwapEffectUpgradeEnable=1;').Count -ne 1){ [void]$fails.Add('S23: parser no tolera cadena que empieza por ;') }
+        # Escritura + revert sobre un exe que no existe en disco.
+        $probe = 'C:\__AXE_SELFTEST_GPU__\probe.exe'
+        Set-AXEGameGpuPref -Exe $probe -HighPerf $true -FlipModel $true
+        $ps = Get-AXEGameGpuState $probe
+        if(-not $ps.HighPerf -or -not $ps.FlipModel){ [void]$fails.Add("S23: Set-AXEGameGpuPref no aplico (raw='$($ps.Raw)')") }
+        if((Revert-AXEGameGpu $probe) -eq 0){ [void]$fails.Add('S23: revert no encontro la captura que acababa de hacer') }
+        if($null -ne (Get-RV $script:GpuPrefKey $probe)){ [void]$fails.Add('S23: revert dejo residuo en el registro') }
+        # Exe jamas tocado: 0 y sin escribir.
+        if((Revert-AXEGameGpu 'C:\__AXE_SELFTEST_GPU__\jamas.exe') -ne 0){ [void]$fails.Add('S23: revert de exe intacto no devolvio 0') }
+        # Ruta inexistente: Optimize avisa y no escribe.
+        $om = (Optimize-AXEGame -Exe 'C:\__AXE_SELFTEST_GPU__\no-existe.exe') -join "`n"
+        if($om -notmatch 'no existe'){ [void]$fails.Add("S23: Optimize-AXEGame no aviso de ruta inexistente: $om") }
+    } catch { [void]$fails.Add("S23: GPU por juego lanzo: $($_.Exception.Message)") }
+
+    # S24: las variables de ruta del catalogo siguen siendo cadenas con contenido.
+    # POR QUE EXISTE: al anadir la CLI de GPU por juego se declaro un '[switch]$Games' en el
+    # param block, y 20-tweaks.ps1 ya usaba $Games para la ruta de la tarea MMCSS. Declararla
+    # como switch la tipa a nivel de script, la asignacion de la cadena revienta y $Games queda
+    # vacia => gpu_mmcss apuntando a la nada. El SelfTest daba 0 fallos: S1-S23 miran el ESQUEMA
+    # del catalogo (claves, tipos, ids) y ninguno mira si las RUTAS que usan tienen valor.
+    # Cualquier futura colision param-vs-variable cae aqui en vez de silenciosamente en runtime.
+    $checks++
+    foreach($pv in @(@{N='PC';V=$PC},@{N='SP';V=$SP},@{N='GD';V=$GD},@{N='MM';V=$MM},@{N='Games';V=$Games})){
+        if([string]::IsNullOrWhiteSpace([string]$pv.V)){
+            [void]$fails.Add("S24: `$$($pv.N) vacia - colision con un parametro del param block? Los tweaks que la usan escribirian en una ruta invalida")
+        } elseif([string]$pv.V -notmatch '^HK(LM|CU):\\'){
+            [void]$fails.Add("S24: `$$($pv.N) no parece ruta de registro: '$($pv.V)'")
+        }
+    }
+
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
     Write-Host "========================================="
@@ -269,6 +308,59 @@ if($TimerSweep){
     # Render via Format-AXETimerSweep (32-measure.ps1): mismo texto que el boton de la GUI.
     Write-Host ''
     foreach($line in (Format-AXETimerSweep $sw)){ Write-Host $line }
+    exit 0
+}
+
+# --- GPU POR JUEGO (region 10c) -------------------------------------------------------
+# Escriben en HKCU, asi que NO piden admin: se pueden correr sin el launcher .bat.
+if($GameList){
+    Write-Host '== AXE - GPU POR JUEGO =='
+    $gpus = Get-AXEGpuList
+    Write-Host ("GPUs: {0}" -f (($gpus | Select-Object -Expand Name) -join ' | '))
+    if(Test-AXEHybridGpu){
+        Write-Host 'Equipo HIBRIDO: forzar la dedicada es el mayor lever de FPS de toda la suite.'
+    } else {
+        Write-Host 'Una sola GPU: GpuPreference no aplica en este equipo (ganancia por esa via = 0).'
+    }
+    Write-Host ''
+    $k = Get-Item $script:GpuPrefKey -EA SilentlyContinue
+    if(-not $k -or $k.GetValueNames().Count -eq 0){
+        Write-Host 'Sin entradas: Windows decide la GPU de todo por heuristica.'
+        exit 0
+    }
+    foreach($n in $k.GetValueNames()){
+        $st  = Get-AXEGameGpuState $n
+        # 'Windows decide' NO es lo mismo que 'GpuPreference=0'. Se distinguen a posta: la
+        # clave ausente es el estado de fabrica; el 0 explicito lo escribio alguien (AXE al
+        # apagar el ajuste, o el propio usuario en Configuracion).
+        $pref = (ConvertFrom-AXEGpuPref $st.Raw)['GpuPreference']
+        $gpu  = switch($pref){ '2'{'dGPU'} '1'{'iGPU'} '0'{'delegado (0)'} default{'Windows decide'} }
+        "{0,-15} flip={1,-3} fso={2,-3} {3}" -f $gpu,$(if($st.FlipModel){'si'}else{'no'}),$(if($st.NoFSO){'off'}else{'on'}),(Split-Path $n -Leaf) | Write-Host
+    }
+    exit 0
+}
+if($OptimizeGame){
+    Write-Host '== AXE - OPTIMIZAR JUEGO =='
+    # Se resuelve a ruta absoluta: el registro indexa por ruta COMPLETA, asi que una relativa
+    # crearia una entrada que Windows no va a mirar nunca (fallo silencioso).
+    $full = try { (Resolve-Path -LiteralPath $OptimizeGame -EA Stop).Path } catch { $OptimizeGame }
+    Write-Host "Objetivo: $full"
+    foreach($line in (Optimize-AXEGame -Exe $full -NoFSO:$NoFSO)){ Write-Host "  $line" }
+    Write-Host ''
+    Write-Host "Deshacer: -RevertGame `"$full`""
+    exit 0
+}
+if($RevertGame){
+    Write-Host '== AXE - DESHACER JUEGO =='
+    $full = try { (Resolve-Path -LiteralPath $RevertGame -EA Stop).Path } catch { $RevertGame }
+    $n = Revert-AXEGameGpu $full
+    if($n -eq 0){
+        # No se inventa un estado: si AXE nunca toco ese exe, no hay original que restaurar.
+        Write-Host "  Sin captura previa para '$full': AXE no lo ha tocado, no revierto nada."
+        Write-Host '  (Escribir un default aqui seria dejarte un estado que quiza nunca tuviste.)'
+    } else {
+        Write-Host "  Restauradas $n clave(s) al estado exacto que habia antes."
+    }
     exit 0
 }
 
