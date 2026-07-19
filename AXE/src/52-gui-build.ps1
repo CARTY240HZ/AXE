@@ -36,6 +36,10 @@ $script:glyphs = @{
     'MEMORIA'=[char]0xE964; 'SISTEMA'=[char]0xE770; 'RENDIMIENTO'=[char]0xE9D9; 'SERVICIOS'=[char]0xE90F;
     'PRIVACIDAD'=[char]0xE72E; 'APPS'=[char]0xE71D; 'EXTREMO'=[char]0xE7BA;
     'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2; 'REGISTRO'=[char]0xE71D
+    # FPS: E7F8 (Speed). Distinto del E9D2 de MEDICION a posta: aquel mide latencia/timer del
+    # sistema, este sube y mide FPS de un juego. El mismo icono en los dos los confundiria en la
+    # barra lateral, que es donde se elige sin leer.
+    'FPS'=[char]0xE7F8
 }
 # Sombra suave compartida (solo se aplica en hover -> 1 card a la vez, sin coste en reposo)
 $script:cardShadow = New-Object System.Windows.Media.Effects.DropShadowEffect

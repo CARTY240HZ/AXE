@@ -104,6 +104,18 @@ if($env:AXE_GUITEST -eq '1'){
         Write-Host "Pestana FPS       : vista=$fpsTabOk salida=$fpsUiOk funciones=$fpsFnOk (esperado True/True/True)"
         if(-not ($fpsTabOk -and $fpsUiOk -and $fpsFnOk)){ $allOk=$false }
     } catch { Write-Host "Pestana FPS       : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
+    # regresion ICONO+SUBTITULO por categoria. Anadir una pestana son TRES sitios: actionCats
+    # (52-gui-build), el glyph de $script:glyphs y la rama del subtitulo en Switch-View
+    # (57-gui-handlers). FPS se anadio con el primero y sin los otros dos: la pestana salia
+    # funcionando pero sin icono en la barra lateral y sin subtitulo en la cabecera, y el gate
+    # daba LAYOUT OK igual. Este check cubre la clase entera, no el caso de FPS.
+    try {
+        $sinIcono = @($script:actionCats | Where-Object { -not $script:glyphs.ContainsKey($_) })
+        $sinSub   = @(foreach($c in $script:actionCats){ Switch-View $c; if([string]::IsNullOrWhiteSpace($ContentSub.Text)){ $c } })
+        Write-Host "Iconos/subtitulos : sin icono=$($sinIcono.Count) sin subtitulo=$($sinSub.Count) (esperado 0/0)"
+        if($sinIcono.Count -gt 0){ Write-Host "  FAIL: categorias sin glyph -> $($sinIcono -join ', ')"; $allOk=$false }
+        if($sinSub.Count   -gt 0){ Write-Host "  FAIL: categorias sin subtitulo -> $($sinSub -join ', ')"; $allOk=$false }
+    } catch { Write-Host "Iconos/subtitulos : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: ejercer handler ASISTENTE (bug de scope $out/$doAsk null)
     try {
         $before=$script:aiOut.Text.Length
