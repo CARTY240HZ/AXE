@@ -19,7 +19,7 @@ function Switch-View($catName){
     foreach($v in $script:views.Values){ $v.Visibility='Collapsed' }
     $ContentTitle.Text=$catName; $script:activeCat=$catName
     if($catName -in $script:actionCats){
-        $ContentSub.Text = switch($catName){ 'MEDICION'{'Mide latencia/timer y calcula el AXE Score'} 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
+        $ContentSub.Text = switch($catName){ 'MEDICION'{'Mide latencia/timer y calcula el AXE Score'} 'REGISTRO'{'Que claves toca el catalogo (solo lectura)'} 'LIMPIEZA'{'Libera espacio en disco'} 'DEBLOAT'{'Quita apps preinstaladas'} 'DNS'{'Servidores DNS rapidos'} 'STARTUP'{'Programas de arranque'} 'PERFILES'{'Plan de energia por-juego (auto)'} 'ASISTENTE IA'{'Recomendaciones locales, sin internet'} default{''} }
         if(-not $script:views.ContainsKey($catName)){ Build-ActionView $catName | Out-Null }
         $script:views[$catName].Visibility='Visible'; Start-AXEFade $script:views[$catName]; return
     }
@@ -262,6 +262,86 @@ function Invoke-AXEMeasure {
         if($OnDone){ try { & $OnDone $snap $sc } catch {} }
     })
     $script:measureTimer.Start()
+}
+
+# Barrido de timer sin freeze. Mismo patron que Invoke-AXEMeasure, pero con un problema extra:
+# el jitter llama a [AXE.Native]::SampleJitter, que es un TIPO .NET y por tanto visible desde
+# cualquier runspace del AppDomain. Measure-AXETimerSweep es una FUNCION de PowerShell, y el
+# scope de funciones es por-runspace: un [PowerShell]::Create() nuevo no la ve. Por eso se envia
+# el codigo fuente de la funcion y sus dependencias, en vez de reimplementar el barrido aqui
+# (una copia derivaria del original justo en la logica que decide si el resultado es ruido).
+$script:sweepPS=$null; $script:sweepHandle=$null; $script:sweepTimer=$null; $script:sweepBtn=$null
+function Invoke-AXETimerSweepJob {
+    if($script:busy -or $script:measurePS -or $script:sweepPS){ Write-AXELog 'Otra operacion en curso, espera.' 'WARN'; return }
+    # Mutex H10 compartido con APLICAR/MASTER: durante el barrido el proceso sube a prioridad
+    # High y mantiene un request de resolucion de timer. Dejar que APLICAR corra a la vez
+    # mezclaria mutacion del sistema con la medicion que intenta caracterizarlo.
+    $script:busy=$true
+    if($script:sweepBtn){ $script:sweepBtn.IsEnabled=$false }
+    if($script:measureBtn){ $script:measureBtn.IsEnabled=$false }
+    if($script:measureOut){ $script:measureOut.Text="Barrido en curso: ~30s (3 pasadas en orden aleatorio).`r`nNo toques nada mientras mide o el delta recogera tu actividad." }
+    Write-AXELog 'Barrido de timer: midiendo delta de Sleep(1) por resolucion (~30s).'
+
+    $fnSrc = ''
+    # Get-AXESweepVerdict y Get-AXEBand van SI O SI: Measure-AXETimerSweep las llama y el scope
+    # de funciones es por-runspace, asi que sin enviarlas el barrido de la GUI muere con
+    # "termino no reconocido" DENTRO del runspace, donde el error no se ve. La CLI seguiria
+    # funcionando, que es justo lo que hace este fallo dificil de pillar.
+    foreach($n in 'Get-RV','Get-AXETimerResolution','Set-AXETimerResolution','Get-AXEBand','Get-AXESweepVerdict','Measure-AXETimerSweep'){
+        $fnSrc += "function $n {`r`n" + (Get-Command $n).Definition + "`r`n}`r`n"
+    }
+    $ps=[PowerShell]::Create()
+    [void]$ps.AddScript({
+        param($src)
+        # Shim de log: en un runspace nuevo no existen $script:AXELog ni $script:LogBox, asi que
+        # el Write-AXELog real escribiria Add-Content contra ruta vacia y perderia los avisos
+        # (el de GlobalTimerResolutionRequests y el de requests no concedidos, que son justo los
+        # que explican un resultado raro). Se recogen aqui y el UI thread los reemite.
+        $script:swLog = New-Object System.Collections.ArrayList
+        function Write-AXELog { param([string]$Msg,[string]$Level='INFO') [void]$script:swLog.Add("$Level|$Msg") }
+        . ([scriptblock]::Create($src))
+        [pscustomobject]@{ Sweep=(Measure-AXETimerSweep); Log=@($script:swLog) }
+    })
+    [void]$ps.AddArgument($fnSrc)
+    try { $script:sweepPS=$ps; $script:sweepHandle=$ps.BeginInvoke() }
+    catch {
+        # Si el arranque falla hay que soltar el mutex aqui: el tick de abajo nunca correra.
+        $ps.Dispose(); $script:sweepPS=$null; $script:busy=$false
+        if($script:sweepBtn){ $script:sweepBtn.IsEnabled=$true }
+        if($script:measureBtn){ $script:measureBtn.IsEnabled=$true }
+        Write-AXELog "Barrido: no arranco -> $($_.Exception.Message)" 'ERR'
+        return
+    }
+    $script:sweepTimer=New-Object System.Windows.Threading.DispatcherTimer
+    $script:sweepTimer.Interval=[TimeSpan]::FromMilliseconds(200)
+    $script:sweepTimer.Add_Tick({
+        if(-not $script:sweepHandle.IsCompleted){ return }
+        $script:sweepTimer.Stop()
+        $res=$null
+        try { $res=@($script:sweepPS.EndInvoke($script:sweepHandle)) | Select-Object -First 1 }
+        catch { Write-AXELog "Barrido: fallo en el runspace -> $($_.Exception.Message)" 'ERR' }
+        $script:sweepPS.Dispose(); $script:sweepPS=$null
+        # Reemitir los avisos del runspace con el logger real, ya en el UI thread.
+        if($res -and $res.Log){
+            foreach($e in $res.Log){
+                $p="$e" -split '\|',2
+                if($p.Count -eq 2){ Write-AXELog $p[1] $p[0] } else { Write-AXELog "$e" }
+            }
+        }
+        $sw = if($res){ $res.Sweep } else { $null }
+        if($script:measureOut){ $script:measureOut.Text = ((Format-AXETimerSweep $sw) -join "`r`n") }
+        if($sw){
+            Write-AXELog $(if($sw.Conclusive){
+                "Barrido: mejor resolucion {0:F3}ms (spread {1:F3}ms sobre el ruido)." -f $sw.Best.AppliedMs,$sw.SpreadMs
+            } else {
+                "Barrido: no concluyente (spread {0:F3}ms dentro del ruido). No se recomienda cambiar nada." -f $sw.SpreadMs
+            })
+        }
+        if($script:sweepBtn){ $script:sweepBtn.IsEnabled=$true }
+        if($script:measureBtn){ $script:measureBtn.IsEnabled=$true }
+        $script:busy=$false
+    })
+    $script:sweepTimer.Start()
 }
 
 # Apply sin freeze: DispatcherTimer procesa 1 tweak/tick

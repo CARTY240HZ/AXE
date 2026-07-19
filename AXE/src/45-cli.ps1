@@ -5,7 +5,7 @@
 #     GUI se DEFIERE a un runspace de fondo (Start-AXEHardwareLoad, region 12) para que
 #     la ventana no espere ~3.7s de CIM (Win32_Processor + Get-NetAdapter pagan cold-init WMI).
 $script:HW = $null
-if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report){
+if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep){
     try { $script:HW = Get-AXEHardware } catch { $script:HW = $null }
 }
 
@@ -253,6 +253,19 @@ if($Score){
 if($Report){
     $s0=Get-AXESnapshot; $s1=Get-AXESnapshot
     Write-Host (Export-AXEReport $s0 $s1 $Report)
+    exit 0
+}
+if($TimerSweep){
+    # Barrido de resolucion de timer. NO recomienda un valor a ciegas: si el resultado cae
+    # dentro del ruido de medicion lo dice y no recomienda nada. Ver Measure-AXETimerSweep.
+    Write-Host '== AXE BARRIDO DE TIMER =='
+    Write-Host 'Midiendo delta de Sleep(1) por resolucion. Tarda unos segundos...'
+    $sw = Measure-AXETimerSweep
+    if(-not $sw){ Write-Host 'Sin datos utiles (ver log).'; exit 1 }
+
+    # Render via Format-AXETimerSweep (32-measure.ps1): mismo texto que el boton de la GUI.
+    Write-Host ''
+    foreach($line in (Format-AXETimerSweep $sw)){ Write-Host $line }
     exit 0
 }
 

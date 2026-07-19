@@ -225,6 +225,48 @@ function Build-ActionView($catName){
             $ana.Add_Click({ if($script:busy){ $script:aiOut.AppendText(">> (operacion en curso; espera a que termine)`r`n"); $script:aiOut.ScrollToEnd(); return }; $script:aiOut.AppendText(">> Analisis del sistema`r`n"); $script:aiOut.AppendText(((Get-AXERecommendations) -join "`r`n")+"`r`n`r`n"); $script:aiOut.ScrollToEnd() })
             [void]$panel.Children.Add($script:aiOut); [void]$panel.Children.Add($inRow)
         }
+        'REGISTRO' {
+            # Foto global: que clave toca cada tweak y si el Test la da por aplicada. Solo
+            # lectura; escribir sigue siendo cosa de APLICAR (punto de restauracion + snapshot).
+            $hint=New-Object System.Windows.Controls.TextBlock
+            $hint.Text='Claves del registro que toca el catalogo, agrupadas por ruta. Solo lectura: aqui no se cambia nada. Cada tarjeta de ajuste tiene ademas su propio atajo "regedit".'
+            $hint.Foreground=New-AXEBrush 'Muted'; $hint.TextWrapping='Wrap'; $hint.FontSize=12; $hint.Margin=New-Object System.Windows.Thickness(0,0,0,10)
+            [void]$panel.Children.Add($hint)
+
+            $script:regOut=New-Object System.Windows.Controls.TextBox
+            $script:regOut.IsReadOnly=$true; $script:regOut.Background=New-AXEBrush 'Surface'; $script:regOut.Foreground=New-AXEBrush 'Fg'
+            $script:regOut.BorderBrush=New-AXEBrush 'Line'; $script:regOut.BorderThickness=New-Object System.Windows.Thickness(1)
+            $script:regOut.Padding=New-Object System.Windows.Thickness(12,8,12,8); $script:regOut.Height=420
+            $script:regOut.VerticalScrollBarVisibility='Auto'; $script:regOut.HorizontalScrollBarVisibility='Auto'
+            $script:regOut.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:regOut.FontSize=12
+            $script:regOut.Text='Pulsa "Leer estado del registro".'
+
+            $script:regBtn=New-ActionButton 'Leer estado del registro' 'Accent'
+            $script:regBtn.Add_Click({
+                if($script:busy){ return }
+                # ~1.8s medido (ejecuta el Test de 55 tweaks). Corto para montar un runspace,
+                # largo para no avisar: se pinta el aviso y se fuerza UNA pasada de render.
+                #   Prioridad Render y NO un bombeo tipo PushFrame/DoEvents: el bombeo es
+                #   reentrante y procesa entrada, o sea que durante la lectura se podria pulsar
+                #   APLICAR y mutar el sistema en mitad del diagnostico. Render repinta sin
+                #   dejar pasar clics. (Invoke-AXEDoEvents, ademas, solo existe dentro del
+                #   selftest: usarlo aqui reventaba con CommandNotFoundException.)
+                $script:busy=$true
+                $script:regBtn.IsEnabled=$false
+                try {
+                    $script:regOut.Text='Leyendo el registro...'
+                    $script:regOut.Dispatcher.Invoke([action]{},[System.Windows.Threading.DispatcherPriority]::Render)
+                    $script:regOut.Text=((Format-AXERegDiagnostic (Get-AXERegDiagnostic)) -join "`r`n")
+                } catch {
+                    $script:regOut.Text="No se pudo leer: $($_.Exception.Message)"
+                } finally {
+                    $script:regBtn.IsEnabled=$true
+                    $script:busy=$false
+                }
+            })
+            [void]$panel.Children.Add($script:regBtn)
+            [void]$panel.Children.Add($script:regOut)
+        }
         'MEDICION' {
             # Numero grande del score
             $scoreRow=New-Object System.Windows.Controls.StackPanel; $scoreRow.Orientation='Horizontal'; $scoreRow.Margin=New-Object System.Windows.Thickness(0,0,0,4)
@@ -276,6 +318,13 @@ no para comparar entre maquinas distintas.
 "@
             })
             [void]$panel.Children.Add($script:latBtn)
+            # §3.5: barrido de resolucion de timer. Separado de "Medir ahora" a posta -- aquel
+            # tarda 1s y se puede pulsar a menudo; este tarda ~30s (3 pasadas) y sube el proceso
+            # a prioridad High, asi que no debe colarse dentro del flujo de medir-antes/despues.
+            # Corre en runspace de fondo: bloquearlo en el UI thread congelaria la ventana 30s.
+            $script:sweepBtn=New-ActionButton 'Barrido de timer (~30s)' 'Accent'
+            $script:sweepBtn.Add_Click({ Invoke-AXETimerSweepJob })
+            [void]$panel.Children.Add($script:sweepBtn)
             # Reporte / delta
             $script:measureOut=New-Object System.Windows.Controls.TextBox; $script:measureOut.IsReadOnly=$true; $script:measureOut.Background=New-AXEBrush 'Surface'; $script:measureOut.Foreground=New-AXEBrush 'Fg'; $script:measureOut.BorderBrush=New-AXEBrush 'Line'; $script:measureOut.BorderThickness=New-Object System.Windows.Thickness(1); $script:measureOut.Padding=New-Object System.Windows.Thickness(12,8,12,8); $script:measureOut.Height=260; $script:measureOut.TextWrapping='Wrap'; $script:measureOut.VerticalScrollBarVisibility='Auto'; $script:measureOut.FontFamily=New-Object System.Windows.Media.FontFamily('Cascadia Code, Consolas'); $script:measureOut.FontSize=12
             $script:measureOut.Text="Medicion local, 0 dependencias. El jitter es un PROXY de latencia (no atribuible a driver concreto)."
