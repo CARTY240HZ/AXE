@@ -194,11 +194,14 @@ if($SelfTest){
     }
     try { if([string]::IsNullOrWhiteSpace((Get-AXEEnvBanner))){ [void]$fails.Add('S21: Get-AXEEnvBanner vacio') } }
     catch { [void]$fails.Add("S21: Get-AXEEnvBanner lanzo: $($_.Exception.Message)") }
-    # S22: preflight de seguridad (§4.1) presente
-    $checks++
-    foreach($fn in 'Assert-AXEVss','Get-AXETamperState'){
-        if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S22: funcion '$fn' no definida") }
-    }
+    # S22 ELIMINADO (auditoria 2026-07-19). Comprobaba que Assert-AXEVss y Get-AXETamperState
+    # estuvieran DEFINIDAS. Ninguna tenia llamadores de produccion, asi que el check solo probaba
+    # que existia codigo muerto: imposible de fallar mientras nadie borrara las funciones, y cero
+    # senal sobre si el preflight de §4.1 servia (no servia: no se invocaba nunca). Las funciones
+    # se han borrado en 34-safety.ps1 y el check se va con ellas.
+    #   Leccion por si se reescribe: un check de "la funcion existe" no vale. Si se cablea un
+    # preflight de verdad, el check debe EJECUTARLO y mirar lo que devuelve -- como S21 con
+    # Get-AXEEnvBanner, o el harness GUI pulsando de verdad el boton de REGISTRO.
 
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"

@@ -106,24 +106,29 @@ function Restore-TweakState($id){
 # pasada: $script:tCache se vacia al arrancar cada Refresh-States (y tras Apply/Revert,
 # que disparan Refresh), asi el valor NUNCA queda obsoleto respecto al estado real.
 $script:tCache = @{}
+# Topologia HW (lista de dispositivos PnP): inmutable durante la sesion => cache PERMANENTE, en
+# un store aparte. El bit mutable (registro MSISupported/DevicePriority) se sigue leyendo fresco
+# con Get-RV en cada Test; aqui solo se cachea la ENUMERACION cara de CIM.
+$script:hwTopoCache = @{}
+# Antes esto eran DOS funciones byte a byte identicas (Get-AXECache / Get-AXEHwCache) que solo se
+# diferenciaban en el hashtable de respaldo. Ahora es una con -Permanent.
+#   Los dos stores siguen SEPARADOS a posta: $tCache se vacia al arrancar cada Refresh-States
+# (57-gui-handlers:62) para que ningun Test devuelva estado obsoleto despues de un Apply/Revert,
+# y $hwTopoCache no se vacia nunca. Fundirlos en un solo diccionario haria que cada Refresh
+# tirase la enumeracion PnP cara, o peor, que la topologia sobreviviese donde no debe.
 function Get-AXECache {
-    param([string]$Key,[scriptblock]$Producer)
+    param([string]$Key,[scriptblock]$Producer,[switch]$Permanent)
+    if($Permanent){
+        if($null -eq $script:hwTopoCache){ $script:hwTopoCache=@{} }
+        if($script:hwTopoCache.ContainsKey($Key)){ return $script:hwTopoCache[$Key] }
+        $v = & $Producer
+        $script:hwTopoCache[$Key] = $v
+        return $v
+    }
     if($null -eq $script:tCache){ $script:tCache=@{} }
     if($script:tCache.ContainsKey($Key)){ return $script:tCache[$Key] }
     $v = & $Producer
     $script:tCache[$Key] = $v
-    return $v
-}
-# Topologia HW (lista de dispositivos PnP) es inmutable en la sesion => cache permanente.
-# El bit mutable (registro MSISupported/DevicePriority) se sigue leyendo fresco por Get-RV
-# en cada Test; aqui solo cacheamos la ENUMERACION cara de CIM.
-$script:hwTopoCache = @{}
-function Get-AXEHwCache {
-    param([string]$Key,[scriptblock]$Producer)
-    if($null -eq $script:hwTopoCache){ $script:hwTopoCache=@{} }
-    if($script:hwTopoCache.ContainsKey($Key)){ return $script:hwTopoCache[$Key] }
-    $v = & $Producer
-    $script:hwTopoCache[$Key] = $v
     return $v
 }
 
