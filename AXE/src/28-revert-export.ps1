@@ -43,7 +43,21 @@ function Import-AXEProfile($file){
         if(-not $tw){ continue }
         if(Get-BlockReason $tw){ continue }
         try {
-            if($e.On){ & $tw.Apply } else { & $tw.Revert }
+            if($e.On){
+                # Mismo protocolo de snapshot que la GUI (57-gui-handlers:429). Import lo saltaba
+                # en los DOS sentidos: aplicaba sin poner $capTweak (no capturaba nada) y revertia
+                # llamando al scriptblock directo (ignorando lo capturado). Resultado: aplicar por
+                # perfil dejaba el tweak sin estado previo guardado, asi que el revert posterior
+                # caia al fallback -- que para varios tweaks escribe un default SUPUESTO, y para
+                # gpu_mmcss borra valores que Windows trae de fabrica en la tarea Games.
+                if(Test-SnapEligible $tw){ $script:capTweak=$tw.Id }
+                try { & $tw.Apply } finally { $script:capTweak=$null }
+                Commit-TweakState $tw.Id
+            } else {
+                # El scriptblock es el FALLBACK, no la via normal: solo si no hay estado previo
+                # capturado (tweak aplicado fuera de AXE, o no elegible por usar powercfg/bcdedit).
+                if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
+            }
             $applied++
         } catch { $errors++; Write-AXELog "Error importando $($tw.Id): $($_.Exception.Message)" 'ERR' }
     }
