@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-19 03:17:13Z
+# Build UTC: 2026-07-19 03:33:49Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 32-measure.ps1, 34-safety.ps1, 36-report.ps1, 38-regedit.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -3700,6 +3700,13 @@ $script:snapPrev=$null; $script:snapCur=$null; $script:measurePS=$null; $script:
 function Invoke-AXEMeasure {
     param([int]$JitterMs=1000,[scriptblock]$OnDone=$null)
     if($script:busy -or $script:measurePS){ Write-AXELog 'Otra operacion en curso, espera.' 'WARN'; return }
+    # H10: medir TAMBIEN coge el mutex. Antes solo lo LEIA: comprobaba $script:busy pero nunca
+    # lo ponia, asi que era la unica operacion de fondo que no lo tomaba. Durante el segundo de
+    # muestreo, busy seguia en $false y APLICAR/MASTER/Start-AXEJob podian arrancar y mutar el
+    # registro EN MITAD del snapshot, contaminando justo el "antes" del delta antes/despues.
+    #   Se llama desde el tail de APLICAR (tras liberar el mutex en el Then de Refresh-States),
+    #   no desde dentro, asi que tomarlo aqui no se auto-bloquea.
+    $script:busy=$true
     if($script:measureBtn){ $script:measureBtn.IsEnabled=$false }
     if($script:scoreLbl){ $script:scoreLbl.Text='...' }
     $ps=[PowerShell]::Create()
@@ -3711,6 +3718,12 @@ function Invoke-AXEMeasure {
     $script:measureTimer.Add_Tick({
         if(-not $script:measureHandle.IsCompleted){ return }
         $script:measureTimer.Stop()
+        # try/finally sobre TODO el cuerpo: ahora que el tick tiene el mutex, una excepcion aqui
+        # (Get-AXEScore, New-AXEReport, un Test de tweak) lo dejaria cogido para siempre y la
+        # ventana quedaria inerte -- ningun boton volveria a responder y sin error visible.
+        # $snap/$sc se declaran fuera para que $OnDone, que corre despues del finally, los vea.
+        $snap=$null; $sc=$null
+        try {
         try { $r=@($script:measurePS.EndInvoke($script:measureHandle)) } catch { $r=$null }
         $script:measurePS.Dispose(); $script:measurePS=$null
         # ensamblar snapshot en el UI thread
@@ -3730,7 +3743,17 @@ function Invoke-AXEMeasure {
         }
         if($script:measureBtn){ $script:measureBtn.IsEnabled=$true }
         Write-AXELog "Medicion: AXE Score $($sc.Total)/100."
-        if($OnDone){ try { & $OnDone $snap $sc } catch {} }
+        } catch {
+            Write-AXELog "Medicion fallo: $($_.Exception.Message)" 'ERR'
+            if($script:measureBtn){ $script:measureBtn.IsEnabled=$true }
+            if($script:measurePS){ $script:measurePS.Dispose(); $script:measurePS=$null }
+        } finally {
+            # El mutex protege la MEDICION, no el callback: liberar aqui deja a $OnDone lanzar
+            # otra tarea de fondo sin bloquearse contra la medicion que acaba de terminar.
+            $script:busy=$false
+        }
+        # Fuera del try: si el cuerpo fallo, $sc es $null y no hay nada que reportar.
+        if($OnDone -and $sc){ try { & $OnDone $snap $sc } catch {} }
     })
     $script:measureTimer.Start()
 }
@@ -4023,6 +4046,25 @@ if($env:AXE_GUITEST -eq '1'){
         $measOk = ($null -ne $script:scoreLbl) -and ($null -ne $script:measureBtn) -and ($null -ne $script:measureOut) -and ([bool](Get-Command Invoke-AXEMeasure -EA SilentlyContinue))
         Write-Host "Medicion view     : score+boton+reporte+helper=$measOk (esperado True)"
         if(-not $measOk){ $allOk=$false }
+        # regresion H10-medicion: Invoke-AXEMeasure debe COGER el mutex, no solo leerlo. Era la
+        # unica operacion de fondo que comprobaba $script:busy sin ponerlo nunca, asi que durante
+        # el muestreo APLICAR/MASTER/Start-AXEJob podian arrancar y mutar el registro en mitad del
+        # snapshot, contaminando el "antes" del delta antes/despues.
+        #   El test de mutex de mas arriba NO cubria esto: prueba Start-AXEJob, que si lo cogia.
+        # Se mide con 1ms de jitter (el minimo util) para no alargar el gate.
+        try {
+            Invoke-AXEMeasure -JitterMs 1
+            $tookMutex = $script:busy
+            # Drena hasta que el tick complete y suelte el mutex. Tope por si nunca completa:
+            # sin el, un fallo de liberacion colgaria el gate en vez de reportarlo.
+            $spins=0
+            while($script:busy -and $spins -lt 200){ Invoke-AXEDoEvents; Start-Sleep -Milliseconds 20; $spins++ }
+            $released = -not $script:busy
+            Write-Host "Medicion mutex    : coge=$tookMutex libera=$released (esperado True/True)"
+            if(-not $tookMutex -or -not $released){ $allOk=$false; $script:busy=$false }
+        } catch {
+            Write-Host "Medicion mutex    : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false; $script:busy=$false
+        }
         # regresion §3.5: el barrido de timer vive en la GUI, no solo en el CLI. Se comprueba
         # boton + handler + formateador compartido. El barrido NO se ejecuta aqui: tarda ~30s
         # y sube la prioridad del proceso, que no es aceptable dentro de un selftest.

@@ -94,6 +94,25 @@ if($env:AXE_GUITEST -eq '1'){
         $measOk = ($null -ne $script:scoreLbl) -and ($null -ne $script:measureBtn) -and ($null -ne $script:measureOut) -and ([bool](Get-Command Invoke-AXEMeasure -EA SilentlyContinue))
         Write-Host "Medicion view     : score+boton+reporte+helper=$measOk (esperado True)"
         if(-not $measOk){ $allOk=$false }
+        # regresion H10-medicion: Invoke-AXEMeasure debe COGER el mutex, no solo leerlo. Era la
+        # unica operacion de fondo que comprobaba $script:busy sin ponerlo nunca, asi que durante
+        # el muestreo APLICAR/MASTER/Start-AXEJob podian arrancar y mutar el registro en mitad del
+        # snapshot, contaminando el "antes" del delta antes/despues.
+        #   El test de mutex de mas arriba NO cubria esto: prueba Start-AXEJob, que si lo cogia.
+        # Se mide con 1ms de jitter (el minimo util) para no alargar el gate.
+        try {
+            Invoke-AXEMeasure -JitterMs 1
+            $tookMutex = $script:busy
+            # Drena hasta que el tick complete y suelte el mutex. Tope por si nunca completa:
+            # sin el, un fallo de liberacion colgaria el gate en vez de reportarlo.
+            $spins=0
+            while($script:busy -and $spins -lt 200){ Invoke-AXEDoEvents; Start-Sleep -Milliseconds 20; $spins++ }
+            $released = -not $script:busy
+            Write-Host "Medicion mutex    : coge=$tookMutex libera=$released (esperado True/True)"
+            if(-not $tookMutex -or -not $released){ $allOk=$false; $script:busy=$false }
+        } catch {
+            Write-Host "Medicion mutex    : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false; $script:busy=$false
+        }
         # regresion §3.5: el barrido de timer vive en la GUI, no solo en el CLI. Se comprueba
         # boton + handler + formateador compartido. El barrido NO se ejecuta aqui: tarda ~30s
         # y sube la prioridad del proceso, que no es aceptable dentro de un selftest.

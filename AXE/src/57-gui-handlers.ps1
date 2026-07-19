@@ -229,6 +229,13 @@ $script:snapPrev=$null; $script:snapCur=$null; $script:measurePS=$null; $script:
 function Invoke-AXEMeasure {
     param([int]$JitterMs=1000,[scriptblock]$OnDone=$null)
     if($script:busy -or $script:measurePS){ Write-AXELog 'Otra operacion en curso, espera.' 'WARN'; return }
+    # H10: medir TAMBIEN coge el mutex. Antes solo lo LEIA: comprobaba $script:busy pero nunca
+    # lo ponia, asi que era la unica operacion de fondo que no lo tomaba. Durante el segundo de
+    # muestreo, busy seguia en $false y APLICAR/MASTER/Start-AXEJob podian arrancar y mutar el
+    # registro EN MITAD del snapshot, contaminando justo el "antes" del delta antes/despues.
+    #   Se llama desde el tail de APLICAR (tras liberar el mutex en el Then de Refresh-States),
+    #   no desde dentro, asi que tomarlo aqui no se auto-bloquea.
+    $script:busy=$true
     if($script:measureBtn){ $script:measureBtn.IsEnabled=$false }
     if($script:scoreLbl){ $script:scoreLbl.Text='...' }
     $ps=[PowerShell]::Create()
@@ -240,6 +247,12 @@ function Invoke-AXEMeasure {
     $script:measureTimer.Add_Tick({
         if(-not $script:measureHandle.IsCompleted){ return }
         $script:measureTimer.Stop()
+        # try/finally sobre TODO el cuerpo: ahora que el tick tiene el mutex, una excepcion aqui
+        # (Get-AXEScore, New-AXEReport, un Test de tweak) lo dejaria cogido para siempre y la
+        # ventana quedaria inerte -- ningun boton volveria a responder y sin error visible.
+        # $snap/$sc se declaran fuera para que $OnDone, que corre despues del finally, los vea.
+        $snap=$null; $sc=$null
+        try {
         try { $r=@($script:measurePS.EndInvoke($script:measureHandle)) } catch { $r=$null }
         $script:measurePS.Dispose(); $script:measurePS=$null
         # ensamblar snapshot en el UI thread
@@ -259,7 +272,17 @@ function Invoke-AXEMeasure {
         }
         if($script:measureBtn){ $script:measureBtn.IsEnabled=$true }
         Write-AXELog "Medicion: AXE Score $($sc.Total)/100."
-        if($OnDone){ try { & $OnDone $snap $sc } catch {} }
+        } catch {
+            Write-AXELog "Medicion fallo: $($_.Exception.Message)" 'ERR'
+            if($script:measureBtn){ $script:measureBtn.IsEnabled=$true }
+            if($script:measurePS){ $script:measurePS.Dispose(); $script:measurePS=$null }
+        } finally {
+            # El mutex protege la MEDICION, no el callback: liberar aqui deja a $OnDone lanzar
+            # otra tarea de fondo sin bloquearse contra la medicion que acaba de terminar.
+            $script:busy=$false
+        }
+        # Fuera del try: si el cuerpo fallo, $sc es $null y no hay nada que reportar.
+        if($OnDone -and $sc){ try { & $OnDone $snap $sc } catch {} }
     })
     $script:measureTimer.Start()
 }
