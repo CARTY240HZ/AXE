@@ -19,6 +19,8 @@
 #   -RevertGame   <ruta.exe>           Deshace lo anterior al estado capturado
 #   -Fps <proceso> [-FpsSeconds N]     Mide FPS reales con PresentMon (1% low incluido)
 #   -Fps <proceso> -FpsCompare         Antes/despues con veredicto honesto (ruido o no)
+#   -Diag         Configuracion mal puesta que cuesta mas FPS que todo el catalogo junto
+#                 (XMP/EXPO, canales de RAM, Hz del monitor, SSD). Solo detecta, no toca nada.
 #   (sin args)    GUI (requiere admin via el launcher .bat)
 # =====================================================
 
@@ -32,6 +34,8 @@ param(
     [switch]$Score,
     [string]$Report,
     [switch]$TimerSweep,
+    # Verificado sin colision contra el resto de src/ antes de anadirlo (ver nota de $GameList).
+    [switch]$Diag,
     # OJO: NO llamar a este switch '$Games'. 20-tweaks.ps1 usa $Games como variable local para
     # la ruta de la tarea MMCSS ('...\SystemProfile\Tasks\Games'); declararlo aqui como [switch]
     # la tipa a nivel de script y la asignacion de esa cadena revienta => gpu_mmcss se queda

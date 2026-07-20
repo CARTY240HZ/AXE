@@ -5,7 +5,8 @@
 #     GUI se DEFIERE a un runspace de fondo (Start-AXEHardwareLoad, region 12) para que
 #     la ventana no espere ~3.7s de CIM (Win32_Processor + Get-NetAdapter pagan cold-init WMI).
 $script:HW = $null
-if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep){
+#     -Diag entra aqui porque Get-AXEDiagFacts reusa $script:HW.IsSSD en vez de recalcularlo.
+if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag){
     try { $script:HW = Get-AXEHardware } catch { $script:HW = $null }
 }
 
@@ -337,6 +338,14 @@ if($TimerSweep){
     Write-Host ''
     foreach($line in (Format-AXETimerSweep $sw)){ Write-Host $line }
     exit 0
+}
+if($Diag){
+    # Diagnostico de configuracion (region 10e). NO aplica nada: lo que detecta vive en la BIOS,
+    # en los slots de RAM o en Configuracion de Windows, fuera del alcance de un script.
+    # Salida 1 si hay algo mal configurado, para poder encadenarlo en scripts.
+    $findings = Get-AXEDiagFindings -Facts (Get-AXEDiagFacts)
+    foreach($line in (Format-AXEDiag -Findings $findings)){ Write-Host $line }
+    exit ([int](@($findings | Where-Object Status -eq 'BAD').Count -gt 0))
 }
 
 # --- GPU POR JUEGO (region 10c) -------------------------------------------------------
