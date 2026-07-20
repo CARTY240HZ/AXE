@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-19 15:39:59Z
+# Build UTC: 2026-07-20 00:08:20Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 36-report.ps1, 38-regedit.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -3538,14 +3538,23 @@ if($script:HW){ Build-HwChips }   # headless/GUISHOW con HW ya cargado
 # ---- 12.7 catalogo -> categorias + iconos ----
 $script:glyphs = @{
     'CPU'=[char]0xE950; 'LATENCIA'=[char]0xE945; 'GPU'=[char]0xE7F4; 'RED'=[char]0xE774;
-    'MEMORIA'=[char]0xE964; 'SISTEMA'=[char]0xE770; 'RENDIMIENTO'=[char]0xE9D9; 'SERVICIOS'=[char]0xE90F;
+    'MEMORIA'=[char]0xE964; 'SISTEMA'=[char]0xE713; 'RENDIMIENTO'=[char]0xE9D9; 'SERVICIOS'=[char]0xE90F;
     'PRIVACIDAD'=[char]0xE72E; 'APPS'=[char]0xE71D; 'EXTREMO'=[char]0xE7BA;
-    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2; 'REGISTRO'=[char]0xE71D
-    # FPS: E7F8 (Speed). Distinto del E9D2 de MEDICION a posta: aquel mide latencia/timer del
-    # sistema, este sube y mide FPS de un juego. El mismo icono en los dos los confundiria en la
-    # barra lateral, que es donde se elige sin leer.
-    'FPS'=[char]0xE7F8
+    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xECC9; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2; 'REGISTRO'=[char]0xE8FD
+    'FPS'=[char]0xEC4A
 }
+# NOTA sobre los cuatro glyphs de arriba (FPS, SISTEMA, REGISTRO, DEBLOAT): se eligieron
+# RENDERIZANDO la fuente a PNG y mirando el dibujo, no por lo que sugiere el nombre del
+# codepoint. Los cuatro anteriores estaban mal y ninguno lo delataba leyendo el codigo:
+#   FPS      E7F8 -> EC4A : E7F8 dibuja un PORTATIL, no velocidad. EC4A es el velocimetro.
+#   SISTEMA  E770 -> E713 : E770 tambien es un portatil, o sea que SISTEMA y FPS salian con el
+#                           mismo dibujo pese a tener codepoints distintos. E713 es el engranaje
+#                           de Settings, que ademas describe mejor lo que hay dentro.
+#   REGISTRO E71D -> E8FD : E71D era literalmente el MISMO codepoint que APPS. E8FD es la lista
+#                           con vinetas, que es lo que la vista ensena (claves del catalogo).
+#   DEBLOAT  E738 -> ECC9 : E738 dibuja UN GUION, sin significado. ECC9 es el circulo con menos,
+#                           el simbolo de quitar.
+# Si se toca alguno, renderizarlo antes: el nombre oficial del glyph miente a menudo.
 # Sombra suave compartida (solo se aplica en hover -> 1 card a la vez, sin coste en reposo)
 $script:cardShadow = New-Object System.Windows.Media.Effects.DropShadowEffect
 $script:cardShadow.Color=[System.Windows.Media.Colors]::Black; $script:cardShadow.BlurRadius=20; $script:cardShadow.ShadowDepth=0; $script:cardShadow.Opacity=0.40
@@ -4911,6 +4920,17 @@ if($env:AXE_GUITEST -eq '1'){
         Write-Host "Iconos/subtitulos : sin icono=$($sinIcono.Count) sin subtitulo=$($sinSub.Count) (esperado 0/0)"
         if($sinIcono.Count -gt 0){ Write-Host "  FAIL: categorias sin glyph -> $($sinIcono -join ', ')"; $allOk=$false }
         if($sinSub.Count   -gt 0){ Write-Host "  FAIL: categorias sin subtitulo -> $($sinSub -join ', ')"; $allOk=$false }
+        # Glyph REPETIDO entre categorias. REGISTRO llevaba el mismo codepoint que APPS (E71D):
+        # dos secciones con el dibujo identico en la barra lateral, que es donde se elige sin
+        # leer. Ningun check lo veia porque cada una tenia SU entrada; el fallo era que las dos
+        # apuntaban al mismo sitio. Esto NO cubre parecidos visuales entre codepoints distintos
+        # (SISTEMA y FPS dibujaban los dos un portatil con codepoints distintos): eso solo se
+        # caza mirando la fuente renderizada, y por eso los glyphs se eligen viendolos.
+        $dup = @($script:glyphs.GetEnumerator() | Group-Object Value | Where-Object Count -gt 1)
+        if($dup.Count -gt 0){
+            foreach($d in $dup){ Write-Host ("  FAIL: glyph 0x{0:X4} repetido en -> {1}" -f [int][char]$d.Name,(($d.Group.Name) -join ', ')) }
+            $allOk=$false
+        }
     } catch { Write-Host "Iconos/subtitulos : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: ejercer handler ASISTENTE (bug de scope $out/$doAsk null)
     try {
