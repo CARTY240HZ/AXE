@@ -33,14 +33,23 @@ if($script:HW){ Build-HwChips }   # headless/GUISHOW con HW ya cargado
 # ---- 12.7 catalogo -> categorias + iconos ----
 $script:glyphs = @{
     'CPU'=[char]0xE950; 'LATENCIA'=[char]0xE945; 'GPU'=[char]0xE7F4; 'RED'=[char]0xE774;
-    'MEMORIA'=[char]0xE964; 'SISTEMA'=[char]0xE770; 'RENDIMIENTO'=[char]0xE9D9; 'SERVICIOS'=[char]0xE90F;
+    'MEMORIA'=[char]0xE964; 'SISTEMA'=[char]0xE713; 'RENDIMIENTO'=[char]0xE9D9; 'SERVICIOS'=[char]0xE90F;
     'PRIVACIDAD'=[char]0xE72E; 'APPS'=[char]0xE71D; 'EXTREMO'=[char]0xE7BA;
-    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xE738; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2; 'REGISTRO'=[char]0xE71D
-    # FPS: E7F8 (Speed). Distinto del E9D2 de MEDICION a posta: aquel mide latencia/timer del
-    # sistema, este sube y mide FPS de un juego. El mismo icono en los dos los confundiria en la
-    # barra lateral, que es donde se elige sin leer.
-    'FPS'=[char]0xE7F8
+    'LIMPIEZA'=[char]0xE74D; 'DEBLOAT'=[char]0xECC9; 'DNS'=[char]0xE968; 'STARTUP'=[char]0xE768; 'ASISTENTE IA'=[char]0xE99A; 'PERFILES'=[char]0xE7FC; 'MEDICION'=[char]0xE9D2; 'REGISTRO'=[char]0xE8FD
+    'FPS'=[char]0xEC4A
 }
+# NOTA sobre los cuatro glyphs de arriba (FPS, SISTEMA, REGISTRO, DEBLOAT): se eligieron
+# RENDERIZANDO la fuente a PNG y mirando el dibujo, no por lo que sugiere el nombre del
+# codepoint. Los cuatro anteriores estaban mal y ninguno lo delataba leyendo el codigo:
+#   FPS      E7F8 -> EC4A : E7F8 dibuja un PORTATIL, no velocidad. EC4A es el velocimetro.
+#   SISTEMA  E770 -> E713 : E770 tambien es un portatil, o sea que SISTEMA y FPS salian con el
+#                           mismo dibujo pese a tener codepoints distintos. E713 es el engranaje
+#                           de Settings, que ademas describe mejor lo que hay dentro.
+#   REGISTRO E71D -> E8FD : E71D era literalmente el MISMO codepoint que APPS. E8FD es la lista
+#                           con vinetas, que es lo que la vista ensena (claves del catalogo).
+#   DEBLOAT  E738 -> ECC9 : E738 dibuja UN GUION, sin significado. ECC9 es el circulo con menos,
+#                           el simbolo de quitar.
+# Si se toca alguno, renderizarlo antes: el nombre oficial del glyph miente a menudo.
 # Sombra suave compartida (solo se aplica en hover -> 1 card a la vez, sin coste en reposo)
 $script:cardShadow = New-Object System.Windows.Media.Effects.DropShadowEffect
 $script:cardShadow.Color=[System.Windows.Media.Colors]::Black; $script:cardShadow.BlurRadius=20; $script:cardShadow.ShadowDepth=0; $script:cardShadow.Opacity=0.40

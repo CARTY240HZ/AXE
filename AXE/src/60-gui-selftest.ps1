@@ -115,6 +115,17 @@ if($env:AXE_GUITEST -eq '1'){
         Write-Host "Iconos/subtitulos : sin icono=$($sinIcono.Count) sin subtitulo=$($sinSub.Count) (esperado 0/0)"
         if($sinIcono.Count -gt 0){ Write-Host "  FAIL: categorias sin glyph -> $($sinIcono -join ', ')"; $allOk=$false }
         if($sinSub.Count   -gt 0){ Write-Host "  FAIL: categorias sin subtitulo -> $($sinSub -join ', ')"; $allOk=$false }
+        # Glyph REPETIDO entre categorias. REGISTRO llevaba el mismo codepoint que APPS (E71D):
+        # dos secciones con el dibujo identico en la barra lateral, que es donde se elige sin
+        # leer. Ningun check lo veia porque cada una tenia SU entrada; el fallo era que las dos
+        # apuntaban al mismo sitio. Esto NO cubre parecidos visuales entre codepoints distintos
+        # (SISTEMA y FPS dibujaban los dos un portatil con codepoints distintos): eso solo se
+        # caza mirando la fuente renderizada, y por eso los glyphs se eligen viendolos.
+        $dup = @($script:glyphs.GetEnumerator() | Group-Object Value | Where-Object Count -gt 1)
+        if($dup.Count -gt 0){
+            foreach($d in $dup){ Write-Host ("  FAIL: glyph 0x{0:X4} repetido en -> {1}" -f [int][char]$d.Name,(($d.Group.Name) -join ', ')) }
+            $allOk=$false
+        }
     } catch { Write-Host "Iconos/subtitulos : EXCEPCION -> $($_.Exception.Message)"; $allOk=$false }
     # regresion: ejercer handler ASISTENTE (bug de scope $out/$doAsk null)
     try {
