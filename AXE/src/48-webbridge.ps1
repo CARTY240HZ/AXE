@@ -100,25 +100,68 @@ function Register-AXEBridge($core){
         [void]$s.ExecuteScriptAsync($js)
     })
 
-    # PS -> JS: telemetria periodica por PostWebMessageAsJson (canal distinto del reply).
-    # En esta fase (3), metrica barata (uptime) para probar el canal push. La telemetria real
-    # (jitter/CPU/RAM via runspace de fondo, sin bloquear el hilo UI) llega en Fase 5.
-    # El DispatcherTimer corre en el hilo UI; $script:Web lo fija 47-webhost.
+    # PS -> JS: telemetria REAL (Fase 5). Un runspace PRODUCTOR muestrea CPU/RAM (CIM barato) y
+    # jitter (busy-loop nativo corto) y escribe en un buffer SINCRONIZADO; el DispatcherTimer (hilo
+    # UI) SOLO lee ese buffer y lo empuja por PostWebMessageAsJson. Asi el busy-loop de jitter nunca
+    # corre en el hilo UI (no congela la ventana). [AXE.Native] se compila con Add-Type en el hilo
+    # principal al cargar el motor => visible en este runspace (mismo AppDomain).
+    # Coste honesto: el muestreo de jitter es ~100ms/1s (~10% de un nucleo en el hilo productor)
+    # mientras la ventana este abierta; es el precio de un osciloscopio de latencia REAL, no simulado.
+    $script:TelemBuf = [hashtable]::Synchronized(@{ cpu=$null; ram=$null; jitterUs=$null; jitterMeanUs=$null; ts=$null; seq=0 })
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'MTA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
+        $producer = [powershell]::Create(); $producer.Runspace = $rs
+        [void]$producer.AddScript({
+            param($BUF)
+            while($true){
+                $ramPct = $null
+                try {
+                    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+                    if($os.TotalVisibleMemorySize -gt 0){
+                        $ramPct = [math]::Round(100.0 * ($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize, 1)
+                    }
+                } catch {}
+                $cpuPct = $null
+                try {
+                    $c = (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop).PercentProcessorTime
+                    if($null -ne $c){ $cpuPct = [double]$c }
+                } catch {}
+                $jUs = $null; $jMeanUs = $null
+                try {
+                    $r = [AXE.Native]::SampleJitter(100)   # 100ms -> P99.9 y media, en ms
+                    if($r){ $jUs = [math]::Round($r[3] * 1000, 1); $jMeanUs = [math]::Round($r[1] * 1000, 1) }  # ms -> us
+                } catch {}
+                $BUF.cpu = $cpuPct; $BUF.ram = $ramPct; $BUF.jitterUs = $jUs; $BUF.jitterMeanUs = $jMeanUs
+                $BUF.ts = (Get-Date).ToString('HH:mm:ss'); $BUF.seq = [int]$BUF.seq + 1
+                Start-Sleep -Milliseconds 850
+            }
+        })
+        [void]$producer.AddArgument($script:TelemBuf)
+        $script:TelemRS = $rs; $script:TelemPS = $producer
+        $script:TelemHandle = $producer.BeginInvoke()
+    } catch { Write-AXELog "Telemetria: runspace productor no arranco: $($_.Exception.Message)" 'ERR' }
+
     $script:TelemTick = 0
     $script:TelemetryTimer = New-Object System.Windows.Threading.DispatcherTimer
     $script:TelemetryTimer.Interval = [TimeSpan]::FromMilliseconds(1000)
     $script:TelemetryTimer.Add_Tick({
         try {
             $script:TelemTick++
+            $b = $script:TelemBuf
             $payload = [pscustomobject]@{
                 evt  = 'telemetry'
                 data = [pscustomobject]@{
-                    ts      = (Get-Date).ToString('HH:mm:ss')
-                    uptimeS = [int]([Environment]::TickCount64 / 1000)
+                    ts           = $(if($b.ts){ $b.ts } else { (Get-Date).ToString('HH:mm:ss') })
+                    uptimeS      = [int]([Environment]::TickCount64 / 1000)
+                    cpu          = $b.cpu
+                    ram          = $b.ram
+                    jitterUs     = $b.jitterUs
+                    jitterMeanUs = $b.jitterMeanUs
                 }
             }
             $script:Web.CoreWebView2.PostWebMessageAsJson(($payload | ConvertTo-Json -Depth 6 -Compress))
-            if($env:AXE_WEBUI_DEBUG -eq '1' -and $script:TelemTick -le 3){ Write-AXELog "Telemetria TX tick=$($script:TelemTick)" 'INFO' }
+            if($env:AXE_WEBUI_DEBUG -eq '1' -and $script:TelemTick -le 3){ Write-AXELog "Telemetria TX tick=$($script:TelemTick) cpu=$($b.cpu) jUs=$($b.jitterUs)" 'INFO' }
         } catch { if($env:AXE_WEBUI_DEBUG -eq '1'){ Write-AXELog "Telemetria TX fallo: $($_.Exception.Message)" 'ERR' } }
     })
     $script:TelemetryTimer.Start()

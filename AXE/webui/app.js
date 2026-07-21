@@ -124,10 +124,48 @@
     x.strokeStyle = 'rgba(217,96,90,.45)'; x.setLineDash([6, 6]); x.lineWidth = 1.2;
     x.beginPath(); x.moveTo(0, ty); x.lineTo(w, ty); x.stroke(); x.setLineDash([]);
     x.fillStyle = '#565f6e'; x.font = '12px ui-monospace,monospace';
-    x.fillText('esperando stream en vivo (Fase 5)', 14, h - 14);
+    x.fillText('iniciando muestreo…', 14, h - 14);
   }
   drawRestScope();
-  addEventListener('resize', () => { document.querySelectorAll('.spark').forEach(drawRestSpark); drawRestScope(); drawArc(lastScore || 0); });
+
+  // ---------- feeds en vivo (Fase 5): buffers reales, sin ruido de relleno ----------
+  const cpuBuf = [], ramBuf = [], scopeBuf = [];
+  let scopeMax = 0, liveStarted = false;
+  const cpuCanvas = document.querySelector('.spark[data-c="cpu"]');
+  const ramCanvas = document.querySelector('.spark[data-c="ram"]');
+  const THR = 250; // umbral stutter (µs)
+  function pushBuf(a, v, max) { a.push(v); while (a.length > max) a.shift(); }
+  function drawSpark(c, buf) {
+    const [x, w, h] = fit(c); x.clearRect(0, 0, w, h);
+    if (!buf.length) return;
+    const max = Math.max(12, Math.max.apply(null, buf)) * 1.15, n = buf.length;
+    const X = (i) => i / Math.max(1, n - 1) * w, Y = (v) => h - (v / max) * h;
+    x.beginPath(); x.moveTo(0, h); buf.forEach((v, i) => x.lineTo(X(i), Y(v))); x.lineTo(X(n - 1), h); x.closePath();
+    const g = x.createLinearGradient(0, 0, 0, h); g.addColorStop(0, 'rgba(224,163,46,.16)'); g.addColorStop(1, 'rgba(224,163,46,0)');
+    x.fillStyle = g; x.fill();
+    x.beginPath(); buf.forEach((v, i) => i ? x.lineTo(X(i), Y(v)) : x.moveTo(X(i), Y(v))); x.strokeStyle = '#b98f34'; x.lineWidth = 1.6; x.stroke();
+    x.fillStyle = '#E0A32E'; x.beginPath(); x.arc(X(n - 1), Y(buf[n - 1]), 2.6, 0, 7); x.fill();
+  }
+  function drawScope() {
+    const c = $('scope'); const [x, w, h] = fit(c); x.clearRect(0, 0, w, h);
+    const top = Math.max(520, scopeMax * 1.2);
+    x.strokeStyle = '#1b212a'; x.lineWidth = 1;
+    for (let g = 0; g <= 5; g++) { const y = h - (g / 5) * h; x.beginPath(); x.moveTo(0, y); x.lineTo(w, y); x.stroke(); }
+    const ty = h - (THR / top) * h;
+    x.strokeStyle = 'rgba(217,96,90,.5)'; x.setLineDash([6, 6]); x.lineWidth = 1.2; x.beginPath(); x.moveTo(0, ty); x.lineTo(w, ty); x.stroke(); x.setLineDash([]);
+    if (!scopeBuf.length) { x.fillStyle = '#565f6e'; x.font = '12px ui-monospace,monospace'; x.fillText('esperando primer muestreo…', 14, h - 14); return; }
+    const n = scopeBuf.length, X = (i) => i / Math.max(1, n - 1) * w, Y = (v) => h - (Math.min(v, top) / top) * h;
+    x.beginPath(); x.moveTo(0, h); scopeBuf.forEach((v, i) => x.lineTo(X(i), Y(v))); x.lineTo(X(n - 1), h); x.closePath();
+    const g = x.createLinearGradient(0, 0, 0, h); g.addColorStop(0, 'rgba(224,163,46,.22)'); g.addColorStop(1, 'rgba(224,163,46,0)'); x.fillStyle = g; x.fill();
+    x.beginPath(); scopeBuf.forEach((v, i) => i ? x.lineTo(X(i), Y(v)) : x.moveTo(X(i), Y(v))); x.strokeStyle = '#E0A32E'; x.lineWidth = 1.5; x.stroke();
+    scopeBuf.forEach((v, i) => { if (v > THR) { x.fillStyle = 'rgba(217,96,90,.9)'; x.fillRect(X(i) - 1, Y(v), 2, h - Y(v)); } });
+    const lv = scopeBuf[n - 1]; x.fillStyle = lv > THR ? '#D9605A' : '#E0A32E'; x.beginPath(); x.arc(X(n - 1), Y(lv), 3, 0, 7); x.fill();
+  }
+  function redrawLive() {
+    if (liveStarted) { drawSpark(cpuCanvas, cpuBuf); drawSpark(ramCanvas, ramBuf); drawScope(); }
+    else { document.querySelectorAll('.spark').forEach(drawRestSpark); drawRestScope(); }
+  }
+  addEventListener('resize', () => { redrawLive(); drawArc(lastScore || 0); });
 
   // ---------- verdict a partir del score real ----------
   function verdictFor(total) {
@@ -236,11 +274,31 @@
   sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.classList.remove('open'); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape') sheet.classList.remove('open'); });
 
-  // ---------- telemetria PS->JS (Fase 3): prueba de liveness -> uptime honesto ----------
+  // ---------- telemetria PS->JS: uptime + feeds en vivo reales (Fase 5) ----------
   AXE.on('telemetry', (d) => {
-    if (d && d.uptimeS != null) {
+    if (!d) return;
+    if (d.uptimeS != null) {
       const s = d.uptimeS, h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
       $('uptime').textContent = 'encendido hace ' + (h > 0 ? h + ' h ' : '') + m + ' min';
+    }
+    const hasLive = (d.cpu != null || d.ram != null || d.jitterUs != null);
+    if (hasLive && !liveStarted) {
+      liveStarted = true;
+      document.querySelectorAll('.vital.resting').forEach((v) => v.classList.remove('resting'));
+      document.querySelectorAll('[data-vital="cpu"] .live-tag,[data-vital="ram"] .live-tag').forEach((t) => { t.textContent = 'en vivo'; });
+      const ss = $('scopeState'); if (ss) ss.textContent = 'muestreo en vivo · ~1/s';
+    }
+    if (d.cpu != null) { pushBuf(cpuBuf, d.cpu, 60); $('cpuV').textContent = Math.round(d.cpu) + ' %'; drawSpark(cpuCanvas, cpuBuf); }
+    if (d.ram != null) { pushBuf(ramBuf, d.ram, 60); $('ramV').textContent = Math.round(d.ram) + ' %'; drawSpark(ramCanvas, ramBuf); }
+    if (d.jitterUs != null) {
+      pushBuf(scopeBuf, d.jitterUs, 160);
+      scopeMax = Math.max(scopeMax * 0.98, d.jitterUs);
+      drawScope();
+      const sorted = scopeBuf.slice().sort((a, b) => a - b);
+      const p99 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.99))];
+      const nowEl = $('sNow'); nowEl.textContent = Math.round(d.jitterUs) + ' µs'; nowEl.style.color = d.jitterUs > THR ? '#D9605A' : '#E6EAF0';
+      $('sP99').textContent = Math.round(p99) + ' µs';
+      $('sMax').textContent = Math.round(scopeMax) + ' µs';
     }
   });
 })();
