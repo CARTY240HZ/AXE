@@ -16,7 +16,7 @@
     <div class="ver">v<span id="ver">…</span> · afinador de rendimiento</div>
 
     <div class="nav-label">Instrumento</div>
-    <div class="nav-item on" data-view="panel">
+    <div class="nav-item on" data-view="panel" tabindex="0" role="button">
       <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
       Panel <span class="kbd">1</span>
     </div>
@@ -24,9 +24,9 @@
       <svg viewBox="0 0 24 24"><path d="M4 12h4l2 5 4-12 2 7h4"/></svg>
       Telemetría <span class="soon-tag">pronto</span>
     </div>
-    <div class="nav-item soon" title="Llega en una fase posterior">
+    <div class="nav-item" data-view="optimizar" tabindex="0" role="button">
       <svg viewBox="0 0 24 24"><path d="M12 3v3m0 12v3m9-9h-3M6 12H3m14.5-6.5-2 2m-9 9-2 2m0-13 2 2m9 9 2 2"/><circle cx="12" cy="12" r="3.2"/></svg>
-      Optimizar <span class="soon-tag">pronto</span>
+      Optimizar <span class="kbd">3</span>
     </div>
     <div class="nav-item soon" title="Llega en una fase posterior">
       <svg viewBox="0 0 24 24"><path d="M6 9h12l1 9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/><path d="M9 9V6a3 3 0 0 1 6 0v3"/></svg>
@@ -61,7 +61,7 @@
       <div class="pill"><span class="dot"></span> <span id="pillTxt">Reversible</span></div>
     </header>
 
-    <section class="panel">
+    <section class="panel view" id="viewPanel" data-view="panel">
       <div class="phead fade-in d0">
         <div>
           <h1>Panel</h1>
@@ -163,10 +163,23 @@
         <button class="btn primary wide" id="btnMeasure">
           <b>Medir ahora</b><span>timer · jitter · cobertura · reproducible</span>
         </button>
-        <button class="btn" disabled><b>Optimizar</b><span class="soon-tag">pronto · fase 6</span></button>
+        <button class="btn" data-view="optimizar"><b>Optimizar</b><span>catálogo por tier</span></button>
         <button class="btn" disabled><b>Sesión de juego</b><span class="soon-tag">pronto</span></button>
-        <button class="btn wide danger" disabled><b>Master revert</b><span class="soon-tag">pronto · fase 6</span></button>
+        <button class="btn wide danger" data-view="optimizar"><b>Master revert</b><span>en Optimizar · deshacer todo</span></button>
       </div>
+    </section>
+
+    <!-- ===== OPTIMIZAR (Fase 6) ===== -->
+    <section class="opt view" id="viewOpt" data-view="optimizar" hidden>
+      <div class="ohead">
+        <div>
+          <h1>Optimizar</h1>
+          <div class="sub">catálogo medido y reversible · cada tweak con su fuente, su tier y su estado real</div>
+        </div>
+        <button class="btn danger" id="btnMasterRevert" style="max-width:230px"><b>Master revert</b><span>deshacer todo al estado previo</span></button>
+      </div>
+      <div class="obar" id="optBar">cargando catálogo…</div>
+      <div class="olist" id="optList"></div>
     </section>
   </div>
 </div>
@@ -178,6 +191,18 @@
     <div class="sub">cómo se compone el número. Cada línea es lo que se midió.</div>
     <pre id="receiptBody">—</pre>
     <div class="sheet-close"><button id="sheetClose">Cerrar</button></div>
+  </div>
+</div>
+
+<!-- confirmacion (Tier 2 / master revert): acciones que modifican el sistema -->
+<div class="sheet" id="confirmSheet">
+  <div class="sheet-card">
+    <h2 id="confirmTitle">Confirmar</h2>
+    <div class="sub" id="confirmBody" style="white-space:pre-line">—</div>
+    <div class="sheet-close" style="gap:10px">
+      <button id="confirmNo">Cancelar</button>
+      <button id="confirmYes" class="confirm-yes">Confirmar</button>
+    </div>
   </div>
 </div>
 

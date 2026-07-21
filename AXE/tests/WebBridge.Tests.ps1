@@ -60,3 +60,21 @@ Describe 'Puente: comandos del Panel (Fase 4)' {
         }
     }
 }
+
+Describe 'Puente: Optimizar (Fase 6) - solo lecturas seguras' {
+    It 'tweaks.list devuelve un item por tweak con la forma esperada' {
+        $r = Invoke-AXEBridgeCmd 'tweaks.list' @{}
+        $r.ok | Should -BeTrue
+        @($r.data).Count | Should -Be $script:CAT.Count
+        foreach($k in 'id','name','desc','tier','reboot','applied','blocked','source'){
+            $r.data[0].PSObject.Properties.Name | Should -Contain $k
+        }
+    }
+    It 'tweaks.apply con id inexistente NO modifica nada (ok=false)' {
+        # Sin admin -> "requiere admin"; con admin -> "tweak desconocido". En ambos casos ok=false y
+        # cero cambios en el sistema (un id bogus nunca coincide con un tweak real).
+        $r = Invoke-AXEBridgeCmd 'tweaks.apply' @{ id = '__no_existe__' }
+        $r.ok  | Should -BeFalse
+        $r.err | Should -Not -BeNullOrEmpty
+    }
+}
