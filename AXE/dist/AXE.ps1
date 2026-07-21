@@ -1,7 +1,7 @@
-# ================================================================
+﻿# ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-20 13:02:31Z
-# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
+# Build UTC: 2026-07-21 20:11:59Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 45-cli.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
@@ -2778,6 +2778,50 @@ function Format-AXERegDiagnostic {
 }
 
 
+# >>>>> MODULE: 39-webdetect.ps1 >>>>>
+# =====================================================
+# REGION 12b - WEBVIEW2: DETECCION (runtime + SDK + rutas de assets)
+# =====================================================
+# Va ANTES de 45-cli a proposito: el bloque -SelfTest de 45-cli hace 'exit' antes de que
+# carguen los modulos 47+ (host) y 50+ (GUI vieja). Para que el SelfTest pueda comprobar la
+# deteccion (S27) y los assets (S26), estas funciones puras (solo registro + Test-Path) tienen
+# que estar definidas aqui. El HOST (ventana WPF + control WebView2) vive en 47-webhost (Fase 1).
+# Cargar este modulo SOLO define funciones/vars; nada se ejecuta.
+
+# $AXERoot en runtime = la carpeta del .ps1 que corre. El build produce dist\AXE.ps1, asi que
+# AXERoot = ...\AXE\dist, pero webui/ y webview2/ viven en ...\AXE (el padre). AXEHome resuelve
+# ambos casos: assets al lado del script, o un nivel arriba (dist).
+$script:AXEHome = $script:AXERoot
+if(-not (Test-Path (Join-Path $script:AXEHome 'webui'))){
+    $parent = Split-Path $script:AXERoot -Parent
+    if($parent -and (Test-Path (Join-Path $parent 'webui'))){ $script:AXEHome = $parent }
+}
+$script:WebUIDir    = Join-Path $script:AXEHome 'webui'
+$script:WebView2Sdk = Join-Path $script:AXEHome 'webview2'
+
+function Get-AXEWebView2SdkPath {
+    # Los DLL del SDK se vendorizan en AXE/webview2/ (no se descargan en runtime).
+    if(Test-Path (Join-Path $script:WebView2Sdk 'Microsoft.Web.WebView2.Wpf.dll')){ return $script:WebView2Sdk }
+    return $null
+}
+
+function Get-AXEWebView2Runtime {
+    # El runtime Evergreen registra su version en EdgeUpdate\Clients\{GUID}. Presente por defecto
+    # en Win11; en Win10 puede faltar => Available=$false y la carcasa mostrara un mensaje con enlace.
+    $paths = @(
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+        'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+    )
+    foreach($p in $paths){
+        try {
+            $v = (Get-ItemProperty -Path $p -Name pv -ErrorAction Stop).pv
+            if($v -and $v -ne '0.0.0.0'){ return [pscustomobject]@{ Available=$true; Version=$v; Reason='' } }
+        } catch {}
+    }
+    return [pscustomobject]@{ Available=$false; Version=$null; Reason='Runtime WebView2 Evergreen no encontrado. Instalalo desde https://developer.microsoft.com/microsoft-edge/webview2/' }
+}
+
+
 # >>>>> MODULE: 45-cli.ps1 >>>>>
 # =====================================================
 # REGION 11 - MODOS CLI (headless)
@@ -3051,6 +3095,23 @@ if($SelfTest){
         if($null -ne (Get-AXEFrameTimeColumn ([pscustomobject]@{Nada='1'}))){ [void]$fails.Add('S25: adivina columna desconocida en vez de devolver null') }
         if(-not (Get-Command Measure-AXEFps -EA SilentlyContinue)){ [void]$fails.Add('S25: Measure-AXEFps no definida') }
     } catch { [void]$fails.Add("S25: medicion de FPS lanzo: $($_.Exception.Message)") }
+
+    # S26: la capa WebUI (webui/) existe y trae los assets minimos (rediseno WebView2, fase 0).
+    # Usa $script:WebUIDir (39-webdetect resuelve AXE\webui aun corriendo desde dist\).
+    $checks++
+    foreach($a in 'index.html','styles.css','app.js','bridge.js'){
+        if(-not (Test-Path (Join-Path $script:WebUIDir $a))){ [void]$fails.Add("S26: falta webui/$a") }
+    }
+    # S27: deteccion de runtime WebView2 definida y con la forma esperada {Available,Version,Reason}
+    $checks++
+    if(-not (Get-Command Get-AXEWebView2Runtime -EA SilentlyContinue)){
+        [void]$fails.Add('S27: Get-AXEWebView2Runtime no definida')
+    } else {
+        $rt = Get-AXEWebView2Runtime
+        foreach($k in 'Available','Version','Reason'){
+            if(($rt.PSObject.Properties.Name) -notcontains $k){ [void]$fails.Add("S27: runtime sin campo '$k'") }
+        }
+    }
 
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
