@@ -130,7 +130,7 @@
 
   // ---------- feeds en vivo (Fase 5): buffers reales, sin ruido de relleno ----------
   const cpuBuf = [], ramBuf = [], scopeBuf = [];
-  let scopeMax = 0, liveStarted = false;
+  let scopeMax = 0, liveStarted = false, teleLoaded = false, lastMeanUs = null;
   const cpuCanvas = document.querySelector('.spark[data-c="cpu"]');
   const ramCanvas = document.querySelector('.spark[data-c="ram"]');
   const THR = 250; // umbral stutter (µs)
@@ -146,8 +146,8 @@
     x.beginPath(); buf.forEach((v, i) => i ? x.lineTo(X(i), Y(v)) : x.moveTo(X(i), Y(v))); x.strokeStyle = '#b98f34'; x.lineWidth = 1.6; x.stroke();
     x.fillStyle = '#E0A32E'; x.beginPath(); x.arc(X(n - 1), Y(buf[n - 1]), 2.6, 0, 7); x.fill();
   }
-  function drawScope() {
-    const c = $('scope'); const [x, w, h] = fit(c); x.clearRect(0, 0, w, h);
+  function drawScope(c) {
+    c = c || $('scope'); const [x, w, h] = fit(c); x.clearRect(0, 0, w, h);
     const top = Math.max(520, scopeMax * 1.2);
     x.strokeStyle = '#1b212a'; x.lineWidth = 1;
     for (let g = 0; g <= 5; g++) { const y = h - (g / 5) * h; x.beginPath(); x.moveTo(0, y); x.lineTo(w, y); x.stroke(); }
@@ -165,7 +165,7 @@
     if (liveStarted) { drawSpark(cpuCanvas, cpuBuf); drawSpark(ramCanvas, ramBuf); drawScope(); }
     else { document.querySelectorAll('.spark').forEach(drawRestSpark); drawRestScope(); }
   }
-  addEventListener('resize', () => { redrawLive(); drawArc(lastScore || 0); });
+  addEventListener('resize', () => { redrawLive(); drawArc(lastScore || 0); if (teleLoaded) drawScope($('teleScope')); });
 
   // ---------- verdict a partir del score real ----------
   function verdictFor(total) {
@@ -274,16 +274,18 @@
   sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.classList.remove('open'); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape') sheet.classList.remove('open'); });
 
-  // ---------- router (Fase 6): Panel <-> Optimizar ----------
+  // ---------- router (Fase 6/7): Panel · Telemetría · Optimizar · Prueba · Seguridad · Ajustes ----------
   const viewEls = {};
   document.querySelectorAll('.view[data-view]').forEach((v) => { viewEls[v.dataset.view] = v; });
   const navItems = [...document.querySelectorAll('.nav-item[data-view]')];
-  let optLoaded = false;
+  const loaded = {};
+  // cada vista se inicializa una sola vez, la primera vez que se abre (init perezoso, sin pegar el arranque).
+  const lazyInit = { optimizar: initOptimizar, telemetria: initTele, prueba: initPrueba, seguridad: initSeguridad, ajustes: initAjustes };
   function showView(name) {
     if (!viewEls[name]) return;
     Object.keys(viewEls).forEach((k) => { viewEls[k].hidden = (k !== name); });
     navItems.forEach((n) => n.classList.toggle('on', n.dataset.view === name));
-    if (name === 'optimizar' && !optLoaded) { optLoaded = true; initOptimizar(); }
+    if (lazyInit[name] && !loaded[name]) { loaded[name] = true; lazyInit[name](); }
   }
   document.querySelectorAll('[data-view]').forEach((el) => {
     if (el.classList.contains('view')) return; // las secciones no navegan
@@ -307,7 +309,12 @@
   $('confirmNo').addEventListener('click', () => closeConfirm(false));
   confirmSheet.addEventListener('click', (e) => { if (e.target === confirmSheet) closeConfirm(false); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape' && confirmSheet.classList.contains('open')) closeConfirm(false); });
-  addEventListener('keydown', (e) => { if (sheetOpen()) return; if (e.key === '1') showView('panel'); if (e.key === '3') showView('optimizar'); });
+  const keyMap = { '1': 'panel', '2': 'telemetria', '3': 'optimizar', '5': 'prueba', '6': 'seguridad', '7': 'ajustes' };
+  addEventListener('keydown', (e) => {
+    if (sheetOpen()) return;
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return; // no robar teclas a los campos
+    const v = keyMap[e.key]; if (v) showView(v);
+  });
 
   // ---------- Optimizar: catalogo real (tweaks.list) + aplicar/revertir ----------
   const TIER_META = { 0: { label: 'Tier 0 · seguro', cls: 't0' }, 1: { label: 'Tier 1 · elite', cls: 't1' }, 2: { label: 'Tier 2 · extremo', cls: 't2' } };
@@ -401,11 +408,135 @@
     try {
       const r = await AXE.call('tweaks.masterRevert', {});
       setOptBar('Master revert: ' + r.reverted + ' revertidos' + (r.errors ? ' · ' + r.errors + ' con error (ver log)' : '') + ' · reinicia el PC', r.errors ? 'err' : 'ok');
-      optLoaded = true; AXE.call('tweaks.list', {}).then((l) => renderCatalog(Array.isArray(l) ? l : [])).catch(() => {});
+      AXE.call('tweaks.list', {}).then((l) => renderCatalog(Array.isArray(l) ? l : [])).catch(() => {});
     } catch (e) {
       setOptBar('Master revert falló: ' + e.message, 'err');
     } finally { btn.disabled = false; }
   });
+
+  // ================= Fase 7: vistas =================
+  // Telemetría: barrido de timer bajo demanda (el jitter en vivo lo pinta el handler de telemetría
+  // sobre #teleScope, reusando el mismo feed real; no se duplica el muestreo).
+  function initTele() {
+    const b = $('btnSweep');
+    b.addEventListener('click', () => {
+      const out = $('sweepOut');
+      out.textContent = 'midiendo barrido… (~2 s · prioridad alta · no cierres la ventana)';
+      b.disabled = true; b.classList.add('busy');
+      AXE.call('measure.timerSweep', {}).then((r) => {
+        out.textContent = (r.lines || []).join('\n');
+      }).catch((e) => { out.textContent = 'No se pudo medir el barrido: ' + e.message; })
+        .finally(() => { b.disabled = false; b.classList.remove('busy'); });
+    });
+    if (scopeBuf.length) drawScope($('teleScope'));
+  }
+
+  // Prueba y receta: A/B antes→después (baseline + report reales del motor) + FPS + diagnóstico.
+  function initPrueba() {
+    $('btnBaseline').addEventListener('click', () => {
+      const b = $('btnBaseline'); b.disabled = true; b.classList.add('busy');
+      $('pruebaBar').textContent = 'midiendo línea base… (~1 s)';
+      AXE.call('prueba.baseline', {}).then((s) => {
+        $('baseScore').textContent = s.total;
+        $('baseTimer').textContent = (s.timerMs != null) ? (s.timerMs + ' ms') : 'n/a';
+        $('baseJit').textContent = fmtMs(s.jitterP999);
+        const tag = $('baseTag'); tag.textContent = 'capturado ' + (s.ts ? relTime(s.ts) : 'ahora'); tag.className = 'ab-tag ok';
+        $('btnReport').disabled = false; $('btnReport').querySelector('span').textContent = 'antes → después';
+        $('pruebaBar').textContent = 'línea base lista · aplica cambios en Optimizar (3), vuelve y mide el después';
+      }).catch((e) => { $('pruebaBar').textContent = 'No pude medir baseline: ' + e.message; })
+        .finally(() => { $('btnBaseline').disabled = false; $('btnBaseline').classList.remove('busy'); });
+    });
+    $('btnReport').addEventListener('click', () => {
+      const b = $('btnReport'); b.disabled = true; b.classList.add('busy');
+      $('reportOut').textContent = 'midiendo después + generando informe…';
+      AXE.call('prueba.report', {}).then((r) => {
+        $('afterScore').textContent = r.after;
+        $('afterTimer').textContent = (r.afterTimerMs != null) ? (r.afterTimerMs + ' ms') : 'n/a';
+        $('afterJit').textContent = fmtMs(r.afterJitterP999);
+        const tag = $('afterTag'); tag.textContent = 'medido'; tag.className = 'ab-tag ok';
+        $('reportOut').textContent = (r.lines || []).join('\n');
+      }).catch((e) => { $('reportOut').textContent = 'No pude generar el informe: ' + e.message; })
+        .finally(() => { $('btnReport').disabled = false; $('btnReport').classList.remove('busy'); });
+    });
+    $('btnFps').addEventListener('click', () => {
+      const proc = $('fpsProc').value.trim();
+      const out = $('fpsOut'); out.hidden = false;
+      if (!proc) { out.textContent = 'Escribe el nombre del proceso del juego (ej: cs2).'; $('fpsProc').focus(); return; }
+      let secs = parseInt($('fpsSecs').value, 10); if (!(secs >= 3)) secs = 20;
+      const b = $('btnFps'); b.disabled = true; b.classList.add('busy');
+      out.textContent = 'capturando ' + secs + ' s… pon el juego en la escena a medir (la ventana puede tardar en responder)';
+      AXE.call('fps.capture', { process: proc, seconds: secs }).then((r) => {
+        out.textContent = (r.lines || []).join('\n');
+      }).catch((e) => { out.textContent = 'No pude capturar: ' + e.message; })
+        .finally(() => { b.disabled = false; b.classList.remove('busy'); });
+    });
+    $('btnDiag').addEventListener('click', () => {
+      const b = $('btnDiag'); b.disabled = true; b.classList.add('busy');
+      $('diagList').textContent = ''; $('diagOut').hidden = true;
+      AXE.call('diag.get', {}).then((r) => renderDiag(r))
+        .catch((e) => { const o = $('diagOut'); o.hidden = false; o.textContent = 'No pude diagnosticar: ' + e.message; })
+        .finally(() => { b.disabled = false; b.classList.remove('busy'); });
+    });
+  }
+  function renderDiag(r) {
+    const host = $('diagList'); host.textContent = '';
+    const finds = (r && r.findings) ? r.findings : [];
+    if (!finds.length) { const o = $('diagOut'); o.hidden = false; o.textContent = (r && r.lines ? r.lines.join('\n') : 'sin hallazgos'); return; }
+    finds.forEach((f) => {
+      const st = String(f.status || '').toLowerCase();
+      const cls = st === 'bad' ? 'bad' : (st === 'ok' ? 'ok' : 'unk');
+      const card = elt('div', 'finding ' + cls);
+      const top = elt('div', 'finding-top');
+      top.appendChild(elt('span', 'finding-dot'));
+      top.appendChild(elt('div', 'finding-title', f.title || ''));
+      top.appendChild(elt('span', 'finding-badge ' + cls, st === 'bad' ? 'mal' : (st === 'ok' ? 'ok' : '?')));
+      card.appendChild(top);
+      if (f.detail) card.appendChild(elt('div', 'finding-detail', f.detail));
+      if (st === 'bad') {
+        if (f.fix) { const fx = elt('div', 'finding-fix'); fx.appendChild(elt('b', null, 'Arreglo: ')); fx.appendChild(document.createTextNode(f.fix)); card.appendChild(fx); }
+        if (f.estPct) card.appendChild(elt('div', 'finding-est', 'en juego: ' + f.estPct + ' · estimación típica, no medida en esta máquina'));
+      }
+      host.appendChild(card);
+    });
+  }
+
+  // Seguridad: punto de restauración (best-effort, honesto si el SO lo bloquea) + master revert.
+  function initSeguridad() {
+    $('btnRestore').addEventListener('click', () => {
+      const b = $('btnRestore'); b.disabled = true; b.classList.add('busy');
+      $('segRpState').textContent = 'creando…'; $('rpDot').className = 'dot';
+      AXE.call('safety.restorePoint', {}).then((r) => {
+        const ok = r.status === 'ok', fb = r.status === 'fallback';
+        $('segRpState').textContent = ok ? 'creado' : (fb ? 'no disponible' : 'error');
+        $('rpDot').className = 'dot ' + (ok ? 'ok' : (fb ? 'warn' : 'err'));
+        $('segRpMsg').textContent = r.message || '—';
+        const rs = $('rpState'); if (rs) { rs.textContent = ok ? 'creado' : (fb ? 'no disp.' : 'error'); rs.className = ok ? 'ok' : 'neutral'; }
+        const rd = $('rpDetail'); if (rd) rd.textContent = r.message || '';
+      }).catch((e) => { $('segRpState').textContent = 'error'; $('rpDot').className = 'dot err'; $('segRpMsg').textContent = e.message; })
+        .finally(() => { $('btnRestore').disabled = false; $('btnRestore').classList.remove('busy'); });
+    });
+    $('btnSegMaster').addEventListener('click', async () => {
+      const ok = await confirmDialog('Master revert', 'Revierte TODOS los tweaks aplicados a su estado previo real (snapshot 1-a-1 + limpieza de residuos). Puede tardar y conviene reiniciar al terminar. ¿Continuar?', true);
+      if (!ok) return;
+      const b = $('btnSegMaster'); b.disabled = true;
+      const msg = $('segMasterMsg'); msg.hidden = false; msg.textContent = 'revirtiendo todo… no cierres la ventana';
+      try {
+        const r = await AXE.call('tweaks.masterRevert', {});
+        msg.textContent = 'Master revert: ' + r.reverted + ' revertidos' + (r.errors ? ' · ' + r.errors + ' con error (ver log)' : '') + ' · reinicia el PC';
+        if (loaded.optimizar) AXE.call('tweaks.list', {}).then((l) => renderCatalog(Array.isArray(l) ? l : [])).catch(() => {});
+      } catch (e) { msg.textContent = 'Master revert falló: ' + e.message; }
+      finally { b.disabled = false; }
+    });
+  }
+
+  // Ajustes: información local + privacidad. Sin lógica de red, sin auto-update (es otro spec).
+  function initAjustes() {
+    AXE.call('app.info', {}).then((info) => {
+      if (!info) return;
+      if (info.version) $('ajVer').textContent = 'v' + info.version;
+      if (info.tweaks != null) $('ajTweaks').textContent = info.tweaks + ' tweaks';
+    }).catch(() => { $('ajVer').textContent = '?'; });
+  }
 
   // ---------- telemetria PS->JS: uptime + feeds en vivo reales (Fase 5) ----------
   AXE.on('telemetry', (d) => {
@@ -423,6 +554,7 @@
     }
     if (d.cpu != null) { pushBuf(cpuBuf, d.cpu, 60); $('cpuV').textContent = Math.round(d.cpu) + ' %'; drawSpark(cpuCanvas, cpuBuf); }
     if (d.ram != null) { pushBuf(ramBuf, d.ram, 60); $('ramV').textContent = Math.round(d.ram) + ' %'; drawSpark(ramCanvas, ramBuf); }
+    if (d.jitterMeanUs != null) lastMeanUs = d.jitterMeanUs;
     if (d.jitterUs != null) {
       pushBuf(scopeBuf, d.jitterUs, 160);
       scopeMax = Math.max(scopeMax * 0.98, d.jitterUs);
@@ -432,6 +564,15 @@
       const nowEl = $('sNow'); nowEl.textContent = Math.round(d.jitterUs) + ' µs'; nowEl.style.color = d.jitterUs > THR ? '#D9605A' : '#E6EAF0';
       $('sP99').textContent = Math.round(p99) + ' µs';
       $('sMax').textContent = Math.round(scopeMax) + ' µs';
+      // mismo feed alimenta el osciloscopio grande de Telemetría (sin duplicar el muestreo)
+      if (teleLoaded) {
+        drawScope($('teleScope'));
+        const tn = $('tNow'); if (tn) { tn.textContent = Math.round(d.jitterUs) + ' µs'; tn.style.color = d.jitterUs > THR ? '#D9605A' : '#E6EAF0'; }
+        if (lastMeanUs != null) { const tm = $('tMean'); if (tm) tm.textContent = Math.round(lastMeanUs) + ' µs'; }
+        const tp = $('tP99'); if (tp) tp.textContent = Math.round(p99) + ' µs';
+        const tmx = $('tMax'); if (tmx) tmx.textContent = Math.round(scopeMax) + ' µs';
+        const tst = $('teleState'); if (tst) tst.textContent = 'muestreo en vivo · ~1/s';
+      }
     }
   });
 })();

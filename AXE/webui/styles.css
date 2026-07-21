@@ -271,4 +271,85 @@ body{
   .pill .dot{animation:none}
   .card:hover{transform:none}
   .sbar-track i{transition:none}
+  .btn.busy{transition:none}
 }
+
+/* ===== Fase 7: pantallas (Telemetría · Prueba · Seguridad · Ajustes) ===== */
+/* mismo esqueleto que Optimizar: columna con scroll propio, se apoya en .ohead/.obar/.card */
+.scr{padding:20px 24px 28px;overflow:auto;display:flex;flex-direction:column;gap:16px}
+.scr::-webkit-scrollbar{width:10px}
+.scr::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:6px;border:3px solid var(--bg)}
+.scr h1{margin:0;font-size:22px;font-weight:650;letter-spacing:-.4px}
+.mini{color:var(--muted);font-size:12px;line-height:1.5;margin:2px 0 12px}
+.mini-inline{color:var(--faint);font-family:var(--mono);font-size:10.5px;font-weight:400;letter-spacing:.3px;text-transform:none}
+.btn.busy{opacity:.8;cursor:progress}
+
+/* salida monoespaciada del motor: MISMAS lineas que la CLI (la honestidad vive en el texto del motor) */
+.mono-out{font-family:var(--mono);font-size:12px;line-height:1.6;color:var(--fg);white-space:pre-wrap;
+  word-break:break-word;background:#101318;border:1px solid var(--line);border-radius:8px;
+  padding:14px 16px;margin:12px 0 0;overflow-x:auto;max-height:360px;overflow-y:auto}
+.mono-out.sm{font-size:11px;max-height:120px;margin:10px 0 0}
+
+/* Telemetria: osciloscopio grande (reusa el feed real de jitter, no duplica muestreo) */
+.scr-live canvas{width:100%;height:210px;display:block;border-radius:8px;background:#101318;border:1px solid var(--line)}
+#teleScope{margin-top:2px}
+
+/* Prueba: A/B antes -> despues */
+.ab{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.ab-col{display:flex;flex-direction:column;gap:12px}
+.ab-h{display:flex;align-items:center;gap:10px;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);font-weight:600}
+.ab-tag{margin-left:auto;font-family:var(--mono);font-size:9.5px;letter-spacing:.4px;text-transform:none;
+  color:var(--faint);border:1px solid var(--line);border-radius:999px;padding:1px 8px}
+.ab-tag.ok{color:var(--green);border-color:rgba(95,175,141,.35);background:rgba(95,175,141,.08)}
+.ab-score{display:flex;align-items:baseline;gap:6px}
+.ab-score b{font-family:var(--mono);font-size:40px;font-weight:700;letter-spacing:-2px;line-height:1;font-variant-numeric:tabular-nums}
+.ab-score span{color:var(--faint);font-family:var(--mono);font-size:13px}
+.ab-rows{display:flex;flex-direction:column;gap:6px}
+.ab-rows div{display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px}
+.ab-rows span{color:var(--muted)}
+.ab-rows b{font-weight:600;font-variant-numeric:tabular-nums}
+
+/* Prueba: captura FPS (PresentMon) */
+.fps-row{display:flex;gap:10px;align-items:stretch;margin-top:12px;flex-wrap:wrap}
+.in{font-family:var(--mono);font-size:12.5px;color:var(--fg);background:#101318;border:1px solid var(--line);
+  border-radius:var(--r-sm);padding:9px 12px;flex:1;min-width:180px;outline:none}
+.in:focus{border-color:var(--accent)}
+.in.sm{flex:none;width:78px;min-width:0;text-align:center}
+.fps-row .btn{flex:none;min-width:150px}
+
+/* Prueba: diagnostico de configuracion */
+.diag-list{display:flex;flex-direction:column;gap:9px;margin-top:12px}
+.finding{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:12px 14px;
+  position:relative;overflow:hidden}
+.finding::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--line-2)}
+.finding.bad::before{background:var(--red)}.finding.ok::before{background:var(--green)}.finding.unk::before{background:var(--muted)}
+.finding-top{display:flex;align-items:center;gap:9px}
+.finding-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--muted)}
+.finding.bad .finding-dot{background:var(--red)}.finding.ok .finding-dot{background:var(--green)}
+.finding-title{font-weight:600;font-size:13px;flex:1}
+.finding-badge{flex:none;font-family:var(--mono);font-size:9.5px;letter-spacing:.4px;text-transform:uppercase;
+  padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+.finding-badge.bad{color:var(--red);border-color:rgba(217,96,90,.35);background:rgba(217,96,90,.08)}
+.finding-badge.ok{color:var(--green);border-color:rgba(95,175,141,.35);background:rgba(95,175,141,.08)}
+.finding-detail{color:var(--muted);font-size:12px;line-height:1.5;margin-top:7px}
+.finding-fix{font-size:12px;line-height:1.5;margin-top:6px;color:var(--fg)}
+.finding-fix b{color:var(--accent)}
+.finding-est{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:5px}
+
+/* Seguridad */
+.seg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.seg-state{display:flex;align-items:center;gap:9px;margin-top:12px;font-family:var(--mono);font-size:13px;font-weight:600}
+.seg-state .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+.seg-state .dot.ok{background:var(--green)}.seg-state .dot.warn{background:var(--amber)}.seg-state .dot.err{background:var(--red)}
+.seg-grid .btn{width:100%;margin-top:12px}
+.seg-list{margin:12px 0 0;padding-left:18px;color:var(--muted);font-size:12px;line-height:1.7}
+.seg-list b{color:var(--fg);font-weight:600}
+
+/* Ajustes: filas clave-valor */
+.kv{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:9px 0;border-top:1px solid var(--line)}
+.kv:first-of-type{border-top:none}
+.kv span{color:var(--muted);font-size:12.5px}
+.kv b{font-weight:600;font-size:12.5px;text-align:right}
+.mono{font-family:var(--mono)}
+
+@media (max-width:900px){ .ab{grid-template-columns:1fr} }
