@@ -271,6 +271,23 @@ if($SelfTest){
         if(-not (Get-Command Measure-AXEFps -EA SilentlyContinue)){ [void]$fails.Add('S25: Measure-AXEFps no definida') }
     } catch { [void]$fails.Add("S25: medicion de FPS lanzo: $($_.Exception.Message)") }
 
+    # S26: la capa WebUI (webui/) existe y trae los assets minimos (rediseno WebView2, fase 0).
+    # Usa $script:WebUIDir (39-webdetect resuelve AXE\webui aun corriendo desde dist\).
+    $checks++
+    foreach($a in 'index.html','styles.css','app.js','bridge.js'){
+        if(-not (Test-Path (Join-Path $script:WebUIDir $a))){ [void]$fails.Add("S26: falta webui/$a") }
+    }
+    # S27: deteccion de runtime WebView2 definida y con la forma esperada {Available,Version,Reason}
+    $checks++
+    if(-not (Get-Command Get-AXEWebView2Runtime -EA SilentlyContinue)){
+        [void]$fails.Add('S27: Get-AXEWebView2Runtime no definida')
+    } else {
+        $rt = Get-AXEWebView2Runtime
+        foreach($k in 'Available','Version','Reason'){
+            if(($rt.PSObject.Properties.Name) -notcontains $k){ [void]$fails.Add("S27: runtime sin campo '$k'") }
+        }
+    }
+
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
     Write-Host "========================================="

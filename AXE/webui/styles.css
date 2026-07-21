@@ -1,0 +1,2 @@
+:root{--bg:#0E1013;--surface:#16191F;--surface-2:#1E232B;--line:#2A303B;--fg:#E6EAF0;--muted:#7E8798;--accent:#E0A32E;--green:#5FAF8D;--red:#D9605A}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:"Segoe UI Variable","Segoe UI",sans-serif}
