@@ -68,7 +68,7 @@ function Show-AXEWebHost {
             $core.Settings.AreDevToolsEnabled = $false
         }
         $core.Settings.IsStatusBarEnabled = $false
-        Register-AXEBridge $core   # Fase 2: stub defensivo hasta que exista 48-webbridge.
+        Register-AXEBridge $core   # Fase 2: define el despacho JS->PS (48-webbridge).
         $s.Source = [uri]'https://axe.local/index.html'
     })
     # En Loaded (dispatcher YA corriendo tras ShowDialog): crear el entorno con NUESTRO user-data
@@ -96,14 +96,6 @@ function Show-AXEWebHost {
     [void]$win.ShowDialog()
 }
 
-# Register-AXEBridge se define en 48-webbridge.ps1 (Fase 2). Stub defensivo por si aun no existe.
-if(-not (Get-Command Register-AXEBridge -EA SilentlyContinue)){
-    function Register-AXEBridge($core){ }
-}
-
-# Arranque del host web. Solo en modo GUI (sin args CLI, que ya hicieron 'exit' en 45-cli) y con
-# el flag activo. En el cutover (Fase 8) el flag desaparece y esto pasa a ser incondicional.
-if($env:AXE_WEBUI -eq '1' -and $env:AXE_GUITEST -ne '1' -and $env:AXE_GUISHOW -ne '1'){
-    Show-AXEWebHost
-    exit 0   # no seguir al bloque GUI viejo 50-60 ni a 99-main.
-}
+# El arranque (bootstrap) vive en 49-webmain.ps1, que carga DESPUES de 48-webbridge, para que
+# Register-AXEBridge (48) este definido cuando Show-AXEWebHost lo invoque. Si el arranque viviera
+# aqui, su 'exit 0' cortaria la carga antes de 48 y el puente quedaria sin enganchar (JS->PS muerto).

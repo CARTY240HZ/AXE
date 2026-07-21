@@ -1,7 +1,7 @@
 ﻿# ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-21 20:22:18Z
-# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 45-cli.ps1, 47-webhost.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
+# Build UTC: 2026-07-21 20:35:39Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
@@ -3356,7 +3356,7 @@ function Show-AXEWebHost {
             $core.Settings.AreDevToolsEnabled = $false
         }
         $core.Settings.IsStatusBarEnabled = $false
-        Register-AXEBridge $core   # Fase 2: stub defensivo hasta que exista 48-webbridge.
+        Register-AXEBridge $core   # Fase 2: define el despacho JS->PS (48-webbridge).
         $s.Source = [uri]'https://axe.local/index.html'
     })
     # En Loaded (dispatcher YA corriendo tras ShowDialog): crear el entorno con NUESTRO user-data
@@ -3384,16 +3384,81 @@ function Show-AXEWebHost {
     [void]$win.ShowDialog()
 }
 
-# Register-AXEBridge se define en 48-webbridge.ps1 (Fase 2). Stub defensivo por si aun no existe.
-if(-not (Get-Command Register-AXEBridge -EA SilentlyContinue)){
-    function Register-AXEBridge($core){ }
+# El arranque (bootstrap) vive en 49-webmain.ps1, que carga DESPUES de 48-webbridge, para que
+# Register-AXEBridge (48) este definido cuando Show-AXEWebHost lo invoque. Si el arranque viviera
+# aqui, su 'exit 0' cortaria la carga antes de 48 y el puente quedaria sin enganchar (JS->PS muerto).
+
+
+# >>>>> MODULE: 48-webbridge.ps1 >>>>>
+# =====================================================
+# REGION 14 - PUENTE RPC (JS <-> PS). SUPERFICIE DE ATAQUE.
+# =====================================================
+# Regla dura: lista blanca cerrada. cmd fuera de la lista => rechazo. Nunca eval del payload.
+# Cargar este modulo SOLO define funciones y el mapa; nada se ejecuta hasta Register-AXEBridge
+# (lo llama 47-webhost en el init del control). Cada cmd mapea a una funcion YA EXISTENTE del
+# motor (1-45); aqui no se anade logica de negocio.
+
+# Mapa cerrado: cmd -> scriptblock($args) que devuelve el 'data' (o lanza).
+$script:AXEBridgeMap = @{
+    'hw.get' = { param($a)
+        if(-not $script:HW){ $script:HW = Get-AXEHardware }
+        $script:HW
+    }
 }
 
-# Arranque del host web. Solo en modo GUI (sin args CLI, que ya hicieron 'exit' en 45-cli) y con
-# el flag activo. En el cutover (Fase 8) el flag desaparece y esto pasa a ser incondicional.
+function Invoke-AXEBridgeCmd {
+    param([string]$cmd,[hashtable]$cmdArgs)
+    $fn = $script:AXEBridgeMap[$cmd]
+    if(-not $fn){ return [pscustomobject]@{ ok=$false; data=$null; err="cmd desconocido: $cmd" } }
+    try {
+        $data = & $fn $cmdArgs
+        return [pscustomobject]@{ ok=$true; data=$data; err='' }
+    } catch {
+        Write-AXELog "Puente: $cmd lanzo: $($_.Exception.Message)" 'ERR'
+        return [pscustomobject]@{ ok=$false; data=$null; err=$_.Exception.Message }
+    }
+}
+
+function Register-AXEBridge($core){
+    # JS -> PS: cada mensaje es {id, cmd, args}. Se responde por ExecuteScriptAsync(__axeReply).
+    $core.add_WebMessageReceived({
+        param($s,$e)
+        $reqId = -1
+        try {
+            $msg = $e.WebMessageAsJson | ConvertFrom-Json
+            $reqId = [int]$msg.id
+            # Diagnostico (AXE_WEBUI_DEBUG=1): corre en el hilo UI (con runspace) => Write-AXELog
+            # funciona. Prueba que el postMessage del navegador llega al puente (JS->PS).
+            if($env:AXE_WEBUI_DEBUG -eq '1'){ Write-AXELog "Puente RX id=$reqId cmd=$($msg.cmd)" 'INFO' }
+            $argsHt = @{}
+            if($msg.args){ $msg.args.PSObject.Properties | ForEach-Object { $argsHt[$_.Name] = $_.Value } }
+            $res = Invoke-AXEBridgeCmd $msg.cmd $argsHt
+        } catch {
+            $res = [pscustomobject]@{ ok=$false; data=$null; err="payload invalido: $($_.Exception.Message)" }
+        }
+        $json = ($res | ConvertTo-Json -Depth 8 -Compress)
+        # __axeReply(id, jsonString): el JSON viaja como argumento string. ConvertTo-Json del string
+        # lo envuelve en comillas escapadas => JSON.parse en JS lo desdobla, sin inyeccion de comillas.
+        $js = 'window.__axeReply(' + $reqId + ', ' + ($json | ConvertTo-Json) + ')'
+        [void]$s.ExecuteScriptAsync($js)
+    })
+}
+
+
+# >>>>> MODULE: 49-webmain.ps1 >>>>>
+# =====================================================
+# REGION 14b - ARRANQUE DEL HOST WEB (bootstrap)
+# =====================================================
+# Va DESPUES de 47-webhost (Show-AXEWebHost) y 48-webbridge (Register-AXEBridge) para que ambos
+# esten definidos cuando arranque. Espeja el rol de 99-main.ps1 con la GUI vieja: separa el
+# bootstrap de las definiciones.
+#
+# Solo en modo GUI (sin args CLI, que ya hicieron 'exit' en 45-cli) y con el flag AXE_WEBUI=1.
+# El 'exit 0' impide que sigan cargando/ejecutandose la GUI WPF vieja (50-60) y 99-main.
+# En el cutover (Fase 8) el flag desaparece y esto pasa a ser el arranque unico e incondicional.
 if($env:AXE_WEBUI -eq '1' -and $env:AXE_GUITEST -ne '1' -and $env:AXE_GUISHOW -ne '1'){
     Show-AXEWebHost
-    exit 0   # no seguir al bloque GUI viejo 50-60 ni a 99-main.
+    exit 0
 }
 
 
