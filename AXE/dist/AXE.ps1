@@ -1,6 +1,6 @@
 ﻿# ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-21 20:35:39Z
+# Build UTC: 2026-07-21 20:40:20Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -3442,6 +3442,29 @@ function Register-AXEBridge($core){
         $js = 'window.__axeReply(' + $reqId + ', ' + ($json | ConvertTo-Json) + ')'
         [void]$s.ExecuteScriptAsync($js)
     })
+
+    # PS -> JS: telemetria periodica por PostWebMessageAsJson (canal distinto del reply).
+    # En esta fase (3), metrica barata (uptime) para probar el canal push. La telemetria real
+    # (jitter/CPU/RAM via runspace de fondo, sin bloquear el hilo UI) llega en Fase 5.
+    # El DispatcherTimer corre en el hilo UI; $script:Web lo fija 47-webhost.
+    $script:TelemTick = 0
+    $script:TelemetryTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:TelemetryTimer.Interval = [TimeSpan]::FromMilliseconds(1000)
+    $script:TelemetryTimer.Add_Tick({
+        try {
+            $script:TelemTick++
+            $payload = [pscustomobject]@{
+                evt  = 'telemetry'
+                data = [pscustomobject]@{
+                    ts      = (Get-Date).ToString('HH:mm:ss')
+                    uptimeS = [int]([Environment]::TickCount64 / 1000)
+                }
+            }
+            $script:Web.CoreWebView2.PostWebMessageAsJson(($payload | ConvertTo-Json -Depth 6 -Compress))
+            if($env:AXE_WEBUI_DEBUG -eq '1' -and $script:TelemTick -le 3){ Write-AXELog "Telemetria TX tick=$($script:TelemTick)" 'INFO' }
+        } catch { if($env:AXE_WEBUI_DEBUG -eq '1'){ Write-AXELog "Telemetria TX fallo: $($_.Exception.Message)" 'ERR' } }
+    })
+    $script:TelemetryTimer.Start()
 }
 
 
