@@ -78,3 +78,27 @@ Describe 'Puente: Optimizar (Fase 6) - solo lecturas seguras' {
         $r.err | Should -Not -BeNullOrEmpty
     }
 }
+
+Describe 'Puente: Fase 7 - lecturas seguras' {
+    It 'diag.get devuelve lines y findings (no aplica nada)' {
+        $r = Invoke-AXEBridgeCmd 'diag.get' @{}
+        $r.ok | Should -BeTrue
+        foreach($k in 'lines','findings','bad','unknown'){ $r.data.PSObject.Properties.Name | Should -Contain $k }
+    }
+    It 'prueba.report SIN linea base previa se niega (no inventa un antes)' {
+        # Estado limpio: PruebaSnap0 arranca $null hasta que se capture una baseline.
+        $script:PruebaSnap0 = $null
+        $r = Invoke-AXEBridgeCmd 'prueba.report' @{}
+        $r.ok  | Should -BeFalse
+        $r.err | Should -Match 'linea base'
+    }
+    It 'prueba.baseline luego prueba.report producen un informe real' {
+        $b = Invoke-AXEBridgeCmd 'prueba.baseline' @{}
+        $b.ok | Should -BeTrue
+        foreach($k in 'total','timerMs','jitterP999','ts'){ $b.data.PSObject.Properties.Name | Should -Contain $k }
+        $r = Invoke-AXEBridgeCmd 'prueba.report' @{}
+        $r.ok | Should -BeTrue
+        @($r.data.lines).Count | Should -BeGreaterThan 0
+        $r.data.PSObject.Properties.Name | Should -Contain 'after'
+    }
+}

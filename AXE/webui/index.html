@@ -20,9 +20,9 @@
       <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
       Panel <span class="kbd">1</span>
     </div>
-    <div class="nav-item soon" title="Llega en una fase posterior">
+    <div class="nav-item" data-view="telemetria" tabindex="0" role="button">
       <svg viewBox="0 0 24 24"><path d="M4 12h4l2 5 4-12 2 7h4"/></svg>
-      Telemetría <span class="soon-tag">pronto</span>
+      Telemetría <span class="kbd">2</span>
     </div>
     <div class="nav-item" data-view="optimizar" tabindex="0" role="button">
       <svg viewBox="0 0 24 24"><path d="M12 3v3m0 12v3m9-9h-3M6 12H3m14.5-6.5-2 2m-9 9-2 2m0-13 2 2m9 9 2 2"/><circle cx="12" cy="12" r="3.2"/></svg>
@@ -32,19 +32,19 @@
       <svg viewBox="0 0 24 24"><path d="M6 9h12l1 9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/><path d="M9 9V6a3 3 0 0 1 6 0v3"/></svg>
       Sesión de juego <span class="soon-tag">pronto</span>
     </div>
-    <div class="nav-item soon" title="Llega en una fase posterior">
+    <div class="nav-item" data-view="prueba" tabindex="0" role="button">
       <svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7z"/><path d="M9 12l2 2 4-4"/></svg>
-      Prueba y receta <span class="soon-tag">pronto</span>
+      Prueba y receta <span class="kbd">5</span>
     </div>
 
     <div class="nav-label">Sistema</div>
-    <div class="nav-item soon" title="Llega en una fase posterior">
+    <div class="nav-item" data-view="seguridad" tabindex="0" role="button">
       <svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7z"/></svg>
-      Seguridad <span class="soon-tag">pronto</span>
+      Seguridad <span class="kbd">6</span>
     </div>
-    <div class="nav-item soon" title="Llega en una fase posterior">
+    <div class="nav-item" data-view="ajustes" tabindex="0" role="button">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.3 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.4 2.5a7 7 0 0 0-1.7 1l-2.3-1-2 3.4 2 1.6a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.4h5l.4-2.4a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.6c.1-.3.1-.7.1-1z"/></svg>
-      Ajustes <span class="soon-tag">pronto</span>
+      Ajustes <span class="kbd">7</span>
     </div>
 
     <div class="rail-foot" id="railFoot">
@@ -180,6 +180,157 @@
       </div>
       <div class="obar" id="optBar">cargando catálogo…</div>
       <div class="olist" id="optList"></div>
+    </section>
+
+    <!-- ===== TELEMETRÍA (Fase 7) ===== -->
+    <section class="scr view" id="viewTele" data-view="telemetria" hidden>
+      <div class="ohead">
+        <div>
+          <h1>Telemetría</h1>
+          <div class="sub">latencia a fondo · jitter en vivo (proxy) y barrido de resolución de timer</div>
+        </div>
+        <button class="btn primary" id="btnSweep" style="max-width:240px"><b>Medir barrido de timer</b><span>0.5–0.6 ms · 3 pasadas · ~2 s</span></button>
+      </div>
+      <div class="card scr-live">
+        <div class="scope-head">
+          <div><h3>Jitter en vivo — proxy de latencia</h3><div class="mini">lo que predice el stutter · P99.9 en µs · muestreo ~1/s</div></div>
+          <div class="scope-stats">
+            <div><span>ahora</span><b id="tNow">—</b></div>
+            <div><span>media</span><b id="tMean">—</b></div>
+            <div><span>P99.9</span><b id="tP99">—</b></div>
+            <div><span>máx</span><b id="tMax" style="color:var(--muted)">—</b></div>
+          </div>
+        </div>
+        <canvas id="teleScope" width="1600" height="300"></canvas>
+        <div class="legend">
+          <span><i style="background:var(--accent)"></i>traza jitter (µs)</span>
+          <span><i style="background:var(--red)"></i>umbral stutter &gt;250µs</span>
+          <span id="teleState" style="margin-left:auto;color:var(--faint)">esperando muestreo…</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Barrido de resolución de timer</h3>
+        <div class="mini">mide, no asume: el óptimo es por-máquina (ref. valleyofdoom). Si no es concluyente, lo dice.</div>
+        <pre class="mono-out" id="sweepOut">Pulsa «Medir barrido de timer» para ejecutar el barrido en esta máquina.</pre>
+      </div>
+    </section>
+
+    <!-- ===== PRUEBA Y RECETA (Fase 7) ===== -->
+    <section class="scr view" id="viewPrueba" data-view="prueba" hidden>
+      <div class="ohead">
+        <div>
+          <h1>Prueba y receta</h1>
+          <div class="sub">antes → después, medido. Captura una línea base, optimiza, y genera el informe real.</div>
+        </div>
+      </div>
+      <div class="obar" id="pruebaBar">1) Captura la línea base · 2) aplica cambios en Optimizar · 3) genera el informe</div>
+      <div class="ab">
+        <div class="card ab-col">
+          <div class="ab-h">Antes <span class="ab-tag" id="baseTag">sin capturar</span></div>
+          <div class="ab-score"><b id="baseScore">—</b><span>/100</span></div>
+          <div class="ab-rows">
+            <div><span>timer</span><b id="baseTimer">—</b></div>
+            <div><span>jitter P99.9</span><b id="baseJit">—</b></div>
+          </div>
+          <button class="btn" id="btnBaseline"><b>Capturar baseline</b><span>mide el estado actual</span></button>
+        </div>
+        <div class="card ab-col">
+          <div class="ab-h">Después <span class="ab-tag" id="afterTag">pendiente</span></div>
+          <div class="ab-score"><b id="afterScore">—</b><span>/100</span></div>
+          <div class="ab-rows">
+            <div><span>timer</span><b id="afterTimer">—</b></div>
+            <div><span>jitter P99.9</span><b id="afterJit">—</b></div>
+          </div>
+          <button class="btn primary" id="btnReport" disabled><b>Medir después + informe</b><span>requiere baseline</span></button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Informe Trust &amp; Proof</h3>
+        <div class="mini">el desglose que compara ambas medidas. Sin maquillaje: si no cambió, lo dice.</div>
+        <pre class="mono-out" id="reportOut">Captura la línea base y genera el informe para verlo aquí.</pre>
+      </div>
+      <div class="card">
+        <h3>Captura de FPS <span class="mini-inline">· PresentMon</span></h3>
+        <div class="mini">prueba objetiva con el juego abierto. Necesita PresentMon.exe junto a AXE y admin (sesión ETW). AXE no lo descarga a propósito. La ventana puede tardar en responder mientras captura.</div>
+        <div class="fps-row">
+          <input id="fpsProc" class="in" type="text" placeholder="proceso (ej: cs2, valorant)" spellcheck="false" autocomplete="off">
+          <input id="fpsSecs" class="in sm" type="number" min="3" max="120" value="20" title="segundos">
+          <button class="btn" id="btnFps"><b>Capturar</b><span>1% low · 0.1% low</span></button>
+        </div>
+        <pre class="mono-out" id="fpsOut" hidden></pre>
+      </div>
+      <div class="card">
+        <h3>Diagnóstico de configuración</h3>
+        <div class="mini">lo que suele valer más que los tweaks juntos: XMP/EXPO, tasa de refresco, SSD. AXE no lo arregla (vive en la BIOS o en Windows), pero te dice qué mirar.</div>
+        <button class="btn" id="btnDiag"><b>Diagnosticar</b><span>lee el hardware · no aplica nada</span></button>
+        <div class="diag-list" id="diagList"></div>
+        <pre class="mono-out" id="diagOut" hidden></pre>
+      </div>
+    </section>
+
+    <!-- ===== SEGURIDAD (Fase 7) ===== -->
+    <section class="scr view" id="viewSeg" data-view="seguridad" hidden>
+      <div class="ohead">
+        <div>
+          <h1>Seguridad</h1>
+          <div class="sub">redes de rescate · punto de restauración, backups y deshacer todo</div>
+        </div>
+      </div>
+      <div class="obar" id="segBar">las redes que hacen reversible cada cambio de AXE</div>
+      <div class="seg-grid">
+        <div class="card">
+          <h3>Punto de restauración</h3>
+          <div class="mini">crea un checkpoint del sistema antes de optimizar. Best-effort: si el SO lo bloquea (anticheat, SR off), te lo dice y quedan los backups .reg.</div>
+          <div class="seg-state"><span class="dot" id="rpDot"></span> <b id="segRpState">sin verificar</b></div>
+          <div class="mono-out sm" id="segRpMsg">—</div>
+          <button class="btn" id="btnRestore"><b>Crear punto de restauración</b><span>requiere admin</span></button>
+        </div>
+        <div class="card">
+          <h3>Deshacer todo</h3>
+          <div class="mini">revierte TODOS los tweaks aplicados a su estado previo real (snapshot 1-a-1 + limpieza de residuos). Reversible por diseño.</div>
+          <button class="btn danger" id="btnSegMaster"><b>Master revert</b><span>deshacer todo al estado previo</span></button>
+          <div class="mono-out sm" id="segMasterMsg" hidden></div>
+        </div>
+        <div class="card">
+          <h3>Cómo revierte AXE</h3>
+          <ul class="seg-list">
+            <li><b>Snapshot 1-a-1</b> — cada tweak guarda el valor previo real antes de tocarlo.</li>
+            <li><b>Backups .reg</b> — export del registro afectado, restaurable a mano.</li>
+            <li><b>Reversores explícitos</b> — cada tweak trae su propio Revert como red final.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== AJUSTES (Fase 7) ===== -->
+    <section class="scr view" id="viewAjustes" data-view="ajustes" hidden>
+      <div class="ohead">
+        <div>
+          <h1>Ajustes</h1>
+          <div class="sub">preferencias e información · sin telemetría de red, sin cuentas</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Acerca de AXE</h3>
+        <div class="kv"><span>Versión</span><b id="ajVer" class="mono">…</b></div>
+        <div class="kv"><span>Catálogo</span><b id="ajTweaks" class="mono">…</b></div>
+        <div class="kv"><span>Motor</span><b class="mono">medible · reversible · con fuentes</b></div>
+        <div class="kv"><span>UI</span><b class="mono">WebView2 local · sin servidor · sin red</b></div>
+      </div>
+      <div class="card">
+        <h3>Canal de actualización</h3>
+        <div class="mini">solo informativo en esta versión. AXE no se auto-actualiza ni llama a casa.</div>
+        <div class="kv"><span>Canal</span><b class="mono">estable (manual)</b></div>
+        <div class="kv"><span>Origen</span><b class="mono">build local desde /src</b></div>
+      </div>
+      <div class="card">
+        <h3>Privacidad</h3>
+        <ul class="seg-list">
+          <li>Cero peticiones a hosts externos (CSP local, sin CDN).</li>
+          <li>No se recopila ni envía ningún dato. Todo se queda en tu equipo.</li>
+          <li>El log vive junto a AXE (<span class="mono">axe_log_&lt;fecha&gt;.log</span>).</li>
+        </ul>
+      </div>
     </section>
   </div>
 </div>
