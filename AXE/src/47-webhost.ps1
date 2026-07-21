@@ -27,6 +27,26 @@ function Show-AXEWebHost {
         return
     }
 
+    # WebView2Loader.dll (nativo): precargarlo por RUTA ABSOLUTA antes de CreateAsync. El Core.dll
+    # lo carga con busqueda "segura" (LOAD_LIBRARY_SEARCH_*), que IGNORA PATH y CWD; por eso ni
+    # prepender PATH ni el CWD bastan, y da 0x8007007E ERROR_MOD_NOT_FOUND. Si ya esta cargado en el
+    # proceso por ruta completa, el LoadLibrary("WebView2Loader.dll") posterior del SDK resuelve al
+    # modulo ya presente (match por nombre base). LoadLibrary (kernel32) via P/Invoke funciona en
+    # PS 5.1 y 7. MemberDefinition en una sola linea: evita here-strings que el build concatena mal.
+    $rid = if($env:PROCESSOR_ARCHITECTURE -match 'ARM64'){ 'win-arm64' } else { 'win-x64' }
+    $nativeDir  = Join-Path $sdk (Join-Path 'runtimes' (Join-Path $rid 'native'))
+    $loaderPath = Join-Path $nativeDir 'WebView2Loader.dll'
+    if(Test-Path $loaderPath){
+        if(-not ('AXE.NativeLoad' -as [type])){
+            Add-Type -Namespace AXE -Name NativeLoad -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32", SetLastError=true, CharSet=System.Runtime.InteropServices.CharSet.Unicode)] public static extern System.IntPtr LoadLibrary(string lpFileName);' -ErrorAction SilentlyContinue
+        }
+        $h = [IntPtr]::Zero
+        try { $h = [AXE.NativeLoad]::LoadLibrary($loaderPath) } catch {}
+        if($h -eq [IntPtr]::Zero){ Write-AXELog "No pude precargar WebView2Loader.dll ($loaderPath)" 'WARN' }
+    } else {
+        Write-AXELog "WebView2Loader.dll ausente en $nativeDir (arch $rid)" 'WARN'
+    }
+
     $rt  = Get-AXEWebView2Runtime
     $bc  = New-Object System.Windows.Media.BrushConverter
     $win = New-Object System.Windows.Window

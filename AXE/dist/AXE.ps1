@@ -1,6 +1,6 @@
-﻿# ================================================================
+# ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-21 20:40:20Z
+# Build UTC: 2026-07-21 22:03:14Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -3315,6 +3315,26 @@ function Show-AXEWebHost {
         return
     }
 
+    # WebView2Loader.dll (nativo): precargarlo por RUTA ABSOLUTA antes de CreateAsync. El Core.dll
+    # lo carga con busqueda "segura" (LOAD_LIBRARY_SEARCH_*), que IGNORA PATH y CWD; por eso ni
+    # prepender PATH ni el CWD bastan, y da 0x8007007E ERROR_MOD_NOT_FOUND. Si ya esta cargado en el
+    # proceso por ruta completa, el LoadLibrary("WebView2Loader.dll") posterior del SDK resuelve al
+    # modulo ya presente (match por nombre base). LoadLibrary (kernel32) via P/Invoke funciona en
+    # PS 5.1 y 7. MemberDefinition en una sola linea: evita here-strings que el build concatena mal.
+    $rid = if($env:PROCESSOR_ARCHITECTURE -match 'ARM64'){ 'win-arm64' } else { 'win-x64' }
+    $nativeDir  = Join-Path $sdk (Join-Path 'runtimes' (Join-Path $rid 'native'))
+    $loaderPath = Join-Path $nativeDir 'WebView2Loader.dll'
+    if(Test-Path $loaderPath){
+        if(-not ('AXE.NativeLoad' -as [type])){
+            Add-Type -Namespace AXE -Name NativeLoad -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32", SetLastError=true, CharSet=System.Runtime.InteropServices.CharSet.Unicode)] public static extern System.IntPtr LoadLibrary(string lpFileName);' -ErrorAction SilentlyContinue
+        }
+        $h = [IntPtr]::Zero
+        try { $h = [AXE.NativeLoad]::LoadLibrary($loaderPath) } catch {}
+        if($h -eq [IntPtr]::Zero){ Write-AXELog "No pude precargar WebView2Loader.dll ($loaderPath)" 'WARN' }
+    } else {
+        Write-AXELog "WebView2Loader.dll ausente en $nativeDir (arch $rid)" 'WARN'
+    }
+
     $rt  = Get-AXEWebView2Runtime
     $bc  = New-Object System.Windows.Media.BrushConverter
     $win = New-Object System.Windows.Window
@@ -3399,10 +3419,59 @@ function Show-AXEWebHost {
 # motor (1-45); aqui no se anade logica de negocio.
 
 # Mapa cerrado: cmd -> scriptblock($args) que devuelve el 'data' (o lanza).
+# Cada entrada llama SOLO a funciones ya existentes del motor (1-45). Sin logica de negocio nueva:
+# aqui solo se re-empaqueta a un DTO plano y JSON-seguro (nulls en vez de 'n/a' donde el front
+# decide como pintar). La honestidad del motor se preserva: si algo no se midio, viaja null.
 $script:AXEBridgeMap = @{
     'hw.get' = { param($a)
         if(-not $script:HW){ $script:HW = Get-AXEHardware }
         $script:HW
+    }
+
+    # Identidad de la app: version (00-header, la fija build.ps1) + tamano del catalogo.
+    # El front la usa para el rotulo del rail; los assets estaticos NO pasan por el tokenizador
+    # de build, asi que la version tiene que llegar por el puente, no incrustada en el HTML.
+    'app.info' = { param($a)
+        [pscustomobject]@{
+            version = [string]$script:AXEVersion
+            tweaks  = [int]($script:CAT | Measure-Object).Count
+        }
+    }
+
+    # Medicion real (timer + jitter + cobertura). Get-AXESnapshot corre el busy-loop de jitter
+    # (~1s) en ESTE hilo (UI); no congela el render (WebView2 es out-of-process) pero si retrasa
+    # otras respuestas ~1s. Fase 5 lo mueve a un runspace de fondo. DTO plano para el gauge.
+    'measure.score' = { param($a)
+        $snap = Get-AXESnapshot
+        $sc   = Get-AXEScore $snap
+        $timerMs = $null; if($snap.Timer  -isnot [string]){ $timerMs = $snap.Timer.CurrentMs }
+        $p999 = $null; $jMean = $null
+        if($snap.Jitter -isnot [string]){ $p999 = $snap.Jitter.P999Ms; $jMean = $snap.Jitter.MeanMs }
+        $onN = $null; $appN = $null
+        if($snap.TweaksApplicable -isnot [string]){ $onN = [int]$snap.TweaksOn; $appN = [int]$snap.TweaksApplicable }
+        [pscustomobject]@{
+            total      = [int]$sc.Total
+            timer      = $sc.Timer      # int 0-30 o 'n/a'
+            jitter     = $sc.Jitter     # int 0-35 o 'n/a'
+            coverage   = $sc.Coverage   # int 0-25 o 'n/a'
+            idle       = $sc.Idle
+            timerMs    = $timerMs       # resolucion instantanea (ms) o null
+            jitterP999 = $p999          # P99.9 (ms) o null
+            jitterMean = $jMean
+            on         = $onN           # tweaks Tier0/1 activos o null
+            app        = $appN          # tweaks Tier0/1 aplicables o null
+            ts         = $snap.Timestamp
+            breakdown  = $sc.Breakdown  # texto multilinea, la 'receta'
+        }
+    }
+
+    # Metadatos del catalogo: total por tier. Barato y real (no lee registro, no aplica nada).
+    # El conteo de ACTIVOS por tier (Test-TweakSafe por tweak) llega en Fase 6 (Optimizar).
+    'catalog.tiers' = { param($a)
+        if(-not $script:CAT){ return @() }
+        @($script:CAT | Group-Object Tier | Sort-Object { [int]$_.Name } | ForEach-Object {
+            [pscustomobject]@{ tier = [int]$_.Name; total = [int]$_.Count }
+        })
     }
 }
 

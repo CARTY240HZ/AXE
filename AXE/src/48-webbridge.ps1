@@ -7,10 +7,59 @@
 # motor (1-45); aqui no se anade logica de negocio.
 
 # Mapa cerrado: cmd -> scriptblock($args) que devuelve el 'data' (o lanza).
+# Cada entrada llama SOLO a funciones ya existentes del motor (1-45). Sin logica de negocio nueva:
+# aqui solo se re-empaqueta a un DTO plano y JSON-seguro (nulls en vez de 'n/a' donde el front
+# decide como pintar). La honestidad del motor se preserva: si algo no se midio, viaja null.
 $script:AXEBridgeMap = @{
     'hw.get' = { param($a)
         if(-not $script:HW){ $script:HW = Get-AXEHardware }
         $script:HW
+    }
+
+    # Identidad de la app: version (00-header, la fija build.ps1) + tamano del catalogo.
+    # El front la usa para el rotulo del rail; los assets estaticos NO pasan por el tokenizador
+    # de build, asi que la version tiene que llegar por el puente, no incrustada en el HTML.
+    'app.info' = { param($a)
+        [pscustomobject]@{
+            version = [string]$script:AXEVersion
+            tweaks  = [int]($script:CAT | Measure-Object).Count
+        }
+    }
+
+    # Medicion real (timer + jitter + cobertura). Get-AXESnapshot corre el busy-loop de jitter
+    # (~1s) en ESTE hilo (UI); no congela el render (WebView2 es out-of-process) pero si retrasa
+    # otras respuestas ~1s. Fase 5 lo mueve a un runspace de fondo. DTO plano para el gauge.
+    'measure.score' = { param($a)
+        $snap = Get-AXESnapshot
+        $sc   = Get-AXEScore $snap
+        $timerMs = $null; if($snap.Timer  -isnot [string]){ $timerMs = $snap.Timer.CurrentMs }
+        $p999 = $null; $jMean = $null
+        if($snap.Jitter -isnot [string]){ $p999 = $snap.Jitter.P999Ms; $jMean = $snap.Jitter.MeanMs }
+        $onN = $null; $appN = $null
+        if($snap.TweaksApplicable -isnot [string]){ $onN = [int]$snap.TweaksOn; $appN = [int]$snap.TweaksApplicable }
+        [pscustomobject]@{
+            total      = [int]$sc.Total
+            timer      = $sc.Timer      # int 0-30 o 'n/a'
+            jitter     = $sc.Jitter     # int 0-35 o 'n/a'
+            coverage   = $sc.Coverage   # int 0-25 o 'n/a'
+            idle       = $sc.Idle
+            timerMs    = $timerMs       # resolucion instantanea (ms) o null
+            jitterP999 = $p999          # P99.9 (ms) o null
+            jitterMean = $jMean
+            on         = $onN           # tweaks Tier0/1 activos o null
+            app        = $appN          # tweaks Tier0/1 aplicables o null
+            ts         = $snap.Timestamp
+            breakdown  = $sc.Breakdown  # texto multilinea, la 'receta'
+        }
+    }
+
+    # Metadatos del catalogo: total por tier. Barato y real (no lee registro, no aplica nada).
+    # El conteo de ACTIVOS por tier (Test-TweakSafe por tweak) llega en Fase 6 (Optimizar).
+    'catalog.tiers' = { param($a)
+        if(-not $script:CAT){ return @() }
+        @($script:CAT | Group-Object Tier | Sort-Object { [int]$_.Name } | ForEach-Object {
+            [pscustomobject]@{ tier = [int]$_.Name; total = [int]$_.Count }
+        })
     }
 }
 

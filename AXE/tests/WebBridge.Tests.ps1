@@ -1,6 +1,9 @@
 # Pester del puente RPC (48-webbridge). Sin hardware grafico: solo la logica de despacho.
 BeforeAll {
     . "$PSScriptRoot/_load-engine.ps1"
+    # _load-engine salta 00-header (bloque param/#Requires); en dist ese modulo fija la version.
+    # Aqui la suplimos para probar app.info como en produccion (donde nunca es nula: fallback 6.1.0-dev).
+    if(-not $script:AXEVersion){ $script:AXEVersion = '0.0.0-test' }
 }
 
 Describe 'Puente: lista blanca cerrada' {
@@ -21,5 +24,39 @@ Describe 'Puente: lista blanca cerrada' {
     It 'la respuesta siempre tiene la forma {ok,data,err}' {
         $r = Invoke-AXEBridgeCmd 'hw.get' @{}
         foreach($k in 'ok','data','err'){ $r.PSObject.Properties.Name | Should -Contain $k }
+    }
+}
+
+Describe 'Puente: comandos del Panel (Fase 4)' {
+    It 'app.info devuelve version y tamano de catalogo' {
+        $r = Invoke-AXEBridgeCmd 'app.info' @{}
+        $r.ok | Should -BeTrue
+        $r.data.version | Should -Not -BeNullOrEmpty
+        $r.data.tweaks  | Should -BeGreaterThan 0
+    }
+    It 'catalog.tiers devuelve totales por tier que suman el catalogo' {
+        $r = Invoke-AXEBridgeCmd 'catalog.tiers' @{}
+        $r.ok | Should -BeTrue
+        $sum = ($r.data | Measure-Object -Property total -Sum).Sum
+        $sum | Should -Be $script:CAT.Count
+        foreach($t in $r.data){ $t.PSObject.Properties.Name | Should -Contain 'tier' }
+    }
+    It 'measure.score devuelve un DTO plano con total 0-100 y receta' {
+        $r = Invoke-AXEBridgeCmd 'measure.score' @{}
+        $r.ok | Should -BeTrue
+        foreach($k in 'total','timer','jitter','coverage','idle','breakdown','ts'){
+            $r.data.PSObject.Properties.Name | Should -Contain $k
+        }
+        $r.data.total | Should -BeGreaterOrEqual 0
+        $r.data.total | Should -BeLessOrEqual 100
+        $r.data.breakdown | Should -Not -BeNullOrEmpty
+    }
+    It 'measure.score es JSON-seguro (nulls, no la cadena n/a en campos numericos)' {
+        $r = Invoke-AXEBridgeCmd 'measure.score' @{}
+        # timerMs/jitterP999/on/app son null cuando no se pudo medir, nunca 'n/a'
+        foreach($k in 'timerMs','jitterP999','on','app'){
+            $v = $r.data.$k
+            if($null -ne $v){ $v | Should -Not -Be 'n/a' }
+        }
     }
 }
