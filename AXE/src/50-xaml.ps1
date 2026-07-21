@@ -13,6 +13,11 @@ Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
 
+# ---- 12.0 Cesion al host web (Fase 1+): si AXE_WEBUI=1, la GUI WPF vieja NO arranca ----
+# Redundante con el 'exit 0' de 47-webhost, pero deja la intencion explicita y protege si el
+# arranque de 47 cambia. En el cutover (Fase 8) este bloque 50-60 se retira entero.
+if($env:AXE_WEBUI -eq '1'){ return }
+
 # ---- 12.0 Guard STA (WPF lo exige; el .bat ya pasa -STA, esto cubre run directo) ----
 if($env:AXE_GUITEST -ne '1' -and $env:AXE_GUISHOW -ne '1' -and [System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA'){
     Write-Host 'WPF requiere apartment STA. Relanzando con -STA...'
