@@ -76,8 +76,10 @@ body{
 .phead .clock b{color:var(--fg);font-size:15px;display:block;font-variant-numeric:tabular-nums}
 
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:18px;
-  transition:border-color .2s ease}
-.card:hover{border-color:var(--line-2)}
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.025), 0 10px 30px -22px rgba(0,0,0,.7);
+  transition:border-color .2s ease,transform .2s cubic-bezier(.2,.7,.3,1),box-shadow .2s ease}
+.card:hover{border-color:var(--line-2);transform:translateY(-1px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 16px 40px -24px rgba(0,0,0,.8)}
 .card h3{margin:0 0 2px;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);font-weight:600}
 
 /* score */
@@ -179,7 +181,35 @@ body{
   border-radius:var(--r-sm);padding:8px 16px;cursor:pointer;font-family:inherit;font-size:13px}
 .sheet-close button:hover{background:var(--surface-3);border-color:var(--line-2)}
 
+/* score: hero glow detras del gauge + barras de componentes reales */
+.score{position:relative;overflow:hidden}
+.score::before{content:"";position:absolute;top:-40%;left:8%;width:60%;height:80%;pointer-events:none;
+  background:radial-gradient(closest-side,rgba(224,163,46,.10),transparent 72%);filter:blur(6px)}
+.score>*{position:relative}
+.score-bars{display:grid;grid-template-columns:1fr 1fr;gap:10px 22px;padding-top:6px;margin-top:2px;
+  border-top:1px solid var(--line)}
+.sbar{display:flex;align-items:center;gap:10px}
+.sbar-l{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);width:64px;flex:none}
+.sbar-track{flex:1;height:5px;border-radius:3px;background:var(--surface-2);overflow:hidden}
+.sbar-track i{display:block;height:100%;width:0;border-radius:3px;
+  background:linear-gradient(90deg,var(--accent-2),var(--accent));
+  transition:width .9s cubic-bezier(.2,.7,.3,1)}
+.sbar-track.na i{background:var(--line-2)}
+.sbar-v{font-family:var(--mono);font-size:11px;color:var(--fg);width:46px;text-align:right;flex:none;
+  font-variant-numeric:tabular-nums}
+.sbar-v.na{color:var(--faint)}
+
+/* reposo mas elegante: valor tenue + micro-latido del baseline (no "roto") */
+.vital.resting .live-tag{position:relative}
+.vital.resting canvas{opacity:.7}
+
+/* accesibilidad: foco de teclado visible y consistente */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+.nav-item:focus-visible,.btn:focus-visible,.receipt:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
 @media (prefers-reduced-motion:reduce){
   .fade-in{animation:none;opacity:1;transform:none}
   .pill .dot{animation:none}
+  .card:hover{transform:none}
+  .sbar-track i{transition:none}
 }

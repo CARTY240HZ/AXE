@@ -146,6 +146,19 @@
     } catch (e) { return iso; }
   }
 
+  // ---------- barras de componentes: composicion real del score ----------
+  // maxes: Timer 30, Jitter 35, Cobertura 25, Idle 10 (los mismos pesos de Get-AXEScore).
+  function setBar(k, val, max) {
+    const row = document.querySelector('.sbar[data-k="' + k + '"]'); if (!row) return;
+    const track = row.querySelector('.sbar-track'), bar = track.querySelector('i'), v = row.querySelector('.sbar-v');
+    const na = (val === 'n/a' || val == null);
+    track.classList.toggle('na', na); v.classList.toggle('na', na);
+    if (na) { bar.style.width = '0%'; v.textContent = 'n/a'; return; }
+    const n = Math.max(0, Math.min(max, Number(val)));
+    bar.style.width = (n / max * 100) + '%';
+    v.textContent = n + '/' + max;
+  }
+
   // ---------- medicion real (measure.score) ----------
   let lastScore = 0;
   let prevJitter = null;
@@ -191,6 +204,12 @@
       $('timerSub').textContent = (s.timer === 'n/a') ? 'no medible' : ('componente ' + s.timer + '/30');
       $('jitterV').textContent = fmtMs(s.jitterP999);
       $('jitterSub').textContent = (s.jitter === 'n/a') ? 'no medible · P99.9' : ('P99.9 · componente ' + s.jitter + '/35');
+
+      // barras de composicion del score (Timer 30 / Jitter 35 / Cobertura 25 / Idle 10)
+      setBar('timer', s.timer, 30);
+      setBar('jitter', s.jitter, 35);
+      setBar('coverage', s.coverage, 25);
+      setBar('idle', s.idle, 10);
 
       // receta real
       $('receiptBody').textContent = s.breakdown || '(sin desglose)';
