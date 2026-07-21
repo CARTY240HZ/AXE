@@ -50,4 +50,27 @@ function Register-AXEBridge($core){
         $js = 'window.__axeReply(' + $reqId + ', ' + ($json | ConvertTo-Json) + ')'
         [void]$s.ExecuteScriptAsync($js)
     })
+
+    # PS -> JS: telemetria periodica por PostWebMessageAsJson (canal distinto del reply).
+    # En esta fase (3), metrica barata (uptime) para probar el canal push. La telemetria real
+    # (jitter/CPU/RAM via runspace de fondo, sin bloquear el hilo UI) llega en Fase 5.
+    # El DispatcherTimer corre en el hilo UI; $script:Web lo fija 47-webhost.
+    $script:TelemTick = 0
+    $script:TelemetryTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:TelemetryTimer.Interval = [TimeSpan]::FromMilliseconds(1000)
+    $script:TelemetryTimer.Add_Tick({
+        try {
+            $script:TelemTick++
+            $payload = [pscustomobject]@{
+                evt  = 'telemetry'
+                data = [pscustomobject]@{
+                    ts      = (Get-Date).ToString('HH:mm:ss')
+                    uptimeS = [int]([Environment]::TickCount64 / 1000)
+                }
+            }
+            $script:Web.CoreWebView2.PostWebMessageAsJson(($payload | ConvertTo-Json -Depth 6 -Compress))
+            if($env:AXE_WEBUI_DEBUG -eq '1' -and $script:TelemTick -le 3){ Write-AXELog "Telemetria TX tick=$($script:TelemTick)" 'INFO' }
+        } catch { if($env:AXE_WEBUI_DEBUG -eq '1'){ Write-AXELog "Telemetria TX fallo: $($_.Exception.Message)" 'ERR' } }
+    })
+    $script:TelemetryTimer.Start()
 }
