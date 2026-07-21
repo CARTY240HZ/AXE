@@ -274,6 +274,139 @@
   sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.classList.remove('open'); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape') sheet.classList.remove('open'); });
 
+  // ---------- router (Fase 6): Panel <-> Optimizar ----------
+  const viewEls = {};
+  document.querySelectorAll('.view[data-view]').forEach((v) => { viewEls[v.dataset.view] = v; });
+  const navItems = [...document.querySelectorAll('.nav-item[data-view]')];
+  let optLoaded = false;
+  function showView(name) {
+    if (!viewEls[name]) return;
+    Object.keys(viewEls).forEach((k) => { viewEls[k].hidden = (k !== name); });
+    navItems.forEach((n) => n.classList.toggle('on', n.dataset.view === name));
+    if (name === 'optimizar' && !optLoaded) { optLoaded = true; initOptimizar(); }
+  }
+  document.querySelectorAll('[data-view]').forEach((el) => {
+    if (el.classList.contains('view')) return; // las secciones no navegan
+    el.addEventListener('click', () => showView(el.dataset.view));
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showView(el.dataset.view); } });
+  });
+
+  // ---------- confirm modal (promesa) para acciones que MODIFICAN el sistema ----------
+  const confirmSheet = $('confirmSheet');
+  let confirmResolve = null;
+  function sheetOpen() { return !!document.querySelector('.sheet.open'); }
+  function confirmDialog(title, body, danger) {
+    $('confirmTitle').textContent = title;
+    $('confirmBody').textContent = body;
+    $('confirmYes').classList.toggle('danger', !!danger);
+    confirmSheet.classList.add('open'); $('confirmYes').focus();
+    return new Promise((res) => { confirmResolve = res; });
+  }
+  function closeConfirm(v) { confirmSheet.classList.remove('open'); if (confirmResolve) { const r = confirmResolve; confirmResolve = null; r(v); } }
+  $('confirmYes').addEventListener('click', () => closeConfirm(true));
+  $('confirmNo').addEventListener('click', () => closeConfirm(false));
+  confirmSheet.addEventListener('click', (e) => { if (e.target === confirmSheet) closeConfirm(false); });
+  addEventListener('keydown', (e) => { if (e.key === 'Escape' && confirmSheet.classList.contains('open')) closeConfirm(false); });
+  addEventListener('keydown', (e) => { if (sheetOpen()) return; if (e.key === '1') showView('panel'); if (e.key === '3') showView('optimizar'); });
+
+  // ---------- Optimizar: catalogo real (tweaks.list) + aplicar/revertir ----------
+  const TIER_META = { 0: { label: 'Tier 0 · seguro', cls: 't0' }, 1: { label: 'Tier 1 · elite', cls: 't1' }, 2: { label: 'Tier 2 · extremo', cls: 't2' } };
+  const optBar = $('optBar');
+  function elt(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function setOptBar(msg, kind) { optBar.className = 'obar' + (kind ? ' ' + kind : ''); optBar.textContent = msg; }
+
+  function initOptimizar() {
+    setOptBar('cargando catálogo… (mide el estado real de cada tweak, puede tardar unos segundos)');
+    AXE.call('tweaks.list', {}).then((list) => renderCatalog(Array.isArray(list) ? list : []))
+      .catch((e) => setOptBar('No pude cargar el catálogo: ' + e.message, 'err'));
+  }
+
+  function renderCatalog(list) {
+    const host = $('optList'); host.textContent = '';
+    const appl = list.filter((t) => !t.blocked).length;
+    const on = list.filter((t) => t.applied && !t.blocked).length;
+    optBar.className = 'obar ok'; optBar.textContent = '';
+    optBar.appendChild(document.createTextNode(list.length + ' tweaks · '));
+    optBar.appendChild(elt('b', null, on + ' activos'));
+    optBar.appendChild(document.createTextNode(' de ' + appl + ' aplicables en este equipo · reversibles 1-a-1'));
+    [0, 1, 2].forEach((tier) => {
+      const items = list.filter((t) => t.tier === tier);
+      if (!items.length) return;
+      const meta = TIER_META[tier] || { label: 'Tier ' + tier, cls: 't' + tier };
+      const g = elt('div', 'tgroup');
+      const h = elt('div', 'tgroup-h ' + meta.cls);
+      h.appendChild(elt('span', 'dot'));
+      h.appendChild(elt('h2', null, meta.label));
+      const onN = items.filter((t) => t.applied && !t.blocked).length;
+      h.appendChild(elt('span', 'count', onN + '/' + items.length + ' activos'));
+      g.appendChild(h);
+      const grid = elt('div', 'tgrid');
+      items.forEach((t) => grid.appendChild(tweakCard(t)));
+      g.appendChild(grid);
+      host.appendChild(g);
+    });
+  }
+
+  function tweakCard(t) {
+    const meta = TIER_META[t.tier] || { cls: 't' + t.tier };
+    const card = elt('div', 'tw ' + meta.cls);
+    if (t.blocked) card.classList.add('blocked');
+    if (t.applied && !t.blocked) card.classList.add('on');
+    card.dataset.id = t.id;
+    const top = elt('div', 'tw-top');
+    top.appendChild(elt('div', 'tw-name', t.name));
+    top.appendChild(elt('span', 'tw-state' + (t.blocked ? ' blocked' : (t.applied ? ' on' : '')), t.blocked ? 'no aplicable' : (t.applied ? 'activo' : 'inactivo')));
+    card.appendChild(top);
+    card.appendChild(elt('div', 'tw-desc', t.desc || ''));
+    const foot = elt('div', 'tw-foot');
+    const m = elt('div', 'tw-meta');
+    if (t.source) { const a = elt('a', 'badge src', t.sourceType === 'official' ? 'fuente oficial' : 'fuente'); a.href = t.source; a.target = '_blank'; a.rel = 'noopener'; m.appendChild(a); }
+    if (t.placebo) m.appendChild(elt('span', 'badge warn', 'placebo probable'));
+    if (t.reboot) m.appendChild(elt('span', 'badge reboot', 'reinicio'));
+    foot.appendChild(m);
+    if (t.blocked) {
+      foot.appendChild(elt('span', 'tw-blocked-why', t.blocked));
+    } else {
+      const act = elt('button', 'tw-act' + (t.applied ? ' revert' : ''), t.applied ? 'Revertir' : 'Aplicar');
+      act.addEventListener('click', () => toggleTweak(t, card, act));
+      foot.appendChild(act);
+    }
+    card.appendChild(foot);
+    return card;
+  }
+
+  async function toggleTweak(t, card, act) {
+    const wantApply = !t.applied;
+    if (wantApply && t.tier === 2) {
+      const ok = await confirmDialog('Tweak EXTREMO (Tier 2)', t.name + '\n\n' + (t.desc || '') + '\n\nOpt-in, de mayor riesgo. Es reversible, pero puede requerir reinicio. ¿Aplicar?', true);
+      if (!ok) return;
+    }
+    act.disabled = true; act.textContent = wantApply ? 'aplicando…' : 'revirtiendo…';
+    try {
+      const r = await AXE.call(wantApply ? 'tweaks.apply' : 'tweaks.revert', { id: t.id });
+      t.applied = !!r.applied;
+      card.replaceWith(tweakCard(t));
+      setOptBar((wantApply ? 'Aplicado' : 'Revertido') + ': ' + t.name + (r.reboot ? ' · requiere reinicio' : ''), 'ok');
+    } catch (e) {
+      act.disabled = false; act.textContent = wantApply ? 'Aplicar' : 'Revertir';
+      setOptBar('Error en ' + t.name + ': ' + e.message, 'err');
+    }
+  }
+
+  $('btnMasterRevert').addEventListener('click', async () => {
+    const ok = await confirmDialog('Master revert', 'Revierte TODOS los tweaks aplicados a su estado previo real (snapshot 1-a-1 + limpieza de residuos v1). Puede tardar y conviene reiniciar al terminar. ¿Continuar?', true);
+    if (!ok) return;
+    const btn = $('btnMasterRevert'); btn.disabled = true;
+    setOptBar('revirtiendo todo… no cierres la ventana', null);
+    try {
+      const r = await AXE.call('tweaks.masterRevert', {});
+      setOptBar('Master revert: ' + r.reverted + ' revertidos' + (r.errors ? ' · ' + r.errors + ' con error (ver log)' : '') + ' · reinicia el PC', r.errors ? 'err' : 'ok');
+      optLoaded = true; AXE.call('tweaks.list', {}).then((l) => renderCatalog(Array.isArray(l) ? l : [])).catch(() => {});
+    } catch (e) {
+      setOptBar('Master revert falló: ' + e.message, 'err');
+    } finally { btn.disabled = false; }
+  });
+
   // ---------- telemetria PS->JS: uptime + feeds en vivo reales (Fase 5) ----------
   AXE.on('telemetry', (d) => {
     if (!d) return;

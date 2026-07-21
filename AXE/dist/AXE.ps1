@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-21 22:33:30Z
+# Build UTC: 2026-07-21 22:44:28Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -3466,12 +3466,61 @@ $script:AXEBridgeMap = @{
     }
 
     # Metadatos del catalogo: total por tier. Barato y real (no lee registro, no aplica nada).
-    # El conteo de ACTIVOS por tier (Test-TweakSafe por tweak) llega en Fase 6 (Optimizar).
     'catalog.tiers' = { param($a)
         if(-not $script:CAT){ return @() }
         @($script:CAT | Group-Object Tier | Sort-Object { [int]$_.Name } | ForEach-Object {
             [pscustomobject]@{ tier = [int]$_.Name; total = [int]$_.Count }
         })
+    }
+
+    # --- Fase 6: Optimizar (catalogo + aplicar/revertir) ---
+    # tweaks.list es READ-ONLY (corre cada Test via Test-TweakSafe; algunos Tests leen CIM => la
+    # primera pasada tarda unos segundos). apply/revert/masterRevert MODIFICAN el sistema: exigen
+    # admin (Test-Admin) y usan EXACTAMENTE el camino probado del motor (Test-SnapEligible/capTweak/
+    # Apply; Restore-TweakState o Revert), sin logica nueva. Get-BlockReason evita aplicar en HW
+    # incompatible. El front confirma Tier 2 y el master revert antes de disparar.
+    'tweaks.list' = { param($a)
+        @($script:CAT | ForEach-Object {
+            $tw = $_
+            $blk = $null; try { $blk = Get-BlockReason $tw } catch {}
+            $applied = $false; if(-not $blk){ try { $applied = [bool](Test-TweakSafe $tw) } catch {} }
+            [pscustomobject]@{
+                id=$tw.Id; name=$tw.Name; desc=$tw.Desc; cat=$tw.Cat; tier=[int]$tw.Tier
+                reboot=[bool]$tw.Reboot; source=$tw.Source; sourceType=$tw.SourceType
+                placebo=[bool]$tw.PlaceboLikely; applied=$applied; blocked=$blk
+            }
+        })
+    }
+    'tweaks.apply' = { param($a)
+        if(-not (Test-Admin)){ throw 'requiere admin: relanza AXE con AXE.bat (se eleva solo)' }
+        $tw = $script:CAT | Where-Object Id -eq ([string]$a.id) | Select-Object -First 1
+        if(-not $tw){ throw "tweak desconocido: $($a.id)" }
+        $blk = Get-BlockReason $tw
+        if($blk){ throw "no aplicable en este equipo: $blk" }
+        if(Test-SnapEligible $tw){ $script:capTweak = $tw.Id }
+        try { & $tw.Apply } finally { $script:capTweak = $null }
+        [pscustomobject]@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }
+    }
+    'tweaks.revert' = { param($a)
+        if(-not (Test-Admin)){ throw 'requiere admin: relanza AXE con AXE.bat (se eleva solo)' }
+        $tw = $script:CAT | Where-Object Id -eq ([string]$a.id) | Select-Object -First 1
+        if(-not $tw){ throw "tweak desconocido: $($a.id)" }
+        if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
+        [pscustomobject]@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }
+    }
+    'tweaks.masterRevert' = { param($a)
+        if(-not (Test-Admin)){ throw 'requiere admin: relanza AXE con AXE.bat (se eleva solo)' }
+        $done = 0; $err = 0
+        foreach($tw in $script:CAT){
+            try {
+                if(Get-BlockReason $tw){ continue }
+                if(-not (Test-TweakSafe $tw)){ continue }   # solo revertir lo que esta aplicado
+                if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
+                $done++
+            } catch { $err++; Write-AXELog "MasterRevert: $($tw.Name): $($_.Exception.Message)" 'ERR' }
+        }
+        try { Invoke-AXEMasterRevertTail } catch { Write-AXELog "MasterRevertTail: $($_.Exception.Message)" 'ERR' }
+        [pscustomobject]@{ reverted=$done; errors=$err }
     }
 }
 

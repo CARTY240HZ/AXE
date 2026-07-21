@@ -207,6 +207,65 @@ body{
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
 .nav-item:focus-visible,.btn:focus-visible,.receipt:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
+/* ===== router: ocultar vistas inactivas (la clase .panel pone display:grid y ganaria al UA [hidden]) ===== */
+.view[hidden]{display:none !important}
+
+/* ===== Optimizar ===== */
+.opt{padding:20px 24px 28px;overflow:auto;display:flex;flex-direction:column;gap:18px}
+.opt::-webkit-scrollbar{width:10px}
+.opt::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:6px;border:3px solid var(--bg)}
+.ohead{display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
+.ohead h1{margin:0;font-size:22px;font-weight:650;letter-spacing:-.4px}
+.ohead .sub{color:var(--muted);font-size:12.5px;margin-top:2px}
+.obar{font-family:var(--mono);font-size:12px;color:var(--muted);background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-sm);padding:9px 14px;min-height:38px;display:flex;align-items:center;gap:12px}
+.obar.err{color:var(--red);border-color:rgba(217,96,90,.4)}
+.obar.ok{color:var(--green);border-color:rgba(95,175,141,.35)}
+.obar b{color:var(--fg);font-weight:600}
+
+.olist{display:flex;flex-direction:column;gap:22px}
+.tgroup{display:flex;flex-direction:column;gap:11px}
+.tgroup-h{display:flex;align-items:center;gap:10px;padding-bottom:2px}
+.tgroup-h .dot{width:9px;height:9px;border-radius:2px;flex:none}
+.tgroup-h.t0 .dot{background:var(--green)}.tgroup-h.t1 .dot{background:var(--amber)}.tgroup-h.t2 .dot{background:var(--red)}
+.tgroup-h h2{margin:0;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--fg);font-weight:650}
+.tgroup-h .count{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
+
+.tw{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);padding:14px 15px 13px 18px;
+  position:relative;overflow:hidden;display:flex;flex-direction:column;gap:9px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.02);transition:border-color .18s ease}
+.tw::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px}
+.tw.t0::before{background:var(--green)}.tw.t1::before{background:var(--amber)}.tw.t2::before{background:var(--red)}
+.tw:hover{border-color:var(--line-2)}
+.tw.blocked{opacity:.55}
+.tw.on{background:linear-gradient(180deg,rgba(95,175,141,.05),transparent 60%),var(--surface)}
+.tw-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.tw-name{font-weight:600;font-size:13.5px;line-height:1.3}
+.tw-state{flex:none;font-family:var(--mono);font-size:10px;letter-spacing:.4px;text-transform:uppercase;
+  padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.tw-state.on{color:var(--green);border-color:rgba(95,175,141,.35);background:rgba(95,175,141,.08)}
+.tw-state.blocked{color:var(--faint)}
+.tw-desc{color:var(--muted);font-size:12px;line-height:1.5;flex:1}
+.tw-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:1px}
+.tw-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.badge{font-family:var(--mono);font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:var(--faint);
+  border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+.badge.src{color:var(--muted);text-decoration:none}
+.badge.src:hover{color:var(--accent);border-color:var(--accent)}
+.badge.warn{color:var(--red);border-color:rgba(217,96,90,.3)}
+.badge.reboot{color:var(--amber);border-color:rgba(224,163,46,.3)}
+.tw-act{flex:none;font-family:inherit;font-size:12px;font-weight:600;padding:6px 13px;border-radius:var(--r-sm);
+  cursor:pointer;border:1px solid var(--accent);background:transparent;color:var(--accent);transition:background .15s,color .15s}
+.tw-act:hover{background:var(--accent);color:#0E1013}
+.tw-act.revert{border-color:var(--line-2);color:var(--muted)}
+.tw-act.revert:hover{background:var(--surface-3);color:var(--fg)}
+.tw-act[disabled]{opacity:.5;cursor:progress}
+.tw-blocked-why{font-size:11px;color:var(--faint);font-style:italic}
+
+.confirm-yes{background:var(--accent) !important;border-color:var(--accent) !important;color:#0E1013 !important;font-weight:600}
+.confirm-yes.danger{background:var(--red) !important;border-color:var(--red) !important;color:#fff !important}
+
 @media (prefers-reduced-motion:reduce){
   .fade-in{animation:none;opacity:1;transform:none}
   .pill .dot{animation:none}
