@@ -1,0 +1,54 @@
+name: CI
+
+# Gate real de AXE en cada push/PR. Corre en Windows (WebView2/CIM/registro lo exigen).
+# Un solo comando -build.ps1 -CI- hace TODO el gate: lint + Pester + SelfTest + web host harness
+# + produce el artefacto dist/AXE.ps1. Si algo esta rojo, el build falla y el PR no mergea.
+on:
+  push:
+    branches: [ main, axe ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Pester + PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSResourceRepository -Name PSGallery -Trusted -ErrorAction SilentlyContinue
+          Install-Module Pester           -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Install-Module PSScriptAnalyzer -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester
+          Write-Host ("Pester {0} | PSSA {1}" -f `
+            (Get-Module Pester -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1).Version, `
+            (Get-Module PSScriptAnalyzer -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1).Version)
+
+      - name: Gate completo (lint + Pester + SelfTest + web host + build)
+        shell: pwsh
+        run: .\build.ps1 -CI
+
+      - name: Subir resultados de test
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: dist/test-results/
+          if-no-files-found: ignore
+
+      - name: Subir artefacto AXE.ps1
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AXE-build
+          path: |
+            dist/AXE.ps1
+            VERSION
+          if-no-files-found: error

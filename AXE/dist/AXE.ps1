@@ -1,7 +1,7 @@
-﻿# ================================================================
+# ================================================================
 # AXE 7.0.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-22 18:18:10Z
-# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
+# Build UTC: 2026-07-22 20:37:23Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
@@ -55,7 +55,11 @@ param(
     # sobre la colision con el $Games de 20-tweaks.ps1, y el check S24 que la caza.
     [string]$Fps,
     [int]$FpsSeconds = 20,
-    [switch]$FpsCompare
+    [switch]$FpsCompare,
+    # Daemon de sesion de juego (subsistema A, spec 2026-07-20): congela el fondo mientras
+    # juegas y lo descongela al cerrar el juego o AXE. Nombre verificado sin colision en src/.
+    [string]$Session,
+    [int]$SessionPoll = 1000
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
@@ -1608,6 +1612,69 @@ namespace AXE {
         finally { Marshal.FreeHGlobal(p); }
       } finally { CloseHandle(tok); }
     }
+
+    // ---- Game Session: Job Object + freeze (subsistema A, spec 2026-07-20) ----
+    // La red de seguridad es del KERNEL: al cerrarse el handle del job (JobClose, o la muerte del
+    // proceso AXE por crash/kill/BSOD) Windows DESCONGELA solo todo lo asignado. No hay codigo de
+    // recuperacion que pueda a su vez fallar. JobObjectFreezeInformation esta semi-documentada:
+    // JobProbeFreeze() sondea si existe en ESTE Windows antes de congelar nada; si no, el llamante
+    // aborta limpio (sin fallback a suspension manual: eso seria otro spec).
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+    [DllImport("ntdll.dll")]
+    static extern int NtSetInformationJobObject(IntPtr hJob, int JobObjectInformationClass, IntPtr JobObjectInformation, int Length);
+
+    const int JobObjectFreezeInformation = 18;              // clase no documentada (ntpsapi reversado)
+    const uint JOB_OBJECT_OPERATION_FREEZE = 0x1;           // el bit Freeze de Flags es valido
+    const uint PROCESS_SET_QUOTA = 0x0100, PROCESS_TERMINATE = 0x0001;  // lo que exige AssignProcessToJobObject
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_FREEZE_INFORMATION {
+      public uint Flags; public byte Freeze; public byte Swap; public byte R0; public byte R1;
+      public uint HighEdgeFilter; public uint LowEdgeFilter;   // JOBOBJECT_WAKE_FILTER (no usado)
+    }
+
+    // Crea un job anonimo. IntPtr.Zero si falla.
+    public static IntPtr JobCreate() { return CreateJobObject(IntPtr.Zero, null); }
+
+    // Asigna un PID al job. 0 = OK; -1 = no pude abrir el proceso; -2 = assign fallo. Un pid
+    // protegido (assign falla) NO tumba la sesion: el llamante cuenta y sigue.
+    public static int JobAssignPid(IntPtr hJob, int pid) {
+      IntPtr hp = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, (uint)pid);
+      if (hp == IntPtr.Zero) return -1;
+      bool ok = AssignProcessToJobObject(hJob, hp);
+      CloseHandle(hp);
+      return ok ? 0 : -2;
+    }
+
+    // Congela (freeze=true) o descongela (freeze=false) el job entero. Devuelve NTSTATUS (0 = OK).
+    static int SetFreeze(IntPtr hJob, bool freeze) {
+      JOBOBJECT_FREEZE_INFORMATION fi = new JOBOBJECT_FREEZE_INFORMATION();
+      fi.Flags = JOB_OBJECT_OPERATION_FREEZE;
+      fi.Freeze = (byte)(freeze ? 1 : 0);
+      int len = Marshal.SizeOf(typeof(JOBOBJECT_FREEZE_INFORMATION));
+      IntPtr p = Marshal.AllocHGlobal(len);
+      try { Marshal.StructureToPtr(fi, p, false); return NtSetInformationJobObject(hJob, JobObjectFreezeInformation, p, len); }
+      finally { Marshal.FreeHGlobal(p); }
+    }
+    public static int JobFreeze(IntPtr hJob) { return SetFreeze(hJob, true); }
+    public static int JobThaw(IntPtr hJob) { return SetFreeze(hJob, false); }
+
+    // Cierra el handle del job -> el kernel descongela TODO lo asignado. La red de seguridad.
+    public static bool JobClose(IntPtr hJob) { return CloseHandle(hJob); }
+
+    // Sonda: crea un job vacio e intenta congelar/descongelar. Devuelve el NTSTATUS del freeze.
+    // 0 => JobObjectFreezeInformation soportado aqui. !=0 => NO; el llamante no debe congelar nada.
+    public static int JobProbeFreeze() {
+      IntPtr j = CreateJobObject(IntPtr.Zero, null);
+      if (j == IntPtr.Zero) return unchecked((int)0x80000000);   // no pude ni crear el job
+      try { int s = SetFreeze(j, true); if (s == 0) SetFreeze(j, false); return s; }
+      finally { CloseHandle(j); }
+    }
   }
 }
 '@
@@ -2822,6 +2889,197 @@ function Get-AXEWebView2Runtime {
 }
 
 
+# >>>>> MODULE: 40-session.ps1 >>>>>
+# =====================================================
+# REGION 12b - DAEMON DE SESION DE JUEGO (subsistema A) - spec 2026-07-20
+# =====================================================
+# Congela el fondo mientras juegas y lo descongela al cerrar el juego o AXE. El hueco que
+# ninguna suite (hone.gg/Pulse/Atlas/Delta) rellena de verdad: congelan cuatro cosas y timido,
+# porque un fallo cuelga el PC y les come el soporte. Aqui la recuperacion la garantiza el
+# KERNEL (al cerrar el handle del job, Windows descongela solo), asi que no hay codigo de
+# recuperacion que pueda fallar.
+#
+# Reparto igual que Get-AXEDiagFacts vs Get-AXEDiagFindings: lo PURO (que hacer) es testeable
+# sin hardware (Get-AXESessionPlan); lo que toca el kernel (hacerlo) no se testea, se documenta.
+# Carga despues de 32-measure, donde vive [AXE.Native] (extendido con los Job* methods).
+
+# --- Familias (deteccion por grupo, no por nombres sueltos). Nivel por defecto: ---
+#   voz/anticheat/shell -> INTACTO ; navegador/musica/mensajeria -> DEGRADADO ; resto -> CONGELADO
+$script:AXESessionFamilies = @{
+    voz        = @('discord','discordptb','discordcanary','teamspeak','teamspeak3','ts3client','mumble','ventrilo')
+    anticheat  = @('easyanticheat','easyanticheat_eos','beservice','battleye','bedaisy','vgc','vgtray','vgk','faceitservice','faceit')
+    shell      = @('dwm','explorer','csrss','winlogon','wininit','services','lsass','smss','fontdrvhost','sihost','ctfmon','textinputhost','startmenuexperiencehost','searchhost','searchapp','shellexperiencehost','taskhostw','runtimebroker','dllhost','applicationframehost','systemsettings','lockapp')
+    navegador  = @('chrome','brave','msedge','edge','firefox','opera','opera_gx','vivaldi','browser')
+    musica     = @('spotify','tidal','deezer','foobar2000','aimp','musicbee')
+    mensajeria = @('whatsapp','telegram','signal','slack')
+}
+
+function Get-AXESessionProcesses {
+    # Impura: lee procesos. NO juzga. Alimenta a Get-AXESessionPlan con hechos planos.
+    $out = New-Object System.Collections.ArrayList
+    foreach($p in (Get-Process -EA SilentlyContinue)){
+        $path = $null; try { $path = $p.Path } catch {}
+        [void]$out.Add([pscustomobject]@{
+            Pid       = [int]$p.Id
+            Name      = [string]$p.ProcessName
+            SessionId = [int]$p.SessionId
+            Path      = $path
+        })
+    }
+    @($out)
+}
+
+function Get-AXESessionLevel {
+    # PURA. Un proceso -> 'intacto'|'degradado'|'congelado' dado el contexto. Orden a posta:
+    # los DUROS (juego, AXE, shell, anticheat) ganan a la config del usuario; nunca se tocan.
+    param($Proc,[int]$GamePid,[int]$SelfPid,[hashtable]$Config)
+    $name = (([string]$Proc.Name).ToLowerInvariant()) -replace '\.exe$',''
+    # 1. Duros: intocables incluso con config.
+    if([int]$Proc.Pid -eq $GamePid){ return 'intacto' }
+    if([int]$Proc.Pid -eq $SelfPid){ return 'intacto' }
+    $fam = $script:AXESessionFamilies
+    if(($fam.shell -contains $name) -or ($fam.anticheat -contains $name)){ return 'intacto' }
+    if($name -match 'anticheat|battleye|easyanti'){ return 'intacto' }   # variantes con sufijos raros
+    # 2. Config del usuario sobreescribe el default por app (solo apps NO duras).
+    if($Config -and $Config.ContainsKey($name)){
+        $lvl = ([string]$Config[$name]).ToLowerInvariant()
+        if($lvl -in 'intacto','degradado','congelado'){ return $lvl }
+    }
+    # 3. Familias por defecto.
+    if($fam.voz -contains $name){ return 'intacto' }   # la voz es sensible a latencia: degradarla se oye
+    if(($fam.navegador -contains $name) -or ($fam.musica -contains $name) -or ($fam.mensajeria -contains $name)){ return 'degradado' }
+    # 4. Desconocido de la sesion del usuario -> congelado.
+    return 'congelado'
+}
+
+function Get-AXESessionPlan {
+    # PURA. Hechos + config -> los tres grupos. El nucleo testeable (tests/Session.Tests.ps1).
+    # Frontera: Session 0 (servicios/drivers/audiodg/lsass) queda fuera POR DEFINICION - lo aisla
+    # ya el SO. Solo se considera la sesion interactiva actual.
+    param(
+        [object[]]$Processes,
+        [int]$GamePid,
+        [string]$GameName,
+        [int]$SelfPid,
+        [int]$SessionId,
+        [hashtable]$Config = @{}
+    )
+    # SessionId <= 0 o sin procesos -> plan vacio, sin reventar (caso testeado).
+    if($SessionId -le 0){ return [pscustomobject]@{ Intacto=@(); Degradado=@(); Congelado=@() } }
+    $intacto   = New-Object System.Collections.ArrayList
+    $degradado = New-Object System.Collections.ArrayList
+    $congelado = New-Object System.Collections.ArrayList
+    foreach($p in @($Processes)){
+        if($null -eq $p){ continue }
+        if([int]$p.SessionId -eq 0){ continue }             # Session 0 nunca (defensivo)
+        if([int]$p.SessionId -ne $SessionId){ continue }    # fuera de la sesion interactiva
+        switch(Get-AXESessionLevel -Proc $p -GamePid $GamePid -SelfPid $SelfPid -Config $Config){
+            'intacto'   { [void]$intacto.Add($p) }
+            'degradado' { [void]$degradado.Add($p) }
+            default     { [void]$congelado.Add($p) }
+        }
+    }
+    [pscustomobject]@{ Intacto=@($intacto); Degradado=@($degradado); Congelado=@($congelado) }
+}
+
+function Read-AXESessionOverrides {
+    # Overrides por-app {nombre->nivel}. La persistencia (UI de sesion) esta FUERA de este spec
+    # (CLI primero). El planificador puro ya acepta -Config y esta testeado con overrides; aqui
+    # se devuelve vacio hasta que exista la UI que los escriba. Honesto: no inventa config.
+    @{}
+}
+
+function Start-AXESession {
+    # Impura. Sonda freeze -> crea job -> asigna congelados -> congela -> degrada. Devuelve el
+    # objeto de sesion. PRINCIPIO: cualquier fallo ANTES de congelar -> abortar sin tocar nada.
+    param([string]$GameName)
+    if([string]::IsNullOrWhiteSpace($GameName)){ return [pscustomobject]@{ Ok=$false; Reason='falta el nombre del juego.' } }
+    $gproc = Get-Process -Name ($GameName -replace '\.exe$','') -EA SilentlyContinue | Select-Object -First 1
+    if(-not $gproc){ return [pscustomobject]@{ Ok=$false; Reason="el juego '$GameName' no esta corriendo. Abrelo y reintenta." } }
+
+    if(-not ('AXE.Native' -as [type]) -or -not [AXE.Native].GetMethod('JobProbeFreeze')){
+        return [pscustomobject]@{ Ok=$false; Reason='capa nativa de sesion ausente (reinicia AXE tras rebuild).' }
+    }
+    # Sonda: si JobObjectFreezeInformation no existe en este Windows -> abortar limpio, sin fallback.
+    $probe = [AXE.Native]::JobProbeFreeze()
+    if($probe -ne 0){
+        return [pscustomobject]@{ Ok=$false; Reason=("JobObjectFreezeInformation no disponible aqui (status 0x{0:X8}): sesion abortada sin tocar nada." -f $probe) }
+    }
+
+    $sid   = [int]$gproc.SessionId
+    $facts = Get-AXESessionProcesses
+    $plan  = Get-AXESessionPlan -Processes $facts -GamePid ([int]$gproc.Id) -GameName $GameName -SelfPid $PID -SessionId $sid -Config (Read-AXESessionOverrides)
+
+    $hJob = [AXE.Native]::JobCreate()
+    if($hJob -eq [IntPtr]::Zero){ return [pscustomobject]@{ Ok=$false; Reason='CreateJobObject fallo; nada congelado.' } }
+
+    # Asignar congelados. Un pid protegido que falle NO tumba la sesion: se cuenta y se sigue.
+    $assigned = 0; $failed = 0
+    foreach($p in @($plan.Congelado)){
+        $rc = [AXE.Native]::JobAssignPid($hJob, [int]$p.Pid)
+        if($rc -eq 0){ $assigned++ } else { $failed++ }
+    }
+    # Congelar el job entero de una vez.
+    $fr = [AXE.Native]::JobFreeze($hJob)
+    if($fr -ne 0){
+        [void][AXE.Native]::JobClose($hJob)   # cerrar => el kernel descongela lo asignado
+        return [pscustomobject]@{ Ok=$false; Reason=("freeze fallo (status 0x{0:X8}) tras asignar; job cerrado, nada quedo congelado." -f $fr) }
+    }
+
+    # Degradar (best-effort, no critico): prioridad baja pero VIVO y usable. Pinning a nucleos
+    # fuera del juego es el subsistema B, no este. Guardamos la prioridad previa para restaurar.
+    $degraded = New-Object System.Collections.ArrayList
+    foreach($p in @($plan.Degradado)){
+        try {
+            $pr = Get-Process -Id ([int]$p.Pid) -EA Stop
+            $prev = $pr.PriorityClass
+            $pr.PriorityClass = 'BelowNormal'
+            [void]$degraded.Add([pscustomobject]@{ Pid=[int]$p.Pid; Prev=[string]$prev })
+        } catch {}
+    }
+
+    [pscustomobject]@{
+        Ok=$true; Handle=$hJob; Game=$GameName; GamePid=[int]$gproc.Id; SessionId=$sid
+        Plan=$plan; Assigned=$assigned; Failed=$failed; Degraded=@($degraded); Started=(Get-Date)
+    }
+}
+
+function Stop-AXESession {
+    # Impura. Cierra el handle (kernel descongela) y restaura las prioridades degradadas.
+    param($Session)
+    if(-not $Session -or -not $Session.Ok){ return }
+    foreach($d in @($Session.Degraded)){
+        try { (Get-Process -Id ([int]$d.Pid) -EA Stop).PriorityClass = $d.Prev } catch {}
+    }
+    try { [void][AXE.Native]::JobClose($Session.Handle) } catch {}
+}
+
+function Watch-AXESession {
+    # Impura. Bloquea hasta que el proceso del juego muere (salida automatica). El llamante
+    # (CLI) envuelve en try/finally -> Stop. Si AXE muere aqui, el kernel descongela igual.
+    param($Session,[int]$PollMs=1000)
+    if(-not $Session -or -not $Session.Ok){ return }
+    if($PollMs -lt 100){ $PollMs = 100 }
+    while(Get-Process -Id ([int]$Session.GamePid) -EA SilentlyContinue){
+        Start-Sleep -Milliseconds $PollMs
+    }
+}
+
+function Format-AXESession {
+    # PURA. Render compartido CLI/GUI.
+    param($Session)
+    if(-not $Session){ return @('sin sesion.') }
+    if(-not $Session.Ok){ return @("Sesion NO iniciada: $($Session.Reason)") }
+    $L = New-Object System.Collections.ArrayList
+    [void]$L.Add("Sesion AXE activa - juego: $($Session.Game) (pid $($Session.GamePid), sesion $($Session.SessionId))")
+    [void]$L.Add("  Congelados : $($Session.Assigned)  (fallidos: $($Session.Failed))")
+    [void]$L.Add("  Degradados : $(@($Session.Degraded).Count)")
+    [void]$L.Add("  Intactos   : $(@($Session.Plan.Intacto).Count)")
+    [void]$L.Add('  El fondo se descongela al cerrar el juego, al pulsar OFF o si AXE muere (lo garantiza el kernel).')
+    @($L)
+}
+
+
 # >>>>> MODULE: 45-cli.ps1 >>>>>
 # =====================================================
 # REGION 11 - MODOS CLI (headless)
@@ -3147,6 +3405,39 @@ if($SelfTest){
         }
     }
 
+    # S28: daemon de sesion de juego (region 12b, spec 2026-07-20). Leccion S22: no se comprueba
+    # que las funciones EXISTAN, se EJECUTA el planificador PURO sobre hechos sinteticos y se mira
+    # el reparto. No toca el kernel ni procesos reales.
+    $checks++
+    try {
+        $sf = @(
+            [pscustomobject]@{Pid=1000;Name='thegame';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1001;Name='explorer';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1002;Name='discord';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1003;Name='chrome';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1004;Name='EasyAntiCheat';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1005;Name='randomthing';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1006;Name='svchost';SessionId=0;Path=$null}
+            [pscustomobject]@{Pid=99;Name='powershell';SessionId=1;Path=$null}
+        )
+        $pl = Get-AXESessionPlan -Processes $sf -GamePid 1000 -GameName 'thegame' -SelfPid 99 -SessionId 1
+        $cong = @($pl.Congelado | ForEach-Object Name)
+        $deg  = @($pl.Degradado | ForEach-Object Name)
+        $int  = @($pl.Intacto   | ForEach-Object Name)
+        if($cong -notcontains 'randomthing'){ [void]$fails.Add('S28: proceso desconocido no quedo CONGELADO') }
+        foreach($never in 'thegame','explorer','discord','EasyAntiCheat','powershell','svchost'){
+            if($cong -contains $never){ [void]$fails.Add("S28: '$never' NO debe ser congelable") }
+        }
+        if($deg -notcontains 'chrome'){ [void]$fails.Add('S28: chrome no quedo DEGRADADO') }
+        if($int -notcontains 'discord'){ [void]$fails.Add('S28: discord no quedo INTACTO') }
+        foreach($grp in $int,$deg,$cong){ if($grp -contains 'svchost'){ [void]$fails.Add('S28: proceso de Session 0 entro en el plan') } }
+        $empty = Get-AXESessionPlan -Processes @() -GamePid 0 -GameName 'x' -SelfPid 1 -SessionId 1
+        if(@($empty.Congelado).Count -ne 0){ [void]$fails.Add('S28: plan de lista vacia no salio vacio') }
+        foreach($fn in 'Start-AXESession','Stop-AXESession','Watch-AXESession','Format-AXESession','Get-AXESessionProcesses'){
+            if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S28: funcion de sesion '$fn' no definida") }
+        }
+    } catch { [void]$fails.Add("S28: planificador de sesion lanzo: $($_.Exception.Message)") }
+
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
     Write-Host "========================================="
@@ -3313,6 +3604,28 @@ if($RevertGame){
         Write-Host '  (Escribir un default aqui seria dejarte un estado que quiza nunca tuviste.)'
     } else {
         Write-Host "  Restauradas $n clave(s) al estado exacto que habia antes."
+    }
+    exit 0
+}
+
+# --- DAEMON DE SESION DE JUEGO (region 12b, spec 2026-07-20) --------------------------
+# Congela el fondo mientras el juego corre y descongela al cerrar el juego (o AXE). El handle
+# del job vive en ESTE proceso: si AXE muere, el kernel descongela solo. Recomendado como admin
+# (via AXE.bat) para poder tocar procesos del sistema; sin admin degrada a lo que el usuario posee.
+if($Session){
+    Write-Host '== AXE - SESION DE JUEGO (congela el fondo) =='
+    $sess = Start-AXESession -GameName $Session
+    foreach($line in (Format-AXESession $sess)){ Write-Host $line }
+    if(-not $sess.Ok){ exit 1 }
+    Write-Host ''
+    Write-Host 'Sesion activa. Cierra el juego o pulsa Ctrl+C para descongelar el fondo.'
+    try {
+        Watch-AXESession -Session $sess -PollMs $SessionPoll
+    } finally {
+        # Salida normal (juego cerrado) o Ctrl+C: descongela y restaura prioridades. Si esto no
+        # llega a correr (kill duro de AXE), el kernel descongela igual al cerrarse el handle.
+        Stop-AXESession $sess
+        Write-Host 'Sesion cerrada: fondo descongelado y prioridades restauradas.'
     }
     exit 0
 }

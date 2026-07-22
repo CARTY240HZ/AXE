@@ -105,6 +105,69 @@ namespace AXE {
         finally { Marshal.FreeHGlobal(p); }
       } finally { CloseHandle(tok); }
     }
+
+    // ---- Game Session: Job Object + freeze (subsistema A, spec 2026-07-20) ----
+    // La red de seguridad es del KERNEL: al cerrarse el handle del job (JobClose, o la muerte del
+    // proceso AXE por crash/kill/BSOD) Windows DESCONGELA solo todo lo asignado. No hay codigo de
+    // recuperacion que pueda a su vez fallar. JobObjectFreezeInformation esta semi-documentada:
+    // JobProbeFreeze() sondea si existe en ESTE Windows antes de congelar nada; si no, el llamante
+    // aborta limpio (sin fallback a suspension manual: eso seria otro spec).
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+    [DllImport("ntdll.dll")]
+    static extern int NtSetInformationJobObject(IntPtr hJob, int JobObjectInformationClass, IntPtr JobObjectInformation, int Length);
+
+    const int JobObjectFreezeInformation = 18;              // clase no documentada (ntpsapi reversado)
+    const uint JOB_OBJECT_OPERATION_FREEZE = 0x1;           // el bit Freeze de Flags es valido
+    const uint PROCESS_SET_QUOTA = 0x0100, PROCESS_TERMINATE = 0x0001;  // lo que exige AssignProcessToJobObject
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_FREEZE_INFORMATION {
+      public uint Flags; public byte Freeze; public byte Swap; public byte R0; public byte R1;
+      public uint HighEdgeFilter; public uint LowEdgeFilter;   // JOBOBJECT_WAKE_FILTER (no usado)
+    }
+
+    // Crea un job anonimo. IntPtr.Zero si falla.
+    public static IntPtr JobCreate() { return CreateJobObject(IntPtr.Zero, null); }
+
+    // Asigna un PID al job. 0 = OK; -1 = no pude abrir el proceso; -2 = assign fallo. Un pid
+    // protegido (assign falla) NO tumba la sesion: el llamante cuenta y sigue.
+    public static int JobAssignPid(IntPtr hJob, int pid) {
+      IntPtr hp = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, (uint)pid);
+      if (hp == IntPtr.Zero) return -1;
+      bool ok = AssignProcessToJobObject(hJob, hp);
+      CloseHandle(hp);
+      return ok ? 0 : -2;
+    }
+
+    // Congela (freeze=true) o descongela (freeze=false) el job entero. Devuelve NTSTATUS (0 = OK).
+    static int SetFreeze(IntPtr hJob, bool freeze) {
+      JOBOBJECT_FREEZE_INFORMATION fi = new JOBOBJECT_FREEZE_INFORMATION();
+      fi.Flags = JOB_OBJECT_OPERATION_FREEZE;
+      fi.Freeze = (byte)(freeze ? 1 : 0);
+      int len = Marshal.SizeOf(typeof(JOBOBJECT_FREEZE_INFORMATION));
+      IntPtr p = Marshal.AllocHGlobal(len);
+      try { Marshal.StructureToPtr(fi, p, false); return NtSetInformationJobObject(hJob, JobObjectFreezeInformation, p, len); }
+      finally { Marshal.FreeHGlobal(p); }
+    }
+    public static int JobFreeze(IntPtr hJob) { return SetFreeze(hJob, true); }
+    public static int JobThaw(IntPtr hJob) { return SetFreeze(hJob, false); }
+
+    // Cierra el handle del job -> el kernel descongela TODO lo asignado. La red de seguridad.
+    public static bool JobClose(IntPtr hJob) { return CloseHandle(hJob); }
+
+    // Sonda: crea un job vacio e intenta congelar/descongelar. Devuelve el NTSTATUS del freeze.
+    // 0 => JobObjectFreezeInformation soportado aqui. !=0 => NO; el llamante no debe congelar nada.
+    public static int JobProbeFreeze() {
+      IntPtr j = CreateJobObject(IntPtr.Zero, null);
+      if (j == IntPtr.Zero) return unchecked((int)0x80000000);   // no pude ni crear el job
+      try { int s = SetFreeze(j, true); if (s == 0) SetFreeze(j, false); return s; }
+      finally { CloseHandle(j); }
+    }
   }
 }
 '@

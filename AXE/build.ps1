@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 [CmdletBinding()]
-param([switch]$NoTest,[string]$Sign)
+param([switch]$NoTest,[string]$Sign,[switch]$CI)
 $ErrorActionPreference='Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src  = Join-Path $root 'src'
@@ -32,6 +32,22 @@ if($Sign){ Set-AuthenticodeSignature -FilePath $out -Certificate (Get-Item "Cert
 if($NoTest){ return }
 Write-Host "`n=== TEST GATE ==="
 $env:AXE_NOSR='1'   # no crear puntos de restauracion reales en el gate
+
+# --- Suite Pester (fuente unica: scripts/Invoke-AXETests.ps1) ---
+# Hasta 2026-07-22 los 9 ficheros tests/*.Tests.ps1 NO los ejecutaba nadie: el gate solo
+# corria -SelfTest. Cobertura ficticia. Ahora el gate corre la suite ANTES del SelfTest:
+# un solo It rojo aborta el build. Se salta con -NoTest para iterar rapido en local.
+$runner = Join-Path $root 'scripts\Invoke-AXETests.ps1'
+if(Test-Path $runner){
+    Write-Host "`n--- Pester ---"
+    # En CI: ademas lint (PSScriptAnalyzer) + resultados NUnit para artefactos.
+    if($CI){ & pwsh -NoProfile -File $runner -Lint -CI } else { & pwsh -NoProfile -File $runner }
+    if($LASTEXITCODE -ne 0){ throw "Suite Pester FALLO (exit $LASTEXITCODE)" }
+} else {
+    Write-Warning "Runner de tests ausente ($runner): se salta Pester en el gate."
+}
+
+Write-Host "`n--- SelfTest (integridad del catalogo) ---"
 $st = & pwsh -NoProfile -File $out -SelfTest 2>&1
 $stExit = $LASTEXITCODE
 $stStr = ($st | Out-String)

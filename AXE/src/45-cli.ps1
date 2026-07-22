@@ -322,6 +322,39 @@ if($SelfTest){
         }
     }
 
+    # S28: daemon de sesion de juego (region 12b, spec 2026-07-20). Leccion S22: no se comprueba
+    # que las funciones EXISTAN, se EJECUTA el planificador PURO sobre hechos sinteticos y se mira
+    # el reparto. No toca el kernel ni procesos reales.
+    $checks++
+    try {
+        $sf = @(
+            [pscustomobject]@{Pid=1000;Name='thegame';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1001;Name='explorer';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1002;Name='discord';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1003;Name='chrome';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1004;Name='EasyAntiCheat';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1005;Name='randomthing';SessionId=1;Path=$null}
+            [pscustomobject]@{Pid=1006;Name='svchost';SessionId=0;Path=$null}
+            [pscustomobject]@{Pid=99;Name='powershell';SessionId=1;Path=$null}
+        )
+        $pl = Get-AXESessionPlan -Processes $sf -GamePid 1000 -GameName 'thegame' -SelfPid 99 -SessionId 1
+        $cong = @($pl.Congelado | ForEach-Object Name)
+        $deg  = @($pl.Degradado | ForEach-Object Name)
+        $int  = @($pl.Intacto   | ForEach-Object Name)
+        if($cong -notcontains 'randomthing'){ [void]$fails.Add('S28: proceso desconocido no quedo CONGELADO') }
+        foreach($never in 'thegame','explorer','discord','EasyAntiCheat','powershell','svchost'){
+            if($cong -contains $never){ [void]$fails.Add("S28: '$never' NO debe ser congelable") }
+        }
+        if($deg -notcontains 'chrome'){ [void]$fails.Add('S28: chrome no quedo DEGRADADO') }
+        if($int -notcontains 'discord'){ [void]$fails.Add('S28: discord no quedo INTACTO') }
+        foreach($grp in $int,$deg,$cong){ if($grp -contains 'svchost'){ [void]$fails.Add('S28: proceso de Session 0 entro en el plan') } }
+        $empty = Get-AXESessionPlan -Processes @() -GamePid 0 -GameName 'x' -SelfPid 1 -SessionId 1
+        if(@($empty.Congelado).Count -ne 0){ [void]$fails.Add('S28: plan de lista vacia no salio vacio') }
+        foreach($fn in 'Start-AXESession','Stop-AXESession','Watch-AXESession','Format-AXESession','Get-AXESessionProcesses'){
+            if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S28: funcion de sesion '$fn' no definida") }
+        }
+    } catch { [void]$fails.Add("S28: planificador de sesion lanzo: $($_.Exception.Message)") }
+
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
     Write-Host "========================================="
@@ -488,6 +521,28 @@ if($RevertGame){
         Write-Host '  (Escribir un default aqui seria dejarte un estado que quiza nunca tuviste.)'
     } else {
         Write-Host "  Restauradas $n clave(s) al estado exacto que habia antes."
+    }
+    exit 0
+}
+
+# --- DAEMON DE SESION DE JUEGO (region 12b, spec 2026-07-20) --------------------------
+# Congela el fondo mientras el juego corre y descongela al cerrar el juego (o AXE). El handle
+# del job vive en ESTE proceso: si AXE muere, el kernel descongela solo. Recomendado como admin
+# (via AXE.bat) para poder tocar procesos del sistema; sin admin degrada a lo que el usuario posee.
+if($Session){
+    Write-Host '== AXE - SESION DE JUEGO (congela el fondo) =='
+    $sess = Start-AXESession -GameName $Session
+    foreach($line in (Format-AXESession $sess)){ Write-Host $line }
+    if(-not $sess.Ok){ exit 1 }
+    Write-Host ''
+    Write-Host 'Sesion activa. Cierra el juego o pulsa Ctrl+C para descongelar el fondo.'
+    try {
+        Watch-AXESession -Session $sess -PollMs $SessionPoll
+    } finally {
+        # Salida normal (juego cerrado) o Ctrl+C: descongela y restaura prioridades. Si esto no
+        # llega a correr (kill duro de AXE), el kernel descongela igual al cerrarse el handle.
+        Stop-AXESession $sess
+        Write-Host 'Sesion cerrada: fondo descongelado y prioridades restauradas.'
     }
     exit 0
 }
