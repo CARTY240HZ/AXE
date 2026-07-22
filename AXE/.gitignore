@@ -1,0 +1,20 @@
+# Artefactos de test/CI (los genera scripts/Invoke-AXETests.ps1 -CI)
+dist/test-results/
+
+# Firmas y builds locales sin firmar (el release firmado lo publica CI)
+dist/*.cat
+*.snk
+*.pfx
+
+# Backups .reg y estado de runtime que el motor escribe FUERA del repo normalmente,
+# pero por si alguien apunta AXEData al arbol:
+*.log
+game_profiles.json
+startup_disabled.local.json
+
+# Basura de editor / SO
+Thumbs.db
+desktop.ini
+.vs/
+.vscode/
+*.tmp

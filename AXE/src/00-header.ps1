@@ -48,7 +48,11 @@ param(
     # sobre la colision con el $Games de 20-tweaks.ps1, y el check S24 que la caza.
     [string]$Fps,
     [int]$FpsSeconds = 20,
-    [switch]$FpsCompare
+    [switch]$FpsCompare,
+    # Daemon de sesion de juego (subsistema A, spec 2026-07-20): congela el fondo mientras
+    # juegas y lo descongela al cerrar el juego o AXE. Nombre verificado sin colision en src/.
+    [string]$Session,
+    [int]$SessionPoll = 1000
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
