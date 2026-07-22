@@ -140,7 +140,13 @@ Add-Tweak @{Id='net_intmod';Cat='RED';Tier=1;Reboot=$false;Name='Interrupt Moder
  Test={ if(-not $script:HW.NicName){return $true};
         $p=Get-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -EA SilentlyContinue
         if($null -eq $p){ return $true }
-        ([int]$p.RegistryValue -eq 0) };
+        # RegistryValue puede venir como String[] (REG_MULTI_SZ) o Get-* devolver varios adaptadores;
+        # [int] sobre un array LANZA "Cannot convert System.String[] to System.Int32" (visto en CI).
+        # Se toma el primer adaptador y el primer valor, y se acota el cast: no numerico -> false
+        # (no aplicado), coherente con la regla de no reportar exito ante un error de lectura.
+        $rv=@($p)[0].RegistryValue
+        if($rv -is [array]){ $rv=@($rv)[0] }
+        try { ([int]$rv -eq 0) } catch { $false } };
  Apply={ if($script:HW.NicName){ Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 0 -EA SilentlyContinue } };
  Revert={ if($script:HW.NicName){ Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 1 -EA SilentlyContinue } }}
 Add-Tweak @{Id='net_dns';Cat='RED';Tier=1;Reboot=$false;Name='[OPT] DNS rapidos 1.1.1.1 / 8.8.8.8';Desc='OJO: rompe DNS local/VPN. No va en preset. Afecta a la RESOLUCION de nombres, no al ping ni al throughput: no da FPS';Requires=@{};Source='https://developers.cloudflare.com/1.1.1.1/';
