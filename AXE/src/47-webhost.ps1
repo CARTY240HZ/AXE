@@ -3,7 +3,8 @@
 # =====================================================
 # Aloja UN control WebView2 a pantalla completa. Toda la UI vive en web (webui/).
 # La deteccion (runtime + SDK + rutas) esta en 39-webdetect. Aqui solo el HOST.
-# Detras del flag AXE_WEBUI=1 hasta el cutover (Fase 8); sin el, arranca la GUI WPF vieja (50-60).
+# Unico frontend desde el cutover (Fase 8): la GUI WPF vieja (50-60, 99) se retiro. El arranque
+# (bootstrap) vive en 49-webmain, que carga tras 48 para que Register-AXEBridge exista al invocarlo.
 
 function Show-AXEWebHost {
     # Guard STA (WPF lo exige; el .bat pasa -STA, esto cubre run directo).

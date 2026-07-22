@@ -37,10 +37,14 @@ $stExit = $LASTEXITCODE
 $stStr = ($st | Out-String)
 $stStr -split "`r?`n" | Select-String 'Catalogo|Checks|Fallos|RESULTADO' | ForEach-Object { Write-Host "  $_" }
 if($stExit -ne 0 -or ($stStr -notmatch 'Fallos\s*:\s*0')){ throw "SelfTest FALLO (exit $stExit)" }
-$env:AXE_GUITEST='1'; $env:AXE_GUITEST_PNG_DIR=$dist
+# Cutover (Fase 8): la GUI WPF vieja se retiro. El harness ahora ejercita el HOST WEB:
+# AXE_WEBUI_TEST=1 hace que Show-AXEWebHost (47) construya carcasa+control, verifique init, imprima
+# 'WEBHOST OK' y vuelva sin ShowDialog bloqueante. Si falta el runtime WebView2 en CI, imprime
+# 'WEBHOST OK (sin runtime, ...)' -> el -match 'WEBHOST OK' lo acepta (valida que la carcasa degrada limpio).
+$env:AXE_GUITEST='1'; $env:AXE_WEBUI_TEST='1'; $env:AXE_GUITEST_PNG_DIR=$dist
 $gt = & powershell.exe -NoProfile -STA -File $out 2>&1
 $gtExit = $LASTEXITCODE
-Remove-Item Env:\AXE_GUITEST -EA SilentlyContinue
+Remove-Item Env:\AXE_GUITEST -EA SilentlyContinue; Remove-Item Env:\AXE_WEBUI_TEST -EA SilentlyContinue
 $gtStr = ($gt | Out-String)
-if($gtExit -ne 0 -or ($gtStr -notmatch 'LAYOUT OK')){ $gtStr -split "`r?`n" | Select-String 'FALLO|EXCEP' | ForEach-Object { Write-Host "  $_" }; throw "GUI harness FALLO (exit $gtExit)" }
-Write-Host 'GATE OK: SelfTest + GUI harness verdes.'
+if($gtExit -ne 0 -or ($gtStr -notmatch 'WEBHOST OK')){ $gtStr -split "`r?`n" | Select-String 'FALLO|EXCEP' | ForEach-Object { Write-Host "  $_" }; throw "Web host harness FALLO (exit $gtExit)" }
+Write-Host 'GATE OK: SelfTest + Web host harness verdes.'
