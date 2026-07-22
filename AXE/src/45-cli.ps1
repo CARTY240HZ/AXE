@@ -287,6 +287,40 @@ if($SelfTest){
             if(($rt.PSObject.Properties.Name) -notcontains $k){ [void]$fails.Add("S27: runtime sin campo '$k'") }
         }
     }
+    # S-webui-3: coherencia lista blanca (48-webbridge) <-> literales del frontend (webui/*.js).
+    #  Directo: cada AXE.call('x') literal existe en la lista blanca (caza typos / cmds inventados).
+    #  Inverso: cada cmd de la lista blanca aparece como literal en el JS. El inverso usa presencia
+    #  de literal (no el prefijo AXE.call() del regex directo) a proposito: asi ve el despacho
+    #  ternario AXE.call(cond ? 'tweaks.apply' : 'tweaks.revert') que el directo no captura.
+    #  El bloque -SelfTest de 45-cli hace 'exit' ANTES de que 48-webbridge cargue el mapa, asi que
+    #  el $script:AXEBridgeMap vivo no existe aqui: las claves se extraen del propio script en curso
+    #  ($PSCommandPath), donde "'x' = { param($a)" es un patron EXCLUSIVO del puente (14/14 en dist).
+    #  Si el mapa esta cargado (contexto Pester/futuro) se usa tal cual. Match case-sensitive (-c*),
+    #  coherente con el despacho exacto del puente.
+    $checks++
+    $wlKeys = @()
+    if($script:AXEBridgeMap){
+        $wlKeys = @($script:AXEBridgeMap.Keys)
+    } else {
+        $selfSrc = ''
+        try { $selfSrc = Get-Content $PSCommandPath -Raw -EA Stop } catch {}
+        $rx = '(?m)^\s*''([A-Za-z][A-Za-z.]*)''\s*=\s*\{\s*param\(\$a\)'
+        $wlKeys = @([regex]::Matches($selfSrc, $rx) | ForEach-Object { $_.Groups[1].Value })
+    }
+    if(@($wlKeys).Count -eq 0){
+        [void]$fails.Add('S-webui-3: no se pudo determinar la lista blanca del puente (mapa vivo ausente y parseo vacio)')
+    } else {
+        $wjs = Get-ChildItem $script:WebUIDir -Recurse -Filter '*.js' -EA SilentlyContinue
+        $jsRaw = ($wjs | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
+        $called = @{}
+        foreach($m in [regex]::Matches($jsRaw, "AXE\.call\(\s*'([^']+)'")){ $called[$m.Groups[1].Value] = $true }
+        foreach($c in $called.Keys){
+            if($wlKeys -cnotcontains $c){ [void]$fails.Add("S-webui-3: app.js llama '$c' fuera de la lista blanca") }
+        }
+        foreach($c in $wlKeys){
+            if($jsRaw -notmatch [regex]::Escape("'$c'")){ [void]$fails.Add("S-webui-3: '$c' en lista blanca pero ningun JS lo referencia (cmd muerto)") }
+        }
+    }
 
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"

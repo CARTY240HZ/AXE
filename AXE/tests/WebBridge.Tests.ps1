@@ -102,3 +102,21 @@ Describe 'Puente: Fase 7 - lecturas seguras' {
         $r.data.PSObject.Properties.Name | Should -Contain 'after'
     }
 }
+
+Describe 'Puente: endurecimiento' {
+    It 'todo cmd de la lista blanca responde con la forma {ok,data,err} y no tumba el proceso' {
+        foreach($cmd in $script:AXEBridgeMap.Keys){
+            $r = Invoke-AXEBridgeCmd $cmd @{}   # args vacios: apply/revert/master/restore gatean admin -> ok:false limpio
+            foreach($k in 'ok','data','err'){ $r.PSObject.Properties.Name | Should -Contain $k }
+        }
+    }
+    It 'la lista blanca es EXACTA: mayusculas distintas no colisionan (HW.GET != hw.get)' {
+        (Invoke-AXEBridgeCmd 'HW.GET' @{}).ok | Should -BeFalse
+        (Invoke-AXEBridgeCmd 'Tweaks.Apply' @{}).ok | Should -BeFalse
+    }
+    It 'args ausentes en tweaks.apply no ejecutan nada peligroso (ok:false, cero cambios)' {
+        $r = Invoke-AXEBridgeCmd 'tweaks.apply' @{}
+        $r.ok  | Should -BeFalse
+        $r.err | Should -Not -BeNullOrEmpty
+    }
+}
