@@ -1,6 +1,6 @@
-# ================================================================
+﻿# ================================================================
 # AXE 6.1.0-dev - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-21 22:44:28Z
+# Build UTC: 2026-07-22 14:09:34Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1, 50-xaml.ps1, 52-gui-build.ps1, 55-gui-actions.ps1, 57-gui-handlers.ps1, 60-gui-selftest.ps1, 99-main.ps1
 # ================================================================
 
@@ -3112,6 +3112,40 @@ if($SelfTest){
             if(($rt.PSObject.Properties.Name) -notcontains $k){ [void]$fails.Add("S27: runtime sin campo '$k'") }
         }
     }
+    # S-webui-3: coherencia lista blanca (48-webbridge) <-> literales del frontend (webui/*.js).
+    #  Directo: cada AXE.call('x') literal existe en la lista blanca (caza typos / cmds inventados).
+    #  Inverso: cada cmd de la lista blanca aparece como literal en el JS. El inverso usa presencia
+    #  de literal (no el prefijo AXE.call() del regex directo) a proposito: asi ve el despacho
+    #  ternario AXE.call(cond ? 'tweaks.apply' : 'tweaks.revert') que el directo no captura.
+    #  El bloque -SelfTest de 45-cli hace 'exit' ANTES de que 48-webbridge cargue el mapa, asi que
+    #  el $script:AXEBridgeMap vivo no existe aqui: las claves se extraen del propio script en curso
+    #  ($PSCommandPath), donde "'x' = { param($a)" es un patron EXCLUSIVO del puente (14/14 en dist).
+    #  Si el mapa esta cargado (contexto Pester/futuro) se usa tal cual. Match case-sensitive (-c*),
+    #  coherente con el despacho exacto del puente.
+    $checks++
+    $wlKeys = @()
+    if($script:AXEBridgeMap){
+        $wlKeys = @($script:AXEBridgeMap.Keys)
+    } else {
+        $selfSrc = ''
+        try { $selfSrc = Get-Content $PSCommandPath -Raw -EA Stop } catch {}
+        $rx = '(?m)^\s*''([A-Za-z][A-Za-z.]*)''\s*=\s*\{\s*param\(\$a\)'
+        $wlKeys = @([regex]::Matches($selfSrc, $rx) | ForEach-Object { $_.Groups[1].Value })
+    }
+    if(@($wlKeys).Count -eq 0){
+        [void]$fails.Add('S-webui-3: no se pudo determinar la lista blanca del puente (mapa vivo ausente y parseo vacio)')
+    } else {
+        $wjs = Get-ChildItem $script:WebUIDir -Recurse -Filter '*.js' -EA SilentlyContinue
+        $jsRaw = ($wjs | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
+        $called = @{}
+        foreach($m in [regex]::Matches($jsRaw, "AXE\.call\(\s*'([^']+)'")){ $called[$m.Groups[1].Value] = $true }
+        foreach($c in $called.Keys){
+            if($wlKeys -cnotcontains $c){ [void]$fails.Add("S-webui-3: app.js llama '$c' fuera de la lista blanca") }
+        }
+        foreach($c in $wlKeys){
+            if($jsRaw -notmatch [regex]::Escape("'$c'")){ [void]$fails.Add("S-webui-3: '$c' en lista blanca pero ningun JS lo referencia (cmd muerto)") }
+        }
+    }
 
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
@@ -3522,11 +3556,99 @@ $script:AXEBridgeMap = @{
         try { Invoke-AXEMasterRevertTail } catch { Write-AXELog "MasterRevertTail: $($_.Exception.Message)" 'ERR' }
         [pscustomobject]@{ reverted=$done; errors=$err }
     }
+
+    # --- Fase 7: Telemetria / Prueba / Seguridad ---
+    # Todo re-empaqueta funciones YA EXISTENTES del motor (32/33/34/35/36). El front pinta las
+    # 'lines' del motor TAL CUAL (mismo texto que la CLI): la honestidad vive en el motor, no aqui.
+
+    # Barrido de resolucion de timer (§3.5). Corre el busy-loop nativo N pasadas en ESTE hilo (UI):
+    # tarda ~1-2s y retrasa otras respuestas ese rato; no congela el render (WebView2 out-of-process).
+    'measure.timerSweep' = { param($a)
+        $sw = Measure-AXETimerSweep
+        if(-not $sw){ throw 'barrido no disponible (AXE.Native ausente o rango invalido; ver log)' }
+        $bestMs = $null; if($sw.Conclusive -and $sw.Best){ $bestMs = [double]$sw.Best.AppliedMs }
+        [pscustomobject]@{
+            lines      = @(Format-AXETimerSweep $sw)
+            conclusive = [bool]$sw.Conclusive
+            bestMs     = $bestMs
+            originalMs = $sw.OriginalMs
+        }
+    }
+
+    # Captura de FPS con PresentMon. BLOQUEANTE: Start-Process -Wait durante 'seconds' (default 20s)
+    # y requiere admin (sesion ETW). Devuelve Ok/lines del motor; si no puede, el motor da el motivo
+    # honesto (PresentMon ausente, juego no abierto, sin permisos) y viaja en 'lines'.
+    'fps.capture' = { param($a)
+        if(-not $a.process){ throw 'proceso requerido (ej: cs2, valorant)' }
+        $secs = 20; if($a.seconds){ $secs = [int]$a.seconds }
+        if($secs -lt 3){ $secs = 3 }; if($secs -gt 120){ $secs = 120 }
+        $s = Measure-AXEFps -ProcessName ([string]$a.process) -Seconds $secs
+        [pscustomobject]@{ ok=[bool]$s.Ok; lines=@(Format-AXEFpsStats $s 'Captura') }
+    }
+
+    # Diagnostico de configuracion (XMP, refresh, SSD...). PURO tras leer hechos por CIM. No aplica
+    # nada. Devuelve las lineas del motor + un DTO plano de hallazgos para pintar tarjetas.
+    'diag.get' = { param($a)
+        $facts = Get-AXEDiagFacts
+        $find  = Get-AXEDiagFindings -Facts $facts
+        $bad = @($find | Where-Object Status -eq 'BAD').Count
+        $unk = @($find | Where-Object Status -eq 'UNKNOWN').Count
+        [pscustomobject]@{
+            lines    = @(Format-AXEDiag -Findings $find)
+            bad      = [int]$bad
+            unknown  = [int]$unk
+            findings = @($find | ForEach-Object {
+                [pscustomobject]@{ id=$_.Id; status=$_.Status; title=$_.Title; detail=$_.Detail
+                    fix=$_.Fix; estPct=$_.EstPct; confidence=$_.Confidence }
+            })
+        }
+    }
+
+    # Prueba A/B (Trust & Proof). New-AXEReport NO es de un tiro: exige snapshot ANTES y DESPUES.
+    # Asi que el flujo honesto es en dos pasos y con estado de sesion:
+    #   prueba.baseline  -> mide y GUARDA el 'antes' (snap0 + score0) en variables de sesion.
+    #   prueba.report    -> mide el 'despues' (snap1 + score1 vs snap0) y arma el informe real.
+    # Sin baseline, prueba.report se niega (no inventa un 'antes'). Reinicia el par cada baseline.
+    'prueba.baseline' = { param($a)
+        $snap0 = Get-AXESnapshot
+        $sc0   = Get-AXEScore $snap0
+        $script:PruebaSnap0  = $snap0
+        $script:PruebaScore0 = $sc0
+        $timerMs = $null; if($snap0.Timer -isnot [string]){ $timerMs = $snap0.Timer.CurrentMs }
+        $p999 = $null; if($snap0.Jitter -isnot [string]){ $p999 = $snap0.Jitter.P999Ms }
+        [pscustomobject]@{ total=[int]$sc0.Total; timerMs=$timerMs; jitterP999=$p999; ts=$snap0.Timestamp }
+    }
+    'prueba.report' = { param($a)
+        if(-not $script:PruebaSnap0){ throw 'sin linea base: mide el ANTES primero (Capturar baseline)' }
+        $snap1 = Get-AXESnapshot
+        $sc1   = Get-AXEScore $snap1 $script:PruebaSnap0
+        $timerMs = $null; if($snap1.Timer -isnot [string]){ $timerMs = $snap1.Timer.CurrentMs }
+        $p999 = $null; if($snap1.Jitter -isnot [string]){ $p999 = $snap1.Jitter.P999Ms }
+        $report = New-AXEReport $script:PruebaSnap0 $snap1 $script:PruebaScore0 $sc1
+        [pscustomobject]@{
+            lines  = @($report -split "`r?`n")
+            before = [int]$script:PruebaScore0.Total
+            after  = [int]$sc1.Total
+            afterTimerMs = $timerMs; afterJitterP999 = $p999
+        }
+    }
+
+    # Punto de restauracion del sistema. Best-effort, NUNCA lanza: devuelve {Status;Message}. En
+    # anticheat / SR deshabilitado da Status='fallback' con el motivo (no es un error de AXE).
+    'safety.restorePoint' = { param($a)
+        if(-not (Test-Admin)){ throw 'requiere admin: relanza AXE con AXE.bat (se eleva solo)' }
+        $r = New-AXERestorePoint
+        [pscustomobject]@{ status=[string]$r.Status; message=[string]$r.Message }
+    }
 }
 
 function Invoke-AXEBridgeCmd {
     param([string]$cmd,[hashtable]$cmdArgs)
-    $fn = $script:AXEBridgeMap[$cmd]
+    # Lista blanca EXACTA: el hashtable literal es case-insensitive; exigimos coincidencia de
+    # mayus/minus (-ccontains) para que 'HW.GET' no colisione con 'hw.get'. Superficie minima y
+    # auditable: el check S-webui-3 asume mapeo 1:1 literal-JS <-> clave, sin deriva de casing.
+    $fn = $null
+    if($script:AXEBridgeMap.Keys -ccontains $cmd){ $fn = $script:AXEBridgeMap[$cmd] }
     if(-not $fn){ return [pscustomobject]@{ ok=$false; data=$null; err="cmd desconocido: $cmd" } }
     try {
         $data = & $fn $cmdArgs

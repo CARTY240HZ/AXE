@@ -198,7 +198,11 @@ $script:AXEBridgeMap = @{
 
 function Invoke-AXEBridgeCmd {
     param([string]$cmd,[hashtable]$cmdArgs)
-    $fn = $script:AXEBridgeMap[$cmd]
+    # Lista blanca EXACTA: el hashtable literal es case-insensitive; exigimos coincidencia de
+    # mayus/minus (-ccontains) para que 'HW.GET' no colisione con 'hw.get'. Superficie minima y
+    # auditable: el check S-webui-3 asume mapeo 1:1 literal-JS <-> clave, sin deriva de casing.
+    $fn = $null
+    if($script:AXEBridgeMap.Keys -ccontains $cmd){ $fn = $script:AXEBridgeMap[$cmd] }
     if(-not $fn){ return [pscustomobject]@{ ok=$false; data=$null; err="cmd desconocido: $cmd" } }
     try {
         $data = & $fn $cmdArgs
