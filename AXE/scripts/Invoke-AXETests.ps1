@@ -25,6 +25,7 @@ param(
     [string]$Path,
     [switch]$Lint,
     [switch]$CI,
+    [switch]$IncludeIntegration,
     [string]$ResultsPath
 )
 $ErrorActionPreference = 'Stop'
@@ -48,6 +49,10 @@ $env:AXE_NOSR = '1'
 $cfg = New-PesterConfiguration
 $cfg.Run.Path        = $Path
 $cfg.Run.PassThru    = $true
+# Los tests -Tag 'integration' mutan/leen Windows real y corren en su JOB dedicado de CI
+# (AXE_INTEGRATION=1). El gate local/build ejecuta solo los unit: portable y sin depender del
+# estado de esta maquina. -IncludeIntegration los reincluye si hace falta a mano.
+if(-not $IncludeIntegration){ $cfg.Filter.ExcludeTag = 'integration' }
 $cfg.Output.Verbosity = if($CI){ 'Detailed' } else { 'Normal' }
 if($CI){
     $cfg.TestResult.Enabled      = $true
