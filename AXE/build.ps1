@@ -22,9 +22,13 @@ foreach($m in $modules){
     [void]$sb.Append((Get-Content $m.FullName -Raw -Encoding UTF8))
     [void]$sb.AppendLine("")
 }
-# Version canonica: reemplaza el token de 00-header (que va DESPUES del param block,
-# para no romper la regla "param() primero"). Fuente unica = fichero VERSION.
-$built = $sb.ToString() -replace '__AXE_VERSION__', $ver
+# Version canonica: SOLO se sustituye la linea de ASIGNACION de 00-header, NO el guard de
+# fallback. Ambos van DESPUES del param block (regla PS: param() primero). Fuente unica = VERSION.
+#   Un -replace global del token pisaba tambien el '*__AXE_VERSION__*' del guard de 00-header: tras
+# el build quedaba como '*7.0.0*', hacia MATCH contra la propia version y la app se AUTO-DEGRADABA
+# a '6.1.0-dev' en cada build (banner CLI y app.info del puente mentian). .Replace() literal toca
+# solo la asignacion; el guard conserva su token intacto => no dispara cuando SI hubo build.
+$built = $sb.ToString().Replace("`$script:AXEVersion = '__AXE_VERSION__'", "`$script:AXEVersion = '$ver'")
 Set-Content -Path $out -Value $built -Encoding UTF8
 Write-Host ("BUILT: {0} ({1} lineas, {2} modulos)" -f $out,(Get-Content $out).Count,$modules.Count)
 foreach($m in $modules){ Write-Host ("  {0,-28} {1,5} lineas" -f $m.Name,(Get-Content $m.FullName).Count) }
