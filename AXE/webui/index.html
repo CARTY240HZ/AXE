@@ -255,6 +255,16 @@
         <pre class="mono-out" id="reportOut">Captura la línea base y genera el informe para verlo aquí.</pre>
       </div>
       <div class="card">
+        <h3>Benchmark con reinicio <span class="mini-inline">· pruébalo en tu PC</span></h3>
+        <div class="mini">Varias pasadas por fase: mide la mediana <b>y el ruido</b> de tu equipo. El «antes» se guarda en disco, así que sobrevive al reinicio. Si el cambio no supera el ruido medido, lo dice: no inventa mejoras. Tarda ~10-30 s por fase y la ventana puede tardar en responder mientras mide.</div>
+        <div class="fps-row">
+          <button class="btn" id="btnBenchBase"><b>1 · Línea base</b><span>mediana + IQR</span></button>
+          <input id="benchId" class="in" type="text" placeholder="id de la línea base (ej: 20260724-1355)" spellcheck="false" autocomplete="off">
+          <button class="btn primary" id="btnBenchAfter"><b>2 · Medir después</b><span>tras aplicar y reiniciar</span></button>
+        </div>
+        <pre class="mono-out" id="benchOut">Captura la línea base, aplica tus cambios, reinicia el PC, vuelve con el id y mide el después.</pre>
+      </div>
+      <div class="card">
         <h3>Captura de FPS <span class="mini-inline">· PresentMon</span></h3>
         <div class="mini">prueba objetiva con el juego abierto. Necesita PresentMon.exe junto a AXE y admin (sesión ETW). AXE no lo descarga a propósito. La ventana puede tardar en responder mientras captura.</div>
         <div class="fps-row">

@@ -6,7 +6,9 @@
 #     la ventana no espere ~3.7s de CIM (Win32_Processor + Get-NetAdapter pagan cold-init WMI).
 $script:HW = $null
 #     -Diag entra aqui porque Get-AXEDiagFacts reusa $script:HW.IsSSD en vez de recalcularlo.
-if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag){
+#     -Benchmark tambien: Get-AXESnapshot mide cobertura via Get-BlockReason, que necesita $HW.
+#     Sin el, la metrica 'score' cambiaria entre fases por el orden de carga y no por el sistema.
+if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag -or $Benchmark){
     try { $script:HW = Get-AXEHardware } catch { $script:HW = $null }
 }
 
@@ -355,6 +357,79 @@ if($SelfTest){
         }
     } catch { [void]$fails.Add("S28: planificador de sesion lanzo: $($_.Exception.Message)") }
 
+    # S29: benchmark "pruebalo en tu PC" (region 8e, spec 2026-07-24). Misma leccion que S22/S25:
+    # el veredicto se EJERCE con series sinteticas en vez de comprobar que la funcion existe. Aqui
+    # lo que hay que proteger es una sola propiedad: que NUNCA se declare mejora dentro del ruido.
+    # Si algun dia alguien "afina" el umbral, este check se pone rojo antes de que salga del repo.
+    $checks++
+    try {
+        # Fabrica de agregados sinteticos: {median,iqr,passes} por metrica, la misma forma que
+        # produce Measure-AXEBenchSample y que sobrevive al round-trip JSON.
+        $mkS = {
+            param($p999,$q999,$scoreV,$scoreQ)
+            [pscustomobject]@{
+                id='synth'; axeVersion='test'; hwHash='sha256:synth'; ts='2026-07-24T00:00:00Z'
+                passes=7; jitterMs=250
+                hw=[pscustomobject]@{ cpu='synth'; ramGB=16.0; gpuVendor='synth'; build=26200 }
+                metrics=[pscustomobject]@{
+                    jitterP999Ms=[pscustomobject]@{ median=$p999; iqr=$q999; passes=7 }
+                    jitterMeanMs=$null
+                    timerMs=$null
+                    score=[pscustomobject]@{ median=$scoreV; iqr=$scoreQ; passes=7 }
+                }
+            }
+        }
+        # (a) delta grande y limpio (jitter baja mucho, ruido pequeno) => concluyente 'mejor'.
+        $vA = Get-AXEBenchVerdict (& $mkS 1.00 0.02 50 1) (& $mkS 0.40 0.02 70 1)
+        $jA = $vA | Where-Object Key -eq 'jitterP999Ms'
+        if(-not $jA -or $jA.Tag -ne 'mejor'){ [void]$fails.Add("S29: delta limpio de jitter no salio 'mejor' (dio '$($jA.Tag)')") }
+        $sA = $vA | Where-Object Key -eq 'score'
+        if(-not $sA -or $sA.Tag -ne 'mejor'){ [void]$fails.Add("S29: score 50->70 no salio 'mejor' (dio '$($sA.Tag)')") }
+        # (b) delta REAL pero por debajo del ruido combinado => 'ruido'. El check que importa.
+        $vB = Get-AXEBenchVerdict (& $mkS 1.00 0.30 50 5) (& $mkS 0.95 0.30 52 5)
+        foreach($m in $vB){
+            if($m.Tag -ne 'ruido'){ [void]$fails.Add("S29: '$($m.Key)' dentro del ruido salio '$($m.Tag)' - el motor declara mejoras que no existen") }
+            if($m.Conclusive){ [void]$fails.Add("S29: '$($m.Key)' dentro del ruido salio Conclusive") }
+        }
+        # (c) delta grande en la direccion mala => 'peor' (el veredicto no solo sabe felicitar).
+        $vC = Get-AXEBenchVerdict (& $mkS 0.40 0.02 70 1) (& $mkS 1.00 0.02 50 1)
+        foreach($k in 'jitterP999Ms','score'){
+            $m = $vC | Where-Object Key -eq $k
+            if(-not $m -or $m.Tag -ne 'peor'){ [void]$fails.Add("S29: regresion grande en '$k' no salio 'peor' (dio '$($m.Tag)')") }
+        }
+        # (d) metrica no medible (native ausente) => se OMITE, sin lanzar y sin comparar contra 0.
+        if(@($vA | Where-Object Key -eq 'timerMs').Count -ne 0){ [void]$fails.Add('S29: metrica null no se omitio del veredicto') }
+        if(@($vA | Where-Object Key -eq 'jitterMeanMs').Count -ne 0){ [void]$fails.Add('S29: metrica ausente no se omitio del veredicto') }
+        # Round-trip Save/Read en store TEMPORAL: no toca el AXE/bench/ real del usuario.
+        $realBench = $script:AXEBenchDir
+        try {
+            $script:AXEBenchDir = Join-Path $script:AXEData ('benchtest_{0}' -f [guid]::NewGuid())
+            $sample = & $mkS 0.42 0.05 61 2
+            $bid = Save-AXEBenchBaseline $sample
+            if(-not $bid){ [void]$fails.Add('S29: Save-AXEBenchBaseline no devolvio id') }
+            $back = Read-AXEBenchBaseline $bid
+            if(-not $back){ [void]$fails.Add('S29: Read-AXEBenchBaseline no recupero la linea base') }
+            elseif([double]$back.metrics.jitterP999Ms.median -ne 0.42){ [void]$fails.Add("S29: round-trip perdio la mediana (dio $($back.metrics.jitterP999Ms.median))") }
+            if($null -ne (Read-AXEBenchBaseline 'no-existe-jamas')){ [void]$fails.Add('S29: un id inexistente devolvio algo en vez de null') }
+            if($null -ne (Read-AXEBenchBaseline '..\..\etc')){ [void]$fails.Add('S29: un id con separadores de ruta no se rechazo') }
+            # Comparabilidad: hash distinto => se niega con motivo, no produce un delta falso.
+            $why = Test-AXEBenchComparable $back ([pscustomobject]@{ axeVersion='otra'; hwHash='sha256:OTRA'; hw=[pscustomobject]@{cpu='x';ramGB=8.0;gpuVendor='y';build=1} })
+            if([string]::IsNullOrWhiteSpace($why)){ [void]$fails.Add('S29: hash de HW distinto se dio por comparable') }
+            # Reporte: no vacio, JSON parseable, y sin PII (ni usuario ni equipo).
+            $rep = New-AXEBenchReport $back (& $mkS 0.30 0.04 70 2) $null
+            if(@($rep.Text).Count -lt 5){ [void]$fails.Add('S29: reporte de texto vacio o demasiado corto') }
+            if([string]::IsNullOrWhiteSpace($rep.Markdown)){ [void]$fails.Add('S29: reporte Markdown vacio') }
+            $pj = $null
+            try { $pj = $rep.Json | ConvertFrom-Json -EA Stop } catch { [void]$fails.Add("S29: JSON del reporte no parsea: $($_.Exception.Message)") }
+            if($pj -and @($pj.verdict).Count -lt 1){ [void]$fails.Add('S29: JSON del reporte sin veredicto') }
+            $all = (@($rep.Text) -join "`n") + $rep.Markdown + $rep.Json
+            foreach($pii in @($env:USERNAME,$env:COMPUTERNAME,$env:USERDOMAIN)){
+                if($pii -and $all -match [regex]::Escape($pii)){ [void]$fails.Add("S29: el reporte compartible contiene PII ('$pii')") }
+            }
+            Remove-Item $script:AXEBenchDir -Recurse -Force -EA SilentlyContinue
+        } finally { $script:AXEBenchDir = $realBench }
+    } catch { [void]$fails.Add("S29: benchmark lanzo: $($_.Exception.Message)") }
+
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
     Write-Host "========================================="
@@ -405,6 +480,76 @@ if($Score){
     Write-Host $sc.Breakdown
     exit 0
 }
+# --- BENCHMARK "pruebalo en tu PC" (region 8e, spec 2026-07-24) -----------------------
+# ORDEN A POSTA: este bloque va ANTES de 'if($Report)'. -Report es un flag compartido y el
+# bloque de reporte hace 'exit' incondicional, asi que puesto despues,
+# 'AXE -Benchmark -After <id> -Report x.json' habria salido por el camino del reporte A/B
+# clasico sin llegar nunca aqui: el usuario pediria un benchmark y recibiria otra cosa.
+# Todo el bloque es headless, no muta el sistema y no necesita admin.
+if($Benchmark){
+    Write-Host '== AXE BENCHMARK - pruebalo en tu PC =='
+    $passes = $BenchPasses
+    if($passes -lt 3){ $passes = 3 }        # menos de 3 pasadas no da IQR con sentido
+    if($passes -gt 25){ $passes = 25 }
+
+    if(-not $After){
+        # --- FASE 1: linea base ---
+        Write-Host "Midiendo la linea base: $passes pasadas. Tarda ~$([int]($passes*1.5))-$([int]($passes*4)) s."
+        Write-Host 'Cierra lo que no estes usando y no toques el equipo mientras mide.'
+        $b = Measure-AXEBenchSample -Passes $passes
+        $id = Save-AXEBenchBaseline $b
+        if(-not $id){ Write-Host '  No pude guardar la linea base (ver log).'; exit 1 }
+        Write-Host ''
+        foreach($line in (Format-AXEBenchSample $b 'LINEA BASE')){ Write-Host $line }
+        Write-Host ''
+        Write-Host "Linea base guardada con id: $id"
+        Write-Host 'Ahora aplica los tweaks que quieras y REINICIA el equipo. Despues, vuelve y ejecuta:'
+        Write-Host "    AXE -Benchmark -After $id"
+        Write-Host '(El reinicio no se automatiza a posta: hacerlo esconderia lo que se aplico,'
+        Write-Host ' y el valor de esto es que puedas ver y repetir cada paso.)'
+        exit 0
+    }
+
+    # --- FASE 2: despues + veredicto ---
+    $before = Read-AXEBenchBaseline $After
+    if(-not $before){
+        # No se inventa un 'antes': sin linea base no hay comparacion posible, igual que
+        # 'prueba.report' del puente se niega sin baseline.
+        Write-Host "  No hay linea base con id '$After' (o el fichero esta corrupto)."
+        Write-Host "  Busca en: $script:AXEBenchDir"
+        Write-Host '  Empieza una nueva con:  AXE -Benchmark'
+        exit 1
+    }
+    $why = Test-AXEBenchComparable $before
+    if($why){
+        Write-Host "  $why"
+        Write-Host '  Un delta entre maquinas o versiones distintas no mide un cambio: mide otra cosa.'
+        exit 1
+    }
+    # Mismas pasadas y misma duracion de jitter que la fase 1: comparar 7 pasadas contra 3
+    # cambiaria el ruido medido y con el el umbral del veredicto.
+    Write-Host ("Midiendo el DESPUES con los mismos parametros que la linea base ({0} pasadas)..." -f $before.passes)
+    # OJO con el nombre: NO llamar a esta variable '$after'. Los nombres de variable de
+    # PowerShell son case-insensitive, asi que '$after' ES el parametro '[string]$After' del
+    # param block, que ademas esta TIPADO: asignarle el agregado lo convertiria a su
+    # representacion en texto y el veredicto se quedaria sin datos, en silencio. Es la misma
+    # familia de bug que la colision $Games/S24 documentada en 00-header.
+    $afterSample = Measure-AXEBenchSample -Passes ([int]$before.passes) -JitterMs ([int]$before.jitterMs)
+    $verdict = Get-AXEBenchVerdict $before $afterSample
+    $rep = New-AXEBenchReport $before $afterSample $verdict
+    Write-Host ''
+    foreach($line in $rep.Text){ Write-Host $line }
+    if($Report){
+        $written = Export-AXEBenchReport $rep $Report
+        Write-Host ''
+        foreach($f in $written){ Write-Host "Escrito: $f" }
+        Write-Host 'El .md es el compartible (sin datos personales: modelo de CPU, RAM, vendor de GPU y build).'
+    }
+    # Salida 1 si alguna metrica EMPEORO de forma concluyente, para poder encadenarlo en scripts.
+    # 'ruido' no es fallo: es el resultado honesto mas comun.
+    exit ([int](@($verdict | Where-Object Tag -eq 'peor').Count -gt 0))
+}
+
 if($Report){
     $s0=Get-AXESnapshot; $s1=Get-AXESnapshot
     Write-Host (Export-AXEReport $s0 $s1 $Report)
