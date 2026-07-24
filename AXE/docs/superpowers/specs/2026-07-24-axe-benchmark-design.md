@@ -1,7 +1,25 @@
 # AXE Benchmark — "Pruébalo en tu PC" (subproyecto C)
 
 **Fecha:** 2026-07-24
-**Estado:** Diseño aprobado (jefe de orquestación). Pendiente: writing-plans → implementación.
+**Estado:** IMPLEMENTADO (2026-07-24). `src/41-bench.ps1` + CLI `-Benchmark` + puente `bench.*`
++ SelfTest S29 + `tests/Bench.Tests.ps1`. SelfTest 107 checks / 0 fallos, Pester 572 verdes.
+
+**Desviaciones respecto al diseño** (todas documentadas en el código):
+1. La validación de comparabilidad NO vive dentro de `Read-AXEBenchBaseline` (§5), sino en
+   `Test-AXEBenchComparable`. Motivo: devolviendo `$null` también para "otra máquina" se
+   mezclaban dos fallos que merecen mensajes distintos ("no existe" vs "no comparable, y por qué").
+   `Read` queda como cargador puro y la comparabilidad se puede testear sin tocar disco.
+2. Añadido un **suelo de resolución** al umbral del veredicto: `noise = max(K*(IQRb+IQRa), 10^-Digits)`.
+   Lo exigió la primera ejecución real: con 3 pasadas el IQR de "Jitter medio" se redondea a
+   0.0000 y un delta de 0.0001 ms salía como `mejor`. El ruido no había desaparecido — no lo
+   estábamos resolviendo. Un cambio menor que el último decimal que imprime el reporte no puede
+   llamarse mejora.
+3. `Format-AXEBenchTs` normaliza las marcas de tiempo: `ConvertFrom-Json` devuelve el `ts` del
+   disco como `[datetime]`, así que el mismo informe imprimía el "antes" en formato local
+   (`24/07/2026 13:36:23`) y el "después" en ISO. Un `.md` compartible no puede depender de la
+   configuración regional.
+4. Extra sobre el diseño: `-BenchPasses <n>` (3-25) para poder ajustar la duración, y salida
+   distinta de cero solo si alguna métrica **empeoró** de forma concluyente (`ruido` no es fallo).
 **Rama:** axe
 **Decisión de diseño:** Opción 1 — dos fases, humano en el loop.
 

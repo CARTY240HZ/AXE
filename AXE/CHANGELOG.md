@@ -6,6 +6,19 @@ y [Versionado Semántico](https://semver.org/lang/es/).
 ## [Sin publicar]
 
 ### Añadido
+- **Benchmark «pruébalo en tu PC»** (subproyecto C, `src/41-bench.ps1`, CLI `-Benchmark` /
+  `-Benchmark -After <id>`, puente `bench.baseline` / `bench.after`): prueba **medible y
+  compartible** del efecto real en tu equipo. Dos fases con reinicio humano en medio — el
+  «antes» se guarda en `AXE/bench/<id>.json` y sobrevive al reinicio. Cada métrica se muestrea
+  N veces y se agrega a **mediana + IQR**: el ruido se **mide**, no se asume. Un delta que no
+  supera `IQR(antes) + IQR(después)` se etiqueta **`ruido`**, nunca «mejora» — más un **suelo de
+  resolución** para que un IQR redondeado a cero no convierta cualquier cambio en un titular.
+  Se niega a comparar entre máquinas, builds o versiones distintas (hash de identidad). Reporte
+  en tres caras del mismo dato (texto, JSON y Markdown compartible) **sin PII**: modelo de CPU,
+  RAM, vendor de GPU y build; ni serie, ni usuario, ni IP. Métrica que no se puede medir viaja
+  `null`, jamás `0`. Veredicto **puro y testeado** (`Get-AXEBenchVerdict`, 46 tests + SelfTest S29).
+  *Ellos publican un «score» fabricado; esto publica el delta real con su margen de error y admite
+  cuando no hay nada que enseñar.*
 - **Daemon de sesión de juego** (subsistema A, `src/40-session.ps1`, CLI `-Session <proceso>`):
   congela el fondo con un **Job Object** mientras juegas y lo descongela al cerrar el juego o
   AXE. La recuperación la garantiza el **kernel** (al cerrarse el handle, Windows descongela solo:

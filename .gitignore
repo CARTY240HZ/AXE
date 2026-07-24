@@ -20,6 +20,12 @@
 AXE/dist/AXE/
 AXE/src/AXE/
 
+# Lineas base del benchmark (subproyecto C): estado de runtime por maquina, como
+# tweak_state.json. Nunca es fuente, y ademas trae medidas del equipo del usuario.
+# El patron cubre las tres raices posibles (AXE/AXE/, AXE/dist/AXE/, AXE/src/AXE/) porque
+# 05-core deriva AXEData del script que se ejecute.
+**/AXE/bench/
+
 # Renders del harness GUI (AXE_GUITEST / AXE_GUISHOW): artefactos de test
 AXE/dist/axe_render.png
 AXE/dist/axe_shown.png

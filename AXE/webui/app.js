@@ -458,6 +458,33 @@
       }).catch((e) => { $('reportOut').textContent = 'No pude generar el informe: ' + e.message; })
         .finally(() => { $('btnReport').disabled = false; $('btnReport').classList.remove('busy'); });
     });
+    // Benchmark con reinicio (subproyecto C). Distinto de baseline/report de arriba: aquel
+    // compara dos snapshots de ESTA sesión; éste agrega N pasadas, mide el ruido y guarda el
+    // «antes» en disco para que sobreviva al reinicio. El id se rellena solo tras el paso 1,
+    // pero el campo es editable a propósito: tras reiniciar la ventana es nueva y el usuario
+    // llega con el id apuntado (o lo saca de AXE/bench/).
+    $('btnBenchBase').addEventListener('click', () => {
+      const b = $('btnBenchBase'), out = $('benchOut');
+      b.disabled = true; b.classList.add('busy');
+      out.textContent = 'midiendo la línea base… (~10-30 s · no toques el equipo)';
+      AXE.call('bench.baseline', {}).then((r) => {
+        $('benchId').value = r.id || '';
+        out.textContent = (r.lines || []).join('\n') +
+          '\n\nLínea base guardada con id: ' + r.id +
+          '\nAplica tus cambios, REINICIA el PC, vuelve aquí y pulsa «Medir después».';
+      }).catch((e) => { out.textContent = 'No pude medir la línea base: ' + e.message; })
+        .finally(() => { b.disabled = false; b.classList.remove('busy'); });
+    });
+    $('btnBenchAfter').addEventListener('click', () => {
+      const id = $('benchId').value.trim(), out = $('benchOut');
+      if (!id) { out.textContent = 'Escribe el id de la línea base (te lo dio el paso 1).'; $('benchId').focus(); return; }
+      const b = $('btnBenchAfter'); b.disabled = true; b.classList.add('busy');
+      out.textContent = 'midiendo el después y comparando contra el ruido… (~10-30 s)';
+      AXE.call('bench.after', { id: id }).then((r) => {
+        out.textContent = (r.lines || []).join('\n');
+      }).catch((e) => { out.textContent = 'No pude comparar: ' + e.message; })
+        .finally(() => { b.disabled = false; b.classList.remove('busy'); });
+    });
     $('btnFps').addEventListener('click', () => {
       const proc = $('fpsProc').value.trim();
       const out = $('fpsOut'); out.hidden = false;

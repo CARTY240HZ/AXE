@@ -19,6 +19,10 @@
 #   -RevertGame   <ruta.exe>           Deshace lo anterior al estado capturado
 #   -Fps <proceso> [-FpsSeconds N]     Mide FPS reales con PresentMon (1% low incluido)
 #   -Fps <proceso> -FpsCompare         Antes/despues con veredicto honesto (ruido o no)
+#   -Benchmark                     Linea base medible (N pasadas, mediana + IQR). Imprime un id.
+#   -Benchmark -After <id> [-Report <file>]
+#                 Vuelve a medir tras aplicar+reiniciar y da el veredicto por metrica:
+#                 mejor / peor / RUIDO. Nunca declara mejora dentro del margen de ruido.
 #   -Diag         Configuracion mal puesta que cuesta mas FPS que todo el catalogo junto
 #                 (XMP/EXPO, canales de RAM, Hz del monitor, SSD). Solo detecta, no toca nada.
 #   (sin args)    GUI (requiere admin via el launcher .bat)
@@ -52,7 +56,16 @@ param(
     # Daemon de sesion de juego (subsistema A, spec 2026-07-20): congela el fondo mientras
     # juegas y lo descongela al cerrar el juego o AXE. Nombre verificado sin colision en src/.
     [string]$Session,
-    [int]$SessionPoll = 1000
+    [int]$SessionPoll = 1000,
+    # Benchmark "pruebalo en tu PC" (subproyecto C, spec 2026-07-24). Dos fases con reinicio
+    # humano en medio: -Benchmark guarda la linea base, -Benchmark -After <id> la compara.
+    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
+    # 'Benchmark' no aparece en ningun modulo; 'After' solo existe como PARAMETRO LOCAL de
+    # Get-AXEFpsVerdict (param([object]$After)), que tiene su propio ambito y no colisiona con
+    # una variable de script. Ninguno de los dos se usa como variable de ruta => S24 no aplica.
+    [switch]$Benchmark,
+    [string]$After,
+    [int]$BenchPasses = 7
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).

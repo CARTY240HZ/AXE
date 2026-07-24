@@ -187,6 +187,46 @@ $script:AXEBridgeMap = @{
         }
     }
 
+    # Benchmark "pruebalo en tu PC" (region 8e, spec 2026-07-24). Es el hermano SERIO de
+    # prueba.baseline/prueba.report: aquel compara DOS snapshots sueltos de la misma sesion (util
+    # para ver el efecto inmediato de un tweak); este agrega N pasadas, mide el ruido, sobrevive a
+    # un reinicio (el 'antes' vive en disco) y se niega a llamar mejora a lo que cae dentro del
+    # ruido. Por eso conviven en vez de sustituirse.
+    #   BLOQUEANTE: N pasadas x (jitter + cobertura) en el hilo UI, del orden de 10-30 s con los
+    # valores por defecto. Se declara aqui igual que en fps.capture, en vez de disimularlo.
+    'bench.baseline' = { param($a)
+        $p = 7; if($a.passes){ $p = [int]$a.passes }
+        if($p -lt 3){ $p = 3 }; if($p -gt 25){ $p = 25 }
+        $s = Measure-AXEBenchSample -Passes $p
+        $id = Save-AXEBenchBaseline $s
+        if(-not $id){ throw 'no pude guardar la linea base (ver log)' }
+        [pscustomobject]@{
+            id     = [string]$id
+            passes = [int]$s.passes
+            lines  = @(Format-AXEBenchSample $s 'LINEA BASE')
+        }
+    }
+    'bench.after' = { param($a)
+        if(-not $a.id){ throw 'falta el id de la linea base' }
+        $before = Read-AXEBenchBaseline ([string]$a.id)
+        if(-not $before){ throw "no hay linea base con id '$($a.id)' (o esta corrupta)" }
+        # Maquina/build/version distintas => se niega. Un delta entre equipos no mide un cambio.
+        $why = Test-AXEBenchComparable $before
+        if($why){ throw $why }
+        $after   = Measure-AXEBenchSample -Passes ([int]$before.passes) -JitterMs ([int]$before.jitterMs)
+        $verdict = Get-AXEBenchVerdict $before $after
+        $rep     = New-AXEBenchReport $before $after $verdict
+        [pscustomobject]@{
+            lines    = @($rep.Text)
+            markdown = [string]$rep.Markdown
+            verdict  = @($verdict | ForEach-Object {
+                [pscustomobject]@{ key=$_.Key; label=$_.Label; unit=$_.Unit
+                    before=$_.Before; after=$_.After; delta=$_.Delta
+                    noise=$_.Noise; conclusive=[bool]$_.Conclusive; tag=$_.Tag; reason=$_.Reason }
+            })
+        }
+    }
+
     # Punto de restauracion del sistema. Best-effort, NUNCA lanza: devuelve {Status;Message}. En
     # anticheat / SR deshabilitado da Status='fallback' con el motivo (no es un error de AXE).
     'safety.restorePoint' = { param($a)
