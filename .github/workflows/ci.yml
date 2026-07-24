@@ -31,6 +31,21 @@ jobs:
         shell: pwsh
         run: ./AXE/build.ps1
 
+      - name: Anti-deriva dist (dist == build fresco de src)
+        shell: pwsh
+        run: |
+          # El paso Build ya reconstruyo dist/AXE.ps1. Se compara contra el committed ignorando
+          # SOLO la linea 'Build UTC' (no determinista por diseno). Si difiere => alguien edito
+          # dist a mano o toco src/VERSION sin rebuild+commit: la clase EXACTA de deriva que
+          # degrado la version de la app a '6.1.0-dev'. Un diff aqui aborta el CI.
+          $head = (git show HEAD:AXE/dist/AXE.ps1) -notmatch '^# Build UTC:'
+          $work = (Get-Content AXE/dist/AXE.ps1)   -notmatch '^# Build UTC:'
+          if (Compare-Object $head $work) {
+            Write-Host '::error::dist/AXE.ps1 no coincide con un build fresco de src/. Corre ./AXE/build.ps1 y commitea el resultado.'
+            exit 1
+          }
+          Write-Host 'dist/AXE.ps1 coherente con src/.'
+
       - name: SelfTest (schema + coherencia, CLI headless)
         shell: pwsh
         run: |
@@ -41,12 +56,12 @@ jobs:
       - name: Pester (unit, excluye integration)
         shell: pwsh
         run: |
-          $cfg = New-PesterConfiguration
-          $cfg.Run.Path = 'AXE/tests'
-          $cfg.Filter.ExcludeTag = 'integration'
-          $cfg.Run.Exit = $true
-          $cfg.Output.Verbosity = 'Detailed'
-          Invoke-Pester -Configuration $cfg
+          # Fuente unica de verdad: el runner que usan tambien build.ps1 y el dev local
+          # (scripts/Invoke-AXETests.ps1). Excluye -Tag integration por defecto, fija AXE_NOSR=1
+          # (no crea puntos de restauracion reales en el runner) y emite NUnit con -CI. Antes este
+          # job llamaba Invoke-Pester directo, saltandose el runner y su guard AXE_NOSR.
+          & pwsh -NoProfile -File AXE/scripts/Invoke-AXETests.ps1 -CI
+          if ($LASTEXITCODE -ne 0) { throw "Suite Pester fallo (exit $LASTEXITCODE)" }
 
       - name: Artifact dist/AXE.ps1
         if: always()

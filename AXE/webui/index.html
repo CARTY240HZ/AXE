@@ -1,4 +1,9 @@
 <!doctype html><html lang="es"><head><meta charset="utf-8">
+<!-- CSP real que respalda el claim "cero peticiones a hosts externos". default-src 'none' cierra
+     todo; se abre lo justo: scripts propios (bridge.js/app.js, no hay inline ni on*=), CSS propio +
+     'unsafe-inline' por los style= inline del markup, img self+data. connect-src 'none' NO afecta a
+     la telemetria (WebView2 postMessage no es red). base/form-action bloqueados. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <title>AXE</title>
 <link rel="stylesheet" href="styles.css"></head>
 <body>
