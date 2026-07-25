@@ -40,10 +40,9 @@ $script:DEBLOAT = @(
 )
 function Get-DebloatInstalled($pkg){ [bool](Get-AppxPackage -Name $pkg -EA SilentlyContinue) }
 
-$script:DNSPROFILES = @(
-    @{Name='Cloudflare (1.1.1.1)';V4=@('1.1.1.1','1.0.0.1')}
-    @{Name='Google (8.8.8.8)';V4=@('8.8.8.8','8.8.4.4')}
-    @{Name='AdGuard (bloquea ads)';V4=@('94.140.14.14','94.140.15.15')}
-    @{Name='Quad9 (seguridad)';V4=@('9.9.9.9','149.112.112.112')}
-    @{Name='Automatico (DHCP)';V4=$null}
-)
+# $script:DNSPROFILES vivia aqui: 5 proveedores con sus IPs, sin un solo consumidor en todo el
+# repo (la pestana DNS que los mostraba murio en el cutover a WebUI, fase 8 de v7). Codigo muerto
+# que ademas afirmaba un ranking -"rapidos", "seguridad"- sin medir nada: justo lo que documenta
+# 33-fps que no se debe hacer. Quien quiera cambiar DNS tiene el tweak 'net_dns' en RED, que
+# declara en su propio Desc que NO da FPS. Si algun dia vuelve una seccion DNS, que llegue
+# midiendo la latencia de resolucion real en la maquina del usuario, no con una lista a ojo.

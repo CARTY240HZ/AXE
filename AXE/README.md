@@ -60,6 +60,31 @@ AXE.bat -Import perfil.json  :: aplica un perfil (requiere admin)
 > AXE modifica el registro y la energía del sistema. Está diseñado para ser reversible, pero
 > úsalo bajo tu responsabilidad. Consulta el `NotesEng` de cada tweak para el detalle técnico.
 
+### Anti-cheat
+
+La sesión de juego reparte prioridades entre procesos de fondo. Lo que **nunca** toca, por
+código y no por promesa (`src/40-session.ps1`, función `Get-AXESessionLevel`):
+
+| Qué | Cómo se garantiza |
+|---|---|
+| El proceso del juego | `Pid -eq GamePid` → `intacto`, primera regla del planificador |
+| Procesos anti-cheat | Familia `anticheat` + regex `anticheat\|battleye\|easyanti` → `intacto` |
+| El shell (explorer, dwm…) | Familia `shell` → `intacto` |
+| Servicios y drivers | Session 0 se descarta por definición: solo se considera la sesión interactiva |
+| Tu configuración | Los duros ganan a los overrides del usuario: un override sobre ellos se **rechaza al escribir**, no se ignora en silencio |
+
+AXE **no inyecta en procesos, no lee ni escribe memoria de juego, y no abre handle al proceso
+del juego ni al del anti-cheat.** Cambia ajustes de Windows; nada más.
+
+**La única incertidumbre declarada:** el tweak `lat_timerres` restaura el honrado global de
+timer resolution en Win11. Su propio `NotesEng` dice *"Possible anti-cheat interaction: possible,
+not confirmed"*. No afirmamos que sea seguro con todos los anti-cheat porque no lo hemos
+verificado. Está en el catálogo con esa nota y tú decides.
+
+> Los optimizadores de pago declaran "compatible con EAC / BattlEye / Vanguard / VAC" en bloque.
+> Aquí se enseña la regla exacta que lo garantiza, la línea donde vive, y el único caso donde
+> no lo sabemos.
+
 ## Desarrollo
 
 El motor vive en `src/` (módulos numerados) y `build.ps1` los concatena a `dist/AXE.ps1`
