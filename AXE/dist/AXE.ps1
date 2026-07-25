@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 7.0.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-25 12:41:46Z
+# Build UTC: 2026-07-25 21:25:40Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 43-update.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -588,6 +588,43 @@ Add-Tweak @{Id='mem_compression';Cat='MEMORIA';Tier=2;Reboot=$false;Name='Compre
  Test={ try{ (Get-MMAgent -EA Stop).MemoryCompression -eq $false }catch{ $false } };
  Apply={ Disable-MMAgent -mc -EA SilentlyContinue };Revert={ Enable-MMAgent -mc -EA SilentlyContinue }}
 
+# --- DISCO (Tier 0) ---
+# Categoria deliberadamente CORTA. El folclore de "optimizar el SSD" es casi todo falso en Win10/11:
+# el defrag programado YA detecta SSD y manda retrim en vez de desfragmentar, asi que desactivarlo
+# no acelera nada y ademas quita el retrim. Lo unico accionable que queda es comprobar que nadie
+# haya apagado TRIM. NTFS last-access y 8.3 ya viven en MEMORIA (mem_lastaccess / mem_8dot3): no se
+# duplican aqui solo para engordar el contador de una categoria.
+Add-Tweak @{Id='dsk_trim';Cat='DISCO';Tier=0;Reboot=$false;Name='TRIM activado (SSD)';Desc='DisableDeleteNotify=0. NO es una optimizacion: es comprobar que ningun tweaker lo apago. Sin TRIM el SSD se degrada segun se llena. En HDD es inocuo';Requires=@{};Source='https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/fsutil-behavior';SourceType='official';PlaceboLikely=$false;NotesEng='DisableDeleteNotify=0 keeps the TRIM/UNMAP hint enabled so the SSD controller can reclaim freed blocks. Some "optimizer" presets disable it under the myth that it costs latency; the real cost is write amplification and degraded steady-state performance. This entry exists to DETECT and undo that, not to speed anything up. Zero FPS effect by design.';
+ Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'DisableDeleteNotify') -eq 0};
+ Apply={Backup-RegKey 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem' 'FileSystem.reg'; Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'DisableDeleteNotify' 0};
+ Revert={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'DisableDeleteNotify' 1}}
+
+# --- AUDIO (Tier 2) ---
+Add-Tweak @{Id='aud_protectedaudio';Cat='AUDIO';Tier=2;Reboot=$true;Name='Protected Audio DG OFF';Desc='Quita el grafo de audio protegido (DRM) (REINICIO). EFECTO DISCUTIDO: la ganancia de latencia no esta medida y ROMPE reproduccion DRM (Netflix, Spotify app). Opt-in consciente';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/win32/medfound/protected-media-path';SourceType='community-lore';PlaceboLikely=$true;NotesEng='DisableProtectedAudioDG=1 stops audiodg.exe from loading the Protected Media Path graph. Community tweak lists claim lower audio DPC latency; no measured evidence found. Known cost is concrete: DRM-protected playback (Netflix, Spotify desktop, some Blu-ray software) can drop to silence or refuse to play. Tier 2 and PlaceboLikely=true on purpose: a real, documented downside against an unmeasured upside. Measure audio DPC before/after or leave it off.';
+ Test={(Get-RV 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio' 'DisableProtectedAudioDG') -eq 1};
+ Apply={Set-RD 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio' 'DisableProtectedAudioDG' 1};
+ Revert={Del-RV 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio' 'DisableProtectedAudioDG'}}
+
+# --- ENERGIA (Tier 1) ---
+# Solo entra lo que se pudo VERIFICAR con 'powercfg /query' en maquina real. EPP (PERFEPP) y
+# PCIe ASPM quedan fuera a posta: en este equipo estan ocultos por atributo y escribir un GUID
+# que no se ha visto responder es exactamente la clase de conjetura que el catalogo no admite.
+Add-Tweak @{Id='pwr_usbsuspend';Cat='ENERGIA';Tier=1;Reboot=$false;Name='USB selective suspend OFF';Desc='Windows deja de dormir los puertos USB: raton y teclado no pagan el coste de despertar. Sube algo el consumo en reposo';Requires=@{AC=$true};Source='https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/usb-selective-suspend';SourceType='official';PlaceboLikely=$false;NotesEng='Selective suspend lets the USB hub driver idle a port whose device is inactive. Waking it costs latency on the first event after idle, which is what input devices hit between menus and gameplay. Documented mechanism, GUIDs verified with powercfg /query on the target machine (subgroup 2a737441-1930-4402-8d77-b2bebba308a3, setting 48e6b7a6-50f5-4782-a5d4-53bb8f07e226, 0=Disabled). Uses powercfg, so Test-SnapEligible excludes it from the snapshot store and the previous index is captured to HKCU:\Software\AXE, same contract as cpu_park.';
+ Test={ $g=((Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'ActivePowerScheme') -replace '[{}]',''); (Get-RV "HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$g\2a737441-1930-4402-8d77-b2bebba308a3\48e6b7a6-50f5-4782-a5d4-53bb8f07e226" 'ACSettingIndex') -eq 0 };
+ Apply={
+   $sg=((Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'ActivePowerScheme') -replace '[{}]','')
+   $cur=(Get-RV "HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$sg\2a737441-1930-4402-8d77-b2bebba308a3\48e6b7a6-50f5-4782-a5d4-53bb8f07e226" 'ACSettingIndex')
+   if($null -ne $cur -and $null -eq (Get-RV 'HKCU:\Software\AXE' 'UsbSuspendPrev')){ Set-RD 'HKCU:\Software\AXE' 'UsbSuspendPrev' $cur }
+   powercfg -setacvalueindex scheme_current 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0; powercfg -setactive scheme_current};
+ Revert={
+   $p=(Get-RV 'HKCU:\Software\AXE' 'UsbSuspendPrev')
+   if($null -eq $p){
+       Write-AXELog 'pwr_usbsuspend: no hay valor previo guardado, no revierto (escribir un default supuesto seria peor). Ajusta la suspension selectiva USB a mano si lo necesitas.' 'WARN'
+   } else {
+       powercfg -setacvalueindex scheme_current 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 $p; powercfg -setactive scheme_current
+       Del-RV 'HKCU:\Software\AXE' 'UsbSuspendPrev'
+   }}}
+
 # --- SISTEMA (Tier 0/1) ---
 Add-Tweak @{Id='sys_gamedvr';Cat='SISTEMA';Tier=1;Reboot=$false;Name='Game DVR OFF';Desc='Sin grabacion de fondo = mas FPS';Requires=@{};
  Test={(Get-RV 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled') -eq 0};
@@ -1042,13 +1079,12 @@ $script:DEBLOAT = @(
 )
 function Get-DebloatInstalled($pkg){ [bool](Get-AppxPackage -Name $pkg -EA SilentlyContinue) }
 
-$script:DNSPROFILES = @(
-    @{Name='Cloudflare (1.1.1.1)';V4=@('1.1.1.1','1.0.0.1')}
-    @{Name='Google (8.8.8.8)';V4=@('8.8.8.8','8.8.4.4')}
-    @{Name='AdGuard (bloquea ads)';V4=@('94.140.14.14','94.140.15.15')}
-    @{Name='Quad9 (seguridad)';V4=@('9.9.9.9','149.112.112.112')}
-    @{Name='Automatico (DHCP)';V4=$null}
-)
+# $script:DNSPROFILES vivia aqui: 5 proveedores con sus IPs, sin un solo consumidor en todo el
+# repo (la pestana DNS que los mostraba murio en el cutover a WebUI, fase 8 de v7). Codigo muerto
+# que ademas afirmaba un ranking -"rapidos", "seguridad"- sin medir nada: justo lo que documenta
+# 33-fps que no se debe hacer. Quien quiera cambiar DNS tiene el tweak 'net_dns' en RED, que
+# declara en su propio Desc que NO da FPS. Si algun dia vuelve una seccion DNS, que llegue
+# midiendo la latencia de resolucion real en la maquina del usuario, no con una lista a ojo.
 
 
 # >>>>> MODULE: 23-defender.ps1 >>>>>
@@ -1160,7 +1196,7 @@ function Invoke-AXEAssistant($q){
     if($s -match 'recom|que aplic|que hago|deber|empez|inicio|todo|optimiz'){ return (Get-AXERecommendations) -join "`r`n" }
     if($s -match 'input|lag|raton|mouse|latenc|delay|responsiv'){ return (Report-Cats @('LATENCIA','CPU') 'INPUT LAG / LATENCIA') }
     if($s -match 'fps|juego|gaming|rendi|frame'){ return (Report-Cats @('GPU','SISTEMA','CPU','RENDIMIENTO') 'FPS / GAMING') + "`n>> Cierra overlays de fondo antes de jugar." }
-    if($s -match 'red|ping|dns|internet|wifi|online|conexion'){ $r=Report-Cats @('RED') 'RED'; if($script:HW.IsWifi){ $r+="`n>> Wi-Fi: el jitter lo domina la radio. Cable = mas estabilidad." }; $r+="`n>> DNS: pestana DNS."; return $r }
+    if($s -match 'red|ping|dns|internet|wifi|online|conexion'){ $r=Report-Cats @('RED') 'RED'; if($script:HW.IsWifi){ $r+="`n>> Wi-Fi: el jitter lo domina la radio. Cable = mas estabilidad." }; $r+="`n>> DNS: tweak 'net_dns' (categoria RED). Cambia la RESOLUCION de nombres, no el ping: no da FPS."; return $r }
     if($s -match 'segur|virus|defender|smartscreen|malware|proteg'){
         $out=@('== SEGURIDAD ==')
         $ss=(Get-RV 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' 'SmartScreenEnabled')

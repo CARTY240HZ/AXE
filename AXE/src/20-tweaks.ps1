@@ -168,6 +168,43 @@ Add-Tweak @{Id='mem_compression';Cat='MEMORIA';Tier=2;Reboot=$false;Name='Compre
  Test={ try{ (Get-MMAgent -EA Stop).MemoryCompression -eq $false }catch{ $false } };
  Apply={ Disable-MMAgent -mc -EA SilentlyContinue };Revert={ Enable-MMAgent -mc -EA SilentlyContinue }}
 
+# --- DISCO (Tier 0) ---
+# Categoria deliberadamente CORTA. El folclore de "optimizar el SSD" es casi todo falso en Win10/11:
+# el defrag programado YA detecta SSD y manda retrim en vez de desfragmentar, asi que desactivarlo
+# no acelera nada y ademas quita el retrim. Lo unico accionable que queda es comprobar que nadie
+# haya apagado TRIM. NTFS last-access y 8.3 ya viven en MEMORIA (mem_lastaccess / mem_8dot3): no se
+# duplican aqui solo para engordar el contador de una categoria.
+Add-Tweak @{Id='dsk_trim';Cat='DISCO';Tier=0;Reboot=$false;Name='TRIM activado (SSD)';Desc='DisableDeleteNotify=0. NO es una optimizacion: es comprobar que ningun tweaker lo apago. Sin TRIM el SSD se degrada segun se llena. En HDD es inocuo';Requires=@{};Source='https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/fsutil-behavior';SourceType='official';PlaceboLikely=$false;NotesEng='DisableDeleteNotify=0 keeps the TRIM/UNMAP hint enabled so the SSD controller can reclaim freed blocks. Some "optimizer" presets disable it under the myth that it costs latency; the real cost is write amplification and degraded steady-state performance. This entry exists to DETECT and undo that, not to speed anything up. Zero FPS effect by design.';
+ Test={(Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'DisableDeleteNotify') -eq 0};
+ Apply={Backup-RegKey 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem' 'FileSystem.reg'; Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'DisableDeleteNotify' 0};
+ Revert={Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'DisableDeleteNotify' 1}}
+
+# --- AUDIO (Tier 2) ---
+Add-Tweak @{Id='aud_protectedaudio';Cat='AUDIO';Tier=2;Reboot=$true;Name='Protected Audio DG OFF';Desc='Quita el grafo de audio protegido (DRM) (REINICIO). EFECTO DISCUTIDO: la ganancia de latencia no esta medida y ROMPE reproduccion DRM (Netflix, Spotify app). Opt-in consciente';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/win32/medfound/protected-media-path';SourceType='community-lore';PlaceboLikely=$true;NotesEng='DisableProtectedAudioDG=1 stops audiodg.exe from loading the Protected Media Path graph. Community tweak lists claim lower audio DPC latency; no measured evidence found. Known cost is concrete: DRM-protected playback (Netflix, Spotify desktop, some Blu-ray software) can drop to silence or refuse to play. Tier 2 and PlaceboLikely=true on purpose: a real, documented downside against an unmeasured upside. Measure audio DPC before/after or leave it off.';
+ Test={(Get-RV 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio' 'DisableProtectedAudioDG') -eq 1};
+ Apply={Set-RD 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio' 'DisableProtectedAudioDG' 1};
+ Revert={Del-RV 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio' 'DisableProtectedAudioDG'}}
+
+# --- ENERGIA (Tier 1) ---
+# Solo entra lo que se pudo VERIFICAR con 'powercfg /query' en maquina real. EPP (PERFEPP) y
+# PCIe ASPM quedan fuera a posta: en este equipo estan ocultos por atributo y escribir un GUID
+# que no se ha visto responder es exactamente la clase de conjetura que el catalogo no admite.
+Add-Tweak @{Id='pwr_usbsuspend';Cat='ENERGIA';Tier=1;Reboot=$false;Name='USB selective suspend OFF';Desc='Windows deja de dormir los puertos USB: raton y teclado no pagan el coste de despertar. Sube algo el consumo en reposo';Requires=@{AC=$true};Source='https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/usb-selective-suspend';SourceType='official';PlaceboLikely=$false;NotesEng='Selective suspend lets the USB hub driver idle a port whose device is inactive. Waking it costs latency on the first event after idle, which is what input devices hit between menus and gameplay. Documented mechanism, GUIDs verified with powercfg /query on the target machine (subgroup 2a737441-1930-4402-8d77-b2bebba308a3, setting 48e6b7a6-50f5-4782-a5d4-53bb8f07e226, 0=Disabled). Uses powercfg, so Test-SnapEligible excludes it from the snapshot store and the previous index is captured to HKCU:\Software\AXE, same contract as cpu_park.';
+ Test={ $g=((Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'ActivePowerScheme') -replace '[{}]',''); (Get-RV "HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$g\2a737441-1930-4402-8d77-b2bebba308a3\48e6b7a6-50f5-4782-a5d4-53bb8f07e226" 'ACSettingIndex') -eq 0 };
+ Apply={
+   $sg=((Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'ActivePowerScheme') -replace '[{}]','')
+   $cur=(Get-RV "HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$sg\2a737441-1930-4402-8d77-b2bebba308a3\48e6b7a6-50f5-4782-a5d4-53bb8f07e226" 'ACSettingIndex')
+   if($null -ne $cur -and $null -eq (Get-RV 'HKCU:\Software\AXE' 'UsbSuspendPrev')){ Set-RD 'HKCU:\Software\AXE' 'UsbSuspendPrev' $cur }
+   powercfg -setacvalueindex scheme_current 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0; powercfg -setactive scheme_current};
+ Revert={
+   $p=(Get-RV 'HKCU:\Software\AXE' 'UsbSuspendPrev')
+   if($null -eq $p){
+       Write-AXELog 'pwr_usbsuspend: no hay valor previo guardado, no revierto (escribir un default supuesto seria peor). Ajusta la suspension selectiva USB a mano si lo necesitas.' 'WARN'
+   } else {
+       powercfg -setacvalueindex scheme_current 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 $p; powercfg -setactive scheme_current
+       Del-RV 'HKCU:\Software\AXE' 'UsbSuspendPrev'
+   }}}
+
 # --- SISTEMA (Tier 0/1) ---
 Add-Tweak @{Id='sys_gamedvr';Cat='SISTEMA';Tier=1;Reboot=$false;Name='Game DVR OFF';Desc='Sin grabacion de fondo = mas FPS';Requires=@{};
  Test={(Get-RV 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled') -eq 0};
