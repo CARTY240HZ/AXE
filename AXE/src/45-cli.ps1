@@ -375,6 +375,16 @@ if($SelfTest){
             if(-not (Set-AXESessionOverride -Name 'chrome' -Level 'default').Ok -or (Read-AXESessionOverrides).ContainsKey('chrome')){
                 [void]$fails.Add("S28: 'default' no borro el override")
             }
+            # Diario de prioridades: la red de la salida sucia. Lo que hay que proteger es que NUNCA
+            # toque un pid que ya no es el proceso que se degrado (los pid se reusan). Se ejerce con
+            # el propio proceso, cambiando solo el arranque esperado: debe negarse a restaurar.
+            $me = Get-Process -Id $PID
+            Write-AXESessionJournal @([pscustomobject]@{ Pid=$PID; Name=$me.ProcessName; Prev='High'; StartTicks=1 })
+            if(-not (Test-Path (Get-AXESessionJournalPath))){ [void]$fails.Add('S28: el diario de prioridades no se escribio') }
+            if((Restore-AXESessionDegraded) -ne 0){ [void]$fails.Add('S28: el diario restauro un proceso con otro instante de arranque (pid reusado)') }
+            if(Test-Path (Get-AXESessionJournalPath)){ [void]$fails.Add('S28: el diario no se consumio al restaurar') }
+            Set-Content -Path (Get-AXESessionJournalPath) -Value '{ no es json' -Encoding UTF8
+            if((Restore-AXESessionDegraded) -ne 0){ [void]$fails.Add('S28: un diario ilegible no se descarto') }
         } finally {
             if($script:AXEData -and ($script:AXEData -ne $oldData) -and (Test-Path $script:AXEData)){ Remove-Item $script:AXEData -Recurse -Force -EA SilentlyContinue }
             $script:AXEData = $oldData
@@ -845,6 +855,11 @@ if($RevertGame){
 # (via AXE.bat) para poder tocar procesos del sistema; sin admin degrada a lo que el usuario posee.
 if($Session){
     Write-Host '== AXE - SESION DE JUEGO (congela el fondo) =='
+    # Si la sesion anterior murio sucia (kill/BSOD), el kernel descongelo pero las prioridades
+    # degradadas siguen bajas: eso no es estado del job. El diario en disco las devuelve.
+    $repaired = 0
+    try { $repaired = [int](Restore-AXESessionDegraded) } catch {}
+    if($repaired -gt 0){ Write-Host "  Restauradas $repaired prioridad(es) de una sesion anterior que no cerro limpiamente." }
     $sess = Start-AXESession -GameName $Session
     foreach($line in (Format-AXESession $sess)){ Write-Host $line }
     if(-not $sess.Ok){ exit 1 }

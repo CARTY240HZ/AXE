@@ -312,7 +312,9 @@
   const keyMap = { '1': 'panel', '2': 'telemetria', '3': 'optimizar', '4': 'sesion', '5': 'prueba', '6': 'seguridad', '7': 'ajustes' };
   addEventListener('keydown', (e) => {
     if (sheetOpen()) return;
-    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return; // no robar teclas a los campos
+    // No robar teclas a los campos. SELECT entra en la lista por el selector de nivel de la sesión:
+    // sin él, teclear para elegir una opción («c» de congelar, o los dígitos) cambiaba de vista.
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) return;
     const v = keyMap[e.key]; if (v) showView(v);
   });
 
@@ -615,6 +617,11 @@
   function renderSessApps(apps) {
     const host = $('sessApps'); host.textContent = '';
     if (!apps.length) { host.appendChild(elt('div', 'mini', 'sin procesos que repartir en esta sesión.')); return; }
+    // Una app puede salir en dos filas (el juego o AXE comparten nombre con otro proceso: la fila
+    // dura va a intacto y la ajena a congelar). El nivel se guarda POR NOMBRE, así que cambiar una
+    // mueve las dos: se avisa en la fila en vez de dejar que sorprenda.
+    const seen = {};
+    apps.forEach((a) => { seen[a.name] = (seen[a.name] || 0) + 1; });
     apps.forEach((a) => {
       const meta = S_META[a.level] || { cls: '', label: a.level };
       const row = elt('div', 'sapp ' + meta.cls);
@@ -623,6 +630,11 @@
       if (a.count > 1) nm.appendChild(elt('span', 'sapp-n', '×' + a.count));
       if (a.family) nm.appendChild(elt('span', 'badge', a.family));
       if (a.override) nm.appendChild(elt('span', 'badge reboot', 'tu ajuste'));
+      if (seen[a.name] > 1) {
+        const s = elt('span', 'badge', 'en 2 niveles');
+        s.title = 'Hay procesos con este nombre en otro nivel (uno de ellos es el juego o AXE, que no se tocan). El nivel se guarda por nombre.';
+        nm.appendChild(s);
+      }
       row.appendChild(nm);
       if (a.hard) {
         // Duros: el planificador los deja intactos ganando a la config, así que un selector aquí

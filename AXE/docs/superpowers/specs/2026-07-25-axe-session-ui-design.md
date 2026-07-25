@@ -101,6 +101,41 @@ mientras hay sesión, así que este camino es una red defensiva, no un flujo.
 **Por qué:** dos jobs con dos handles rompen la única cosa que hace segura la recuperación por
 kernel: que cerrar *el* handle descongele *todo*.
 
+### 5-bis. La prioridad degradada necesita su propia red: el kernel no la cubre
+
+El spec de A apoya **toda** la recuperación en el kernel: al cerrarse el handle del job, Windows
+descongela solo. Es cierto para lo CONGELADO y **falso para lo DEGRADADO**: bajar la prioridad no es
+un estado del job, es una propiedad del proceso. Nadie la devuelve si AXE muere — ni siquiera si el
+usuario simplemente **cierra la ventana**, porque `Add_Closed` liberaba timers y no la sesión. El
+navegador se quedaba en `BelowNormal` hasta reiniciarlo: el «dejar la máquina a medias» que el propio
+spec prohíbe. La UI lo agrava, porque pone esa ruta al alcance de todos y no sólo de quien usa CLI.
+
+Dos redes, una por tipo de salida:
+
+- **Salida limpia** (cerrar la ventana): `47-webhost.ps1` llama a `Stop-AXESessionTracked` en
+  `Add_Closed`.
+- **Salida sucia** (kill, BSOD, corte de luz): diario en `AXE/session_degraded.json`, escrito al
+  degradar y consumido en el arranque siguiente por `Restore-AXESessionDegraded`
+  (`49-webmain.ps1` para la ventana, bloque `-Session` para la CLI).
+
+Dos cosas que el diario **tiene** que verificar, y verifica:
+
+1. **Los pid se reusan.** Restaurar por pid a secas sube la prioridad de un tercero que heredó el
+   número. Se guarda pid + nombre + instante de arranque (`Test-AXESessionSameProcess`) y, ante
+   cualquier duda, no se toca. Lo mismo aplica dentro de la sesión: `Stop-AXESession` ahora verifica
+   identidad antes de escribir.
+2. **Puede haber dos AXE abiertos.** El diario lleva **dueño** (pid + nombre + arranque del proceso
+   AXE). Si el dueño sigue vivo y no soy yo, no se restaura *ni se borra*: sigue siendo su red. Sin
+   esto la segunda instancia devolvía prioridades a media partida y, peor, borraba el diario —
+   dejando a la primera sin red justo para el caso que el diario existe para cubrir.
+
+Formato (`AXE/session_degraded.json`):
+
+```json
+{ "owner": { "pid": 111, "name": "powershell", "startTicks": 638000000000000000 },
+  "degraded": [ { "pid": 12345, "name": "chrome", "prev": "Normal", "startTicks": 638000000000000000 } ] }
+```
+
 ### 6. El estado que pinta la UI es una función pura de su argumento
 
 `Get-AXESessionStatus -Session $s` no lee estado global: recibe el objeto de sesión (o `$null`) y
@@ -126,6 +161,10 @@ puro/impuro que ya está validado tres veces en el repo (`35-diag`, `33-fps`, `4
 | `Stop-AXESessionTracked` | no | `Stop-AXESession` + limpia y guarda el motivo de cierre. |
 | `Sync-AXESessionTracked` | no | Si el juego murió → cierra con motivo. Devuelve la sesión viva o `$null`. |
 | `Get-AXESessionStatus` | **sí** | Sesión (o `$null`) + motivo → DTO plano para el frontend. |
+| `Test-AXESessionSameProcess` | no | pid + nombre + arranque → ¿sigue siendo ESE proceso? Ante duda, `$false`. |
+| `Write-AXESessionJournal` | no | Deja el diario de prioridades con su dueño. Best-effort. |
+| `Restore-AXESessionDegraded` | no | Repara prioridades de una sesión que murió sucia. Devuelve cuántas. |
+| `Clear-AXESessionJournal` | no | Borra el diario (cierre en orden). |
 
 `Watch-AXESession` y la ruta CLI **no cambian**: el bloqueante sigue siendo el camino de `-Session`.
 
@@ -207,6 +246,21 @@ estado. Headless, sin tocar el `AXE/` real.
 `S-webui-3` cubre gratis los 5 cmds nuevos: exige biyección lista blanca ↔ literales
 `AXE.call('…')` del JS. Un cmd sin llamada, o una llamada sin cmd, pone el gate en rojo.
 
+### Diario de prioridades — se ejerce con un proceso real, sin admin
+
+Lo demás del módulo se prueba con hechos sintéticos, pero una red que sólo existe para el día que
+algo va mal hay que **verla funcionar**. Estos tests lanzan otro proceso del mismo host que corre la
+suite, lo degradan a `BelowNormal`, simulan que AXE murió sin cerrar, y comprueban el resultado:
+
+- la prioridad **vuelve de verdad** y el diario se consume (no se repite en el arranque siguiente);
+- un pid con **otro nombre** o con **otro instante de arranque** no se toca (pid reusado);
+- un diario cuyo **dueño sigue vivo** no se restaura ni se borra;
+- si el dueño ya murió, sí se repara — el caso que el diario existe para cubrir;
+- un diario ilegible se descarta sin lanzar.
+
+En el SelfTest (S28) la misma propiedad se ejerce sin lanzar procesos: se escribe el diario contra el
+propio pid con el arranque cambiado y se exige que **se niegue** a restaurar.
+
 ### No testeable, y hay que saberlo
 
 Que el freeze funcione de verdad (pide hardware y versión de Windows) y que el anticheat de un
@@ -218,8 +272,11 @@ título concreto no se moleste. Igual que en el spec de A: se documenta, no se f
 2. ON con juego abierto → contadores coherentes; comprobar en el Administrador de tareas que el
    navegador sigue vivo y que lo congelado está suspendido.
 3. Cerrar el juego → la sección pasa a OFF sola con el motivo, en ≤ 2 s.
-4. Matar AXE desde el Administrador de tareas con sesión activa → todo descongela solo.
+4. Matar AXE desde el Administrador de tareas con sesión activa → todo descongela solo, y al abrir
+   AXE otra vez las prioridades degradadas vuelven a su valor previo (diario).
 5. Cambiar el nivel de una app, reabrir AXE → el nivel persiste.
+6. Cerrar la ventana con sesión activa → comprobar en el Administrador de tareas que el navegador
+   recupera prioridad `Normal` sin reiniciarlo.
 
 ---
 

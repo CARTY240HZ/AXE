@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 7.0.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-25 11:00:45Z
+# Build UTC: 2026-07-25 12:41:46Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 43-update.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -3126,6 +3126,96 @@ function Set-AXESessionOverride {
     [pscustomobject]@{ Ok=$true; Reason=$null; Overrides=$map }
 }
 
+# --- Red para la salida SUCIA: prioridades degradadas (auditoria 2026-07-25) -----------------
+# El diseño apoya TODA la recuperacion en el kernel: al cerrarse el handle del job, Windows
+# descongela. Es cierto para lo CONGELADO y FALSO para lo DEGRADADO: bajar la prioridad no es un
+# estado del job, es una propiedad del proceso, y ahi el kernel no ayuda. Si AXE muere -o si
+# simplemente cierras la ventana- nadie la devuelve, y el navegador se queda en BelowNormal hasta
+# que lo reinicies: exactamente el "dejar la maquina a medias" que el spec prohibe.
+#   Dos redes: el cierre limpio llama a Stop (47-webhost), y para el kill/BSOD queda este diario en
+# disco, que se restaura en el siguiente arranque.
+function Get-AXESessionJournalPath {
+    if([string]::IsNullOrWhiteSpace($script:AXEData)){ return $null }
+    Join-Path $script:AXEData 'session_degraded.json'
+}
+
+function Test-AXESessionSameProcess {
+    # Impura (lee el proceso). Los pid SE REUSAN: restaurar una prioridad por pid a secas puede
+    # tocar un proceso ajeno que heredo el numero. Nombre + instante de arranque cierra el hueco.
+    # Ante cualquier duda devuelve $false: no tocar es siempre mejor que tocar lo que no es.
+    param([int]$ProcessId,[string]$Name,[long]$StartTicks)
+    if($ProcessId -le 0){ return $false }
+    $p = Get-Process -Id $ProcessId -EA SilentlyContinue
+    if(-not $p){ return $false }
+    if((Get-AXESessionAppName $p.ProcessName) -ne (Get-AXESessionAppName $Name)){ return $false }
+    if($StartTicks -gt 0){
+        $t = 0
+        try { $t = [long]$p.StartTime.Ticks } catch { return $false }
+        if($t -ne $StartTicks){ return $false }
+    }
+    $true
+}
+
+function Clear-AXESessionJournal {
+    $path = Get-AXESessionJournalPath
+    if($path -and (Test-Path $path)){ Remove-Item $path -Force -EA SilentlyContinue }
+}
+
+function Write-AXESessionJournal {
+    # Deja constancia de lo degradado ANTES de que pueda hacer falta. Best-effort: si no se puede
+    # escribir, la sesion sigue (el diario es una red, no un requisito).
+    param($Degraded)
+    $path = Get-AXESessionJournalPath
+    if(-not $path){ return }
+    try {
+        $rows = @(@($Degraded) | Where-Object { $_ } | ForEach-Object {
+            [pscustomobject]@{ pid=[int]$_.Pid; name=[string]$_.Name; prev=[string]$_.Prev; startTicks=[long]$_.StartTicks }
+        })
+        if($rows.Count -eq 0){ Clear-AXESessionJournal; return }
+        # El diario lleva DUEÑO: si hay dos AXE abiertos, el que arranca segundo no puede reparar el
+        # de una sesion que sigue viva. Sin esto le devolveria la prioridad a media partida y, peor,
+        # borraria el diario: si la primera instancia muriera sucia ya no habria red que la cubriese.
+        $me = $null; try { $me = Get-Process -Id $PID -EA Stop } catch {}
+        $ownerTicks = 0; if($me){ try { $ownerTicks = [long]$me.StartTime.Ticks } catch {} }
+        $doc = [pscustomobject]@{
+            owner    = [pscustomobject]@{ pid=[int]$PID; name=$(if($me){ [string]$me.ProcessName } else { '' }); startTicks=$ownerTicks }
+            degraded = $rows
+        }
+        Set-Content -Path $path -Value (ConvertTo-Json -InputObject $doc -Depth 4) -Encoding UTF8 -EA Stop
+    } catch { Write-AXESessionLog ("Sesion: no pude escribir el diario de prioridades: {0}" -f $_.Exception.Message) 'WARN' }
+}
+
+function Restore-AXESessionDegraded {
+    # Se llama al arrancar. Devuelve cuantas prioridades se restauraron (0 si no habia diario).
+    # Nunca lanza: un diario ilegible se descarta y se sigue.
+    $path = Get-AXESessionJournalPath
+    if(-not $path -or -not (Test-Path $path)){ return 0 }
+    $doc = $null
+    try { $doc = (Get-Content $path -Raw -Encoding UTF8 -EA Stop) | ConvertFrom-Json -EA Stop } catch {
+        Write-AXESessionLog 'Sesion: diario de prioridades ilegible; se descarta.' 'WARN'
+        Clear-AXESessionJournal
+        return 0
+    }
+    # Dueño vivo y distinto de mi => otra instancia de AXE tiene la sesion abierta. Ni restaurar ni
+    # borrar: ese diario sigue siendo SU red.
+    $owner = $doc.owner
+    if($owner -and ([int]$owner.pid -ne $PID) -and
+       (Test-AXESessionSameProcess -ProcessId ([int]$owner.pid) -Name ([string]$owner.name) -StartTicks ([long]$owner.startTicks))){
+        Write-AXESessionLog 'Sesion: el diario de prioridades es de otra instancia de AXE que sigue viva; no se toca.' 'WARN'
+        return 0
+    }
+    $rows = @($doc.degraded)
+    $n = 0
+    foreach($r in $rows){
+        if(-not $r){ continue }
+        if(-not (Test-AXESessionSameProcess -ProcessId ([int]$r.pid) -Name ([string]$r.name) -StartTicks ([long]$r.startTicks))){ continue }
+        try { (Get-Process -Id ([int]$r.pid) -EA Stop).PriorityClass = [string]$r.prev; $n++ } catch {}
+    }
+    Clear-AXESessionJournal
+    if($n -gt 0){ Write-AXESessionLog ("Sesion: restauradas {0} prioridad(es) de una sesion anterior que no cerro limpiamente." -f $n) }
+    $n
+}
+
 function Start-AXESession {
     # Impura. Sonda freeze -> crea job -> asigna congelados -> congela -> degrada. Devuelve el
     # objeto de sesion. PRINCIPIO: cualquier fallo ANTES de congelar -> abortar sin tocar nada.
@@ -3170,10 +3260,17 @@ function Start-AXESession {
         try {
             $pr = Get-Process -Id ([int]$p.Pid) -EA Stop
             $prev = $pr.PriorityClass
+            # Nombre + arranque junto al pid: es lo que permite comprobar mas tarde que el pid sigue
+            # siendo ESTE proceso y no otro que heredo el numero.
+            $startTicks = 0
+            try { $startTicks = [long]$pr.StartTime.Ticks } catch {}
             $pr.PriorityClass = 'BelowNormal'
-            [void]$degraded.Add([pscustomobject]@{ Pid=[int]$p.Pid; Prev=[string]$prev })
+            [void]$degraded.Add([pscustomobject]@{ Pid=[int]$p.Pid; Name=[string]$pr.ProcessName; Prev=[string]$prev; StartTicks=$startTicks })
         } catch {}
     }
+    # Diario en disco ANTES de devolver: si AXE muere a partir de aqui, el kernel descongela pero la
+    # prioridad la devuelve el proximo arranque leyendo esto.
+    Write-AXESessionJournal $degraded
 
     [pscustomobject]@{
         Ok=$true; Handle=$hJob; Game=$GameName; GamePid=[int]$gproc.Id; SessionId=$sid
@@ -3186,8 +3283,12 @@ function Stop-AXESession {
     param($Session)
     if(-not $Session -or -not $Session.Ok){ return }
     foreach($d in @($Session.Degraded)){
+        # Verificar identidad antes de escribir: si el proceso murio y otro heredo su pid, subirle la
+        # prioridad "de vuelta" seria tocar a un tercero por error.
+        if(-not (Test-AXESessionSameProcess -ProcessId ([int]$d.Pid) -Name ([string]$d.Name) -StartTicks ([long]$d.StartTicks))){ continue }
         try { (Get-Process -Id ([int]$d.Pid) -EA Stop).PriorityClass = $d.Prev } catch {}
     }
+    Clear-AXESessionJournal   # cerrado en orden: el diario ya no hace falta
     try { [void][AXE.Native]::JobClose($Session.Handle) } catch {}
 }
 
@@ -4577,6 +4678,16 @@ if($SelfTest){
             if(-not (Set-AXESessionOverride -Name 'chrome' -Level 'default').Ok -or (Read-AXESessionOverrides).ContainsKey('chrome')){
                 [void]$fails.Add("S28: 'default' no borro el override")
             }
+            # Diario de prioridades: la red de la salida sucia. Lo que hay que proteger es que NUNCA
+            # toque un pid que ya no es el proceso que se degrado (los pid se reusan). Se ejerce con
+            # el propio proceso, cambiando solo el arranque esperado: debe negarse a restaurar.
+            $me = Get-Process -Id $PID
+            Write-AXESessionJournal @([pscustomobject]@{ Pid=$PID; Name=$me.ProcessName; Prev='High'; StartTicks=1 })
+            if(-not (Test-Path (Get-AXESessionJournalPath))){ [void]$fails.Add('S28: el diario de prioridades no se escribio') }
+            if((Restore-AXESessionDegraded) -ne 0){ [void]$fails.Add('S28: el diario restauro un proceso con otro instante de arranque (pid reusado)') }
+            if(Test-Path (Get-AXESessionJournalPath)){ [void]$fails.Add('S28: el diario no se consumio al restaurar') }
+            Set-Content -Path (Get-AXESessionJournalPath) -Value '{ no es json' -Encoding UTF8
+            if((Restore-AXESessionDegraded) -ne 0){ [void]$fails.Add('S28: un diario ilegible no se descarto') }
         } finally {
             if($script:AXEData -and ($script:AXEData -ne $oldData) -and (Test-Path $script:AXEData)){ Remove-Item $script:AXEData -Recurse -Force -EA SilentlyContinue }
             $script:AXEData = $oldData
@@ -5047,6 +5158,11 @@ if($RevertGame){
 # (via AXE.bat) para poder tocar procesos del sistema; sin admin degrada a lo que el usuario posee.
 if($Session){
     Write-Host '== AXE - SESION DE JUEGO (congela el fondo) =='
+    # Si la sesion anterior murio sucia (kill/BSOD), el kernel descongelo pero las prioridades
+    # degradadas siguen bajas: eso no es estado del job. El diario en disco las devuelve.
+    $repaired = 0
+    try { $repaired = [int](Restore-AXESessionDegraded) } catch {}
+    if($repaired -gt 0){ Write-Host "  Restauradas $repaired prioridad(es) de una sesion anterior que no cerro limpiamente." }
     $sess = Start-AXESession -GameName $Session
     foreach($line in (Format-AXESession $sess)){ Write-Host $line }
     if(-not $sess.Ok){ exit 1 }
@@ -5179,6 +5295,13 @@ function Show-AXEWebHost {
         if($script:TelemetryTimer){ try { $script:TelemetryTimer.Stop() } catch {} }
         if($script:TelemPS){ try { $script:TelemPS.Stop() } catch {}; try { $script:TelemPS.Dispose() } catch {} }
         if($script:TelemRS){ try { $script:TelemRS.Close() } catch {} }
+        # Sesion de juego activa: cerrarla AQUI. Lo CONGELADO lo descongela el kernel al morir el
+        # proceso -esa es la garantia del diseño-, pero la prioridad de lo DEGRADADO no es estado del
+        # job y el kernel no la devuelve: sin esto, cerrar la ventana dejaba el navegador en
+        # BelowNormal hasta reiniciarlo. La salida sucia (kill/BSOD) la cubre el diario en disco.
+        if(Get-Command Get-AXESessionCurrent -EA SilentlyContinue){
+            try { if(Get-AXESessionCurrent){ [void](Stop-AXESessionTracked -Reason 'AXE se cerro.') } } catch {}
+        }
     })
 
     if($env:AXE_WEBUI_TEST -eq '1'){ Write-Host 'WEBHOST OK'; return }
@@ -5648,6 +5771,11 @@ function Register-AXEBridge($core){
 # (no abre ventana). El harness del build entra con AXE_WEBUI_TEST=1: Show-AXEWebHost construye la
 # carcasa, imprime 'WEBHOST OK' y vuelve sin ShowDialog bloqueante. El arranque real (sin ese flag)
 # bloquea con la ventana hasta que el usuario la cierra. El 'exit 0' cierra el proceso al volver.
+# Antes de abrir la ventana: si una sesion anterior no cerro limpiamente (kill, BSOD, corte de luz),
+# el kernel ya descongelo lo congelado, pero las prioridades DEGRADADAS siguen bajas porque eso no es
+# estado del job. El diario en disco (AXE/session_degraded.json) las devuelve, comprobando
+# pid+nombre+arranque para no tocar un proceso que solo heredo el numero.
+try { [void](Restore-AXESessionDegraded) } catch {}
 Show-AXEWebHost
 exit 0
 

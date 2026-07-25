@@ -11,5 +11,10 @@
 # (no abre ventana). El harness del build entra con AXE_WEBUI_TEST=1: Show-AXEWebHost construye la
 # carcasa, imprime 'WEBHOST OK' y vuelve sin ShowDialog bloqueante. El arranque real (sin ese flag)
 # bloquea con la ventana hasta que el usuario la cierra. El 'exit 0' cierra el proceso al volver.
+# Antes de abrir la ventana: si una sesion anterior no cerro limpiamente (kill, BSOD, corte de luz),
+# el kernel ya descongelo lo congelado, pero las prioridades DEGRADADAS siguen bajas porque eso no es
+# estado del job. El diario en disco (AXE/session_degraded.json) las devuelve, comprobando
+# pid+nombre+arranque para no tocar un proceso que solo heredo el numero.
+try { [void](Restore-AXESessionDegraded) } catch {}
 Show-AXEWebHost
 exit 0

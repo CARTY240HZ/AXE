@@ -111,6 +111,13 @@ function Show-AXEWebHost {
         if($script:TelemetryTimer){ try { $script:TelemetryTimer.Stop() } catch {} }
         if($script:TelemPS){ try { $script:TelemPS.Stop() } catch {}; try { $script:TelemPS.Dispose() } catch {} }
         if($script:TelemRS){ try { $script:TelemRS.Close() } catch {} }
+        # Sesion de juego activa: cerrarla AQUI. Lo CONGELADO lo descongela el kernel al morir el
+        # proceso -esa es la garantia del diseño-, pero la prioridad de lo DEGRADADO no es estado del
+        # job y el kernel no la devuelve: sin esto, cerrar la ventana dejaba el navegador en
+        # BelowNormal hasta reiniciarlo. La salida sucia (kill/BSOD) la cubre el diario en disco.
+        if(Get-Command Get-AXESessionCurrent -EA SilentlyContinue){
+            try { if(Get-AXESessionCurrent){ [void](Stop-AXESessionTracked -Reason 'AXE se cerro.') } } catch {}
+        }
     })
 
     if($env:AXE_WEBUI_TEST -eq '1'){ Write-Host 'WEBHOST OK'; return }
