@@ -78,9 +78,22 @@ if($Lint){
         Import-Module PSScriptAnalyzer -Force
         $targets = @('src','tests','scripts','build.ps1') | ForEach-Object { Join-Path $repo $_ } | Where-Object { Test-Path $_ }
         $settings = Join-Path $repo 'PSScriptAnalyzerSettings.psd1'
-        $paParams = @{ Path = $targets; Recurse = $true }
-        if(Test-Path $settings){ $paParams.Settings = $settings }
-        $diag = Invoke-ScriptAnalyzer @paParams
+        # UNA ruta por llamada. El -Path de Invoke-ScriptAnalyzer es [string], no [string[]]:
+        # pasarle el array entero lanza "Cannot convert 'System.Object[]' to the type
+        # 'System.String'", y con $ErrorActionPreference='Stop' eso mata el runner con exit 1
+        # DESPUES de haber impreso "Failed=0". Sintoma real (run de release 30140535861): el job
+        # abortaba con 628 tests en verde y un mensaje que no mencionaba el lint por ningun lado.
+        #   ci.yml no lo veia porque llama al runner SIN -Lint y corre el analizador aparte con
+        # una sola ruta; solo build.ps1 -CI (y por tanto release.yml) pasaba por aqui.
+        #   -Recurse solo en directorios: sobre un fichero suelto no aporta nada y algunas
+        # versiones del modulo se quejan.
+        $diag = @()
+        foreach($t in $targets){
+            $paParams = @{ Path = $t }
+            if(Test-Path $t -PathType Container){ $paParams.Recurse = $true }
+            if(Test-Path $settings){ $paParams.Settings = $settings }
+            $diag += @(Invoke-ScriptAnalyzer @paParams)
+        }
         $errs  = @($diag | Where-Object Severity -eq 'Error')
         $warns = @($diag | Where-Object Severity -eq 'Warning')
         Write-Host ('LINT => Errors={0}  Warnings={1}' -f $errs.Count, $warns.Count) -ForegroundColor $(if($errs.Count){'Red'}else{'Green'})
