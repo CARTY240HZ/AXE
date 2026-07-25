@@ -6,6 +6,40 @@ y [Versionado Semántico](https://semver.org/lang/es/).
 ## [Sin publicar]
 
 ### Añadido
+- **Sesión de juego en la ventana** (spec `2026-07-25`, `webui/` + 5 cmds `session.*` del puente):
+  el daemon del subsistema A existía y estaba testeado, pero **sólo se alcanzaba por CLI**; en la
+  WebUI la entrada del rail decía «pronto». Ahora es una vista real (tecla `4`) que **previsualiza
+  el reparto antes de tocar nada**: cuántos procesos y cuáles caen en CONGELAR / DEGRADAR / INTACTO,
+  con la sonda de `JobObjectFreezeInformation` ya ejecutada, y ON deshabilitado si el kernel no lo
+  soporta o el juego no está abierto. `session.preview` no crea job, no asigna y no congela.
+  *Un ON a ciegas sobre ~15 procesos pide una confianza que no se ha ganado; las suites rivales no
+  enseñan qué tocan.* La salida automática al cerrar el juego la mueve el sondeo de `session.status`
+  (2 s) contra `Sync-AXESessionTracked` — el ciclo vive en el motor, no en el puente, y no hay
+  `Watch` bloqueante en el hilo de la ventana. Coste escrito en la propia pantalla: la ventana tiene
+  que quedarse abierta, porque ahí vive el handle del job.
+- **El reparto es configurable y persiste** (`AXE/session_levels.json`): `Read-AXESessionOverrides`
+  era un stub que devolvía `@{}` («hasta que exista la UI que los escriba»), así que «configurable
+  por app» era una promesa a medias. Ahora hay par leer/escribir tolerante a corrupción y selector
+  por app en la UI. Un override sobre shell o anticheat **se rechaza con motivo** en vez de
+  guardarse y ser ignorado en silencio por el planificador: un ajuste que parece guardarse y no hace
+  nada es peor que un rechazo.
+
+### Corregido
+- **Los servicios POR-USUARIO ya no son congelables** (`src/40-session.ps1`). El spec del daemon
+  asumía que «Session 0 queda fuera por definición» cubría a los servicios. No los cubre: Windows
+  aloja `CDPUserSvc`, `WpnUserService`, `OneSyncSvc`, `UnistoreSvc` y compañía en instancias de
+  `svchost` que corren **en la sesión interactiva**, y el planificador las clasificaba como
+  desconocidas, es decir, CONGELABLES. Congelar un host de servicios por-usuario cuelga a quien le
+  haga un RPC síncrono (shell, notificaciones, portapapeles) hasta el timeout. `svchost`, `conhost`
+  y `audiodg` pasan a la familia `shell`. Lo cazó el nuevo check del puente, que corre
+  `session.preview` sobre los procesos **reales** de la máquina: los 15 tests sintéticos no podían
+  verlo porque su fixture ponía `svchost` en Session 0 — precisamente lo que la suposición daba por
+  cierto.
+- **`Update.Tests.ps1` probaba lo contrario de lo que decía.** El caso «sin poder consultar la API
+  dice error» pasaba `-Release $null`, que es indistinguible de omitir el parámetro, así que caía en
+  `Get-AXELatestRelease` y **llamaba a la API de GitHub de verdad**. Verde sólo mientras no hubiera
+  red ni releases publicados; con release empezó a devolver `current`. Ahora usa `Mock` y es
+  determinista offline.
 - **Cadena de confianza + updater** (subproyectos A+B, `src/43-update.ps1`, CLI `-Update` /
   `-Update -Check`): AXE pasa de «script que corres» a **producto instalable y actualizable con
   procedencia verificable**. Tres piezas, cada una garantiza algo distinto — `SHA256SUMS`

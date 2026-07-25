@@ -81,6 +81,23 @@ Describe 'Get-AXESessionPlan - frontera y protegidos' -Tag 'unit' {
     It 'un proceso desconocido de la sesion del usuario sale CONGELADO' {
         NamesOf $script:plan.Congelado | Should -Contain 'randomthing'
     }
+
+    It 'svchost DENTRO de la sesion interactiva (servicios por-usuario) sale INTACTO' {
+        # Windows aloja CDPUserSvc/WpnUserService/OneSyncSvc... en svchost de la sesion del usuario,
+        # no en la 0: la frontera de sesion NO los protege. Congelar uno cuelga a quien le haga un
+        # RPC sincrono (shell, notificaciones, portapapeles) hasta el timeout.
+        $facts = @( (New-Proc 6000 'thegame' 1), (New-Proc 6001 'svchost' 1) )
+        $plan  = Get-AXESessionPlan -Processes $facts -GamePid 6000 -GameName 'thegame' -SelfPid 99 -SessionId 1
+        NamesOf $plan.Congelado | Should -Not -Contain 'svchost'
+        NamesOf $plan.Degradado | Should -Not -Contain 'svchost'
+        NamesOf $plan.Intacto   | Should -Contain 'svchost'
+    }
+
+    It 'ni con override el usuario puede congelar un host de servicios por-usuario' {
+        $facts = @( (New-Proc 6100 'thegame' 1), (New-Proc 6101 'svchost' 1) )
+        $plan  = Get-AXESessionPlan -Processes $facts -GamePid 6100 -GameName 'thegame' -SelfPid 99 -SessionId 1 -Config @{ svchost = 'congelado' }
+        NamesOf $plan.Congelado | Should -Not -Contain 'svchost'
+    }
 }
 
 Describe 'Get-AXESessionPlan - config y casos limite' -Tag 'unit' {
@@ -119,6 +136,142 @@ Describe 'Get-AXESessionPlan - config y casos limite' -Tag 'unit' {
         $plan = Get-AXESessionPlan -Processes $facts -GamePid 0 -GameName 'x' -SelfPid 99 -SessionId 1
         NamesOf $plan.Congelado | Should -Contain 'randomA'
         NamesOf $plan.Congelado | Should -Not -Contain 'randomB'
+    }
+}
+
+# --- Persistencia del reparto (spec 2026-07-25). $script:AXEData apunta a un temporal: mismo
+# patron que Fps.Tests/GameGpu.Tests, ningun test toca el AXE/ real de nadie.
+Describe 'Overrides del reparto - persistencia' -Tag 'unit' {
+
+    BeforeEach {
+        $script:AXEData = Join-Path ([System.IO.Path]::GetTempPath()) ('axe-test-sess-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:AXEData -Force | Out-Null
+    }
+    AfterEach {
+        if($script:AXEData -and (Test-Path $script:AXEData)){ Remove-Item $script:AXEData -Recurse -Force -EA SilentlyContinue }
+    }
+
+    It 'sin fichero devuelve un mapa vacio (no null, no lanza)' {
+        $o = Read-AXESessionOverrides
+        $o       | Should -BeOfType ([hashtable])
+        $o.Count | Should -Be 0
+    }
+
+    It 'un JSON corrupto se ignora y devuelve vacio en vez de lanzar' {
+        Set-Content -Path (Get-AXESessionLevelsPath) -Value '{ esto no es json' -Encoding UTF8
+        { Read-AXESessionOverrides } | Should -Not -Throw
+        (Read-AXESessionOverrides).Count | Should -Be 0
+    }
+
+    It 'round-trip: lo que escribe Set lo lee Read' {
+        (Set-AXESessionOverride -Name 'chrome' -Level 'congelado').Ok | Should -BeTrue
+        (Read-AXESessionOverrides)['chrome'] | Should -Be 'congelado'
+    }
+
+    It 'normaliza el nombre: Chrome.exe y chrome son la misma app' {
+        [void](Set-AXESessionOverride -Name 'Chrome.exe' -Level 'intacto')
+        (Read-AXESessionOverrides)['chrome'] | Should -Be 'intacto'
+    }
+
+    It 'un nivel inventado se rechaza y NO se escribe' {
+        (Set-AXESessionOverride -Name 'chrome' -Level 'turbo').Ok | Should -BeFalse
+        (Read-AXESessionOverrides).ContainsKey('chrome') | Should -BeFalse
+    }
+
+    It "'default' borra el override en vez de guardar un nivel" {
+        [void](Set-AXESessionOverride -Name 'spotify' -Level 'congelado')
+        (Set-AXESessionOverride -Name 'spotify' -Level 'default').Ok | Should -BeTrue
+        (Read-AXESessionOverrides).ContainsKey('spotify') | Should -BeFalse
+    }
+
+    It 'un proceso duro se rechaza con motivo y no se escribe (nada de ajustes que no hacen nada)' {
+        foreach($hard in 'explorer','EasyAntiCheat'){
+            $r = Set-AXESessionOverride -Name $hard -Level 'congelado'
+            $r.Ok     | Should -BeFalse
+            $r.Reason | Should -Not -BeNullOrEmpty
+            (Read-AXESessionOverrides).ContainsKey($hard.ToLowerInvariant()) | Should -BeFalse
+        }
+    }
+
+    It 'una entrada con nivel invalido en el fichero se descarta y las validas sobreviven' {
+        Set-Content -Path (Get-AXESessionLevelsPath) -Value '{"chrome":"congelado","spotify":"turbo"}' -Encoding UTF8
+        $o = Read-AXESessionOverrides
+        $o['chrome']              | Should -Be 'congelado'
+        $o.ContainsKey('spotify') | Should -BeFalse
+    }
+
+    It 'el override del fichero llega al plan (las dos piezas juntas)' {
+        [void](Set-AXESessionOverride -Name 'chrome' -Level 'congelado')
+        $facts = @( (New-Proc 5000 'thegame' 1), (New-Proc 5001 'chrome' 1) )
+        $plan  = Get-AXESessionPlan -Processes $facts -GamePid 5000 -GameName 'thegame' -SelfPid 99 -SessionId 1 -Config (Read-AXESessionOverrides)
+        NamesOf $plan.Congelado | Should -Contain 'chrome'
+    }
+
+    It 'sin carpeta de datos resoluble: Read vacio y Set se niega con motivo' {
+        $old = $script:AXEData
+        $script:AXEData = $null
+        try {
+            Get-AXESessionLevelsPath         | Should -BeNullOrEmpty
+            (Read-AXESessionOverrides).Count | Should -Be 0
+            (Set-AXESessionOverride -Name 'chrome' -Level 'congelado').Ok | Should -BeFalse
+        } finally { $script:AXEData = $old }
+    }
+}
+
+Describe 'Get-AXESessionFamily / Test-AXESessionHardApp - puras' -Tag 'unit' {
+
+    It 'clasifica por familia, con o sin extension' {
+        Get-AXESessionFamily 'brave'      | Should -Be 'navegador'
+        Get-AXESessionFamily 'Chrome.exe' | Should -Be 'navegador'
+        Get-AXESessionFamily 'discord'    | Should -Be 'voz'
+        Get-AXESessionFamily 'spotify'    | Should -Be 'musica'
+    }
+
+    It 'un proceso que no esta en ninguna familia devuelve null (no adivina)' {
+        Get-AXESessionFamily 'randomthing' | Should -BeNullOrEmpty
+    }
+
+    It 'shell y anticheat son duros; una app normal no' {
+        Test-AXESessionHardApp 'explorer'      | Should -BeTrue
+        Test-AXESessionHardApp 'EasyAntiCheat' | Should -BeTrue
+        Test-AXESessionHardApp 'chrome'        | Should -BeFalse
+    }
+}
+
+Describe 'Get-AXESessionStatus - DTO puro para la ventana' -Tag 'unit' {
+
+    It 'sin sesion: active=false y no lanza' {
+        (Get-AXESessionStatus -Session $null).active | Should -BeFalse
+    }
+
+    It 'una sesion fallida no se pinta como activa y conserva su motivo' {
+        $st = Get-AXESessionStatus -Session ([pscustomobject]@{ Ok = $false; Reason = 'el juego no esta corriendo.' })
+        $st.active | Should -BeFalse
+        $st.reason | Should -Match 'no esta corriendo'
+    }
+
+    It 'una sesion viva expone juego, contadores y tiempo activo' {
+        $sess = [pscustomobject]@{
+            Ok = $true; Handle = [IntPtr]::Zero; Game = 'thegame'; GamePid = 1000; SessionId = 1
+            Plan = [pscustomobject]@{ Intacto = @(1, 2, 3); Degradado = @(1); Congelado = @(1, 2) }
+            Assigned = 2; Failed = 1; Degraded = @([pscustomobject]@{ Pid = 1; Prev = 'Normal' })
+            Started = (Get-Date).AddSeconds(-30)
+        }
+        $st = Get-AXESessionStatus -Session $sess
+        $st.active   | Should -BeTrue
+        $st.game     | Should -Be 'thegame'
+        $st.frozen   | Should -Be 2
+        $st.failed   | Should -Be 1
+        $st.degraded | Should -Be 1
+        $st.intact   | Should -Be 3
+        $st.elapsedS | Should -BeGreaterOrEqual 29
+        @($st.lines).Count | Should -BeGreaterThan 0
+    }
+
+    It 'el motivo de cierre viaja aunque ya no haya sesion (la UI dice POR QUE se apago)' {
+        $st = Get-AXESessionStatus -Session $null -EndedReason 'el juego se cerro.'
+        $st.active      | Should -BeFalse
+        $st.endedReason | Should -Match 'se cerro'
     }
 }
 
