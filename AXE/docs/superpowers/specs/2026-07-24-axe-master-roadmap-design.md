@@ -25,9 +25,9 @@ derrota.
 
 | Sub | Qué cierra | Depende | Spec | Estado |
 |---|---|---|---|---|
-| **C** | Prueba medible (benchmark) | — | `2026-07-24-axe-benchmark-design.md` | ✅ spec |
-| **A** | Firma + cadena de confianza | — | `2026-07-24-axe-signing-release-design.md` | ✅ spec |
-| **B** | Release + distribución + updater | A | `2026-07-24-axe-signing-release-design.md` | ✅ spec |
+| **C** | Prueba medible (benchmark) | — | `2026-07-24-axe-benchmark-design.md` | ✅ **implementado** |
+| **A** | Firma + cadena de confianza | — | `2026-07-24-axe-signing-release-design.md` | ✅ **implementado** (falta comprar el cert) |
+| **B** | Release + distribución + updater | A | `2026-07-24-axe-signing-release-design.md` | ✅ **implementado** (falta abrir la PR de winget) |
 | **D** | Matriz validación + profundidad test | — | §2 (inline) | ✅ spec |
 | **E** | Observabilidad + auto-reparación | — | §3 (inline) | ✅ spec |
 | **F** | Docs + governance | — | §4 (inline) | ✅ spec |

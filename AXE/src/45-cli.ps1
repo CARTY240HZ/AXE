@@ -430,6 +430,112 @@ if($SelfTest){
         } finally { $script:AXEBenchDir = $realBench }
     } catch { [void]$fails.Add("S29: benchmark lanzo: $($_.Exception.Message)") }
 
+    # S30: cadena de confianza + updater (region 8f, spec 2026-07-24). Misma leccion que
+    # S25/S29: no se comprueba que las funciones EXISTAN, se EJERCEN las decisiones. Aqui lo
+    # que hay que proteger es una sola propiedad, y es de seguridad: EL UPDATER NUNCA REEMPLAZA
+    # NADA QUE NO HAYA VERIFICADO. Si alguien "simplifica" una de estas negativas, esto se pone
+    # rojo antes de que salga del repo. Todo headless y SIN RED: los caminos de rechazo que se
+    # ejercen ocurren antes de cualquier descarga, y el resto va con fixtures locales.
+    $checks++
+    try {
+        # (a) Comparacion de versiones, incluido el orden de prerelease de SemVer §11.
+        $vc = @(
+            @{ A='7.0.0'; B='7.0.1'; W=-1 }, @{ A='7.0.1'; B='7.0.0'; W=1 }, @{ A='7.0.0'; B='7.0.0'; W=0 }
+            @{ A='7';     B='7.0.0'; W=0 }              # '7' se normaliza a '7.0.0'
+            @{ A='v7.1.0';B='7.1.0'; W=0 }              # la 'v' del tag no cuenta
+            @{ A='7.1.0-beta'; B='7.1.0'; W=-1 }        # prerelease < estable
+            @{ A='7.10.0'; B='7.9.0'; W=1 }             # 10 > 9, no comparacion de cadenas
+            @{ A='7.0.0+abc'; B='7.0.0'; W=0 }          # los metadatos de build no cuentan
+        )
+        foreach($t in $vc){
+            $got = Compare-AXEVersion $t.A $t.B
+            if($got -ne $t.W){ [void]$fails.Add("S30: Compare-AXEVersion '$($t.A)' vs '$($t.B)' dio $got, esperado $($t.W)") }
+        }
+        if($null -ne (Compare-AXEVersion '7.x.0' '7.0.0')){ [void]$fails.Add('S30: una version ilegible no devolvio null (se confundiria con "al dia")') }
+
+        # (b) Checksums: round-trip generar -> verificar, y que una alteracion de UN byte lo cace.
+        $ctmp = Join-Path $script:AXEData ('updtest_{0}' -f [guid]::NewGuid())
+        try {
+            New-Item -ItemType Directory -Path $ctmp -Force | Out-Null
+            Set-Content (Join-Path $ctmp 'a.txt') -Value 'contenido a' -Encoding UTF8 -NoNewline
+            Set-Content (Join-Path $ctmp 'b.txt') -Value 'contenido b' -Encoding UTF8 -NoNewline
+            $sumFile = New-AXEChecksums -Dir $ctmp
+            $bad = @(Test-AXEChecksums -Dir $ctmp)
+            if($bad.Count -ne 0){ [void]$fails.Add("S30: SHA256SUMS recien generado no se verifica a si mismo ($($bad -join '; '))") }
+            # Determinismo: regenerar sobre lo mismo da BYTES identicos (lo que permite el guard anti-deriva).
+            $first = Get-Content $sumFile -Raw -Encoding UTF8
+            [void](New-AXEChecksums -Dir $ctmp)
+            if((Get-Content $sumFile -Raw -Encoding UTF8) -ne $first){ [void]$fails.Add('S30: New-AXEChecksums no es determinista (dos pasadas, dos ficheros)') }
+            # Un byte distinto => el verificador tiene que cazarlo. Este es el check que importa.
+            Set-Content (Join-Path $ctmp 'a.txt') -Value 'contenido A' -Encoding UTF8 -NoNewline
+            if(@(Test-AXEChecksums -Dir $ctmp).Count -eq 0){ [void]$fails.Add('S30: un fichero MODIFICADO paso la verificacion de checksum') }
+            # Parseo puntual + rechazo de lo que no esta listado.
+            $h = Get-AXEChecksumFor $first 'b.txt'
+            if($h -notmatch '^[0-9a-f]{64}$'){ [void]$fails.Add("S30: Get-AXEChecksumFor no devolvio un sha256 valido (dio '$h')") }
+            if($null -ne (Get-AXEChecksumFor $first 'no-listado.txt')){ [void]$fails.Add('S30: un nombre NO listado en SHA256SUMS devolvio hash') }
+        } finally { Remove-Item $ctmp -Recurse -Force -EA SilentlyContinue }
+
+        # (c) Firma: la NEGATIVA es el lado del que depende la seguridad del updater, y es el
+        # unico que se puede comprobar sin exigir un cert en el entorno (CI no lo tiene). Se usa
+        # un .ps1 recien escrito en temp: sin firma POR CONSTRUCCION, aqui y en la maquina de
+        # quien sea. Comprobarlo contra $PSCommandPath daria un resultado distinto segun si el
+        # dist local esta firmado o no, o sea un check que no comprueba nada estable.
+        $sigTmp = Join-Path ([IO.Path]::GetTempPath()) ('axe_sig_{0}.ps1' -f [guid]::NewGuid())
+        try {
+            Set-Content -LiteralPath $sigTmp -Value '# sin firma' -Encoding UTF8
+            if(Test-AXESignature $sigTmp){ [void]$fails.Add('S30: Test-AXESignature dio true sobre un fichero SIN firmar') }
+            $si = Get-AXESignatureInfo $sigTmp
+            if($si.Valid){ [void]$fails.Add('S30: Get-AXESignatureInfo marco Valid un fichero sin firmar') }
+        } finally { Remove-Item -LiteralPath $sigTmp -Force -EA SilentlyContinue }
+        if(Test-AXESignature 'C:\no\existe\jamas.ps1'){ [void]$fails.Add('S30: Test-AXESignature dio true sobre un fichero inexistente') }
+        if(Test-AXESignature ''){ [void]$fails.Add('S30: Test-AXESignature dio true sobre una ruta vacia') }
+        if((Get-AXESignatureInfo 'C:\no\existe\jamas.ps1').Status -ne 'NotFound'){ [void]$fails.Add('S30: Get-AXESignatureInfo no reporto NotFound sobre una ruta inexistente') }
+
+        # (d) Origen de la descarga: solo https, solo hosts de GitHub, solo este owner/repo.
+        $okUrl  = "https://github.com/$($script:AXEUpdateOwner)/$($script:AXEUpdateRepo)/releases/download/v9.9.9/AXE.ps1"
+        if(-not (Test-AXEAssetUrl $okUrl)){ [void]$fails.Add('S30: la URL legitima del repo oficial se rechazo') }
+        foreach($mal in @(
+            "http://github.com/$($script:AXEUpdateOwner)/$($script:AXEUpdateRepo)/releases/download/v1/AXE.ps1"  # sin TLS
+            'https://evil.example.com/AXE.ps1'                                                                   # otro dominio
+            "https://github.com/otro/repo/releases/download/v1/AXE.ps1"                                          # otro repo
+            'https://github.com.evil.example/AXE.ps1'                                                            # host que solo lo parece
+            'no-soy-una-url'; ''
+        )){
+            if(Test-AXEAssetUrl $mal){ [void]$fails.Add("S30: se acepto una URL de descarga que NO es del repo oficial: '$mal'") }
+        }
+
+        # (e) Decisiones del updater con un release INYECTADO (sin red). Se ejercen los caminos
+        # de rechazo, que ocurren todos antes de la primera descarga.
+        $mkRel = {
+            param($tag,$assets)
+            ConvertFrom-AXEReleaseJson ([pscustomobject]@{
+                tag_name=$tag; published_at='2026-01-01T00:00:00Z'; prerelease=$false; assets=$assets })
+        }
+        $goodAssets = @(
+            [pscustomobject]@{ name='AXE.ps1';    size=1; browser_download_url=$okUrl }
+            [pscustomobject]@{ name='SHA256SUMS'; size=1; browser_download_url="https://github.com/$($script:AXEUpdateOwner)/$($script:AXEUpdateRepo)/releases/download/v9.9.9/SHA256SUMS" }
+        )
+        $vieja = & $mkRel ('v' + $script:AXEVersion) $goodAssets
+        if((Invoke-AXEUpdate -Release $vieja).Status -ne 'current'){ [void]$fails.Add('S30: con la MISMA version el updater no dijo "current"') }
+        $nueva = & $mkRel 'v999.0.0' $goodAssets
+        if((Invoke-AXEUpdate -Release $nueva -Check).Status -ne 'available'){ [void]$fails.Add('S30: -Check con version nueva no dijo "available"') }
+        # Sin SHA256SUMS no se instala NADA, aunque el AXE.ps1 venga del repo bueno.
+        $sinSums = & $mkRel 'v999.0.0' @($goodAssets[0])
+        if((Invoke-AXEUpdate -Release $sinSums).Status -ne 'refused'){ [void]$fails.Add('S30: un release SIN SHA256SUMS no se rechazo') }
+        # Asset servido desde fuera del repo oficial: rechazo antes de descargar.
+        $urlMala = & $mkRel 'v999.0.0' @(
+            [pscustomobject]@{ name='AXE.ps1';    size=1; browser_download_url='https://evil.example.com/AXE.ps1' }
+            $goodAssets[1])
+        if((Invoke-AXEUpdate -Release $urlMala).Status -ne 'refused'){ [void]$fails.Add('S30: un asset alojado FUERA del repo oficial no se rechazo') }
+        # Un release sin tag no es un release: no puede acabar en "estas al dia".
+        if($null -ne (ConvertFrom-AXEReleaseJson ([pscustomobject]@{ assets=@() }))){ [void]$fails.Add('S30: un release sin tag_name no devolvio null') }
+        if((Invoke-AXEUpdate -Release $null -Check).Status -ne 'error'){ [void]$fails.Add('S30: sin poder consultar la API el updater no dijo "error"') }
+
+        foreach($fn in 'Invoke-AXEUpdate','Get-AXELatestRelease','Test-AXESignature','New-AXEChecksums','New-AXESbom','Test-AXEAssetUrl'){
+            if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S30: funcion de la cadena de confianza '$fn' no definida") }
+        }
+    } catch { [void]$fails.Add("S30: updater/cadena de confianza lanzo: $($_.Exception.Message)") }
+
     Write-Host "========================================="
     Write-Host " AXE $($script:AXEVersion) - SELF TEST"
     Write-Host "========================================="
@@ -440,6 +546,27 @@ if($SelfTest){
     if($fails.Count -gt 0){ $fails | ForEach-Object { Write-Host "  FAIL: $_" } }
     Write-Host "========================================="
     if($fails.Count -eq 0){ Write-Host " RESULTADO: OK (0 fallos)"; exit 0 } else { Write-Host " RESULTADO: FALLO"; exit 1 }
+}
+
+# --- UPDATER (region 8f, spec 2026-07-24) --------------------------------------------------
+# Va ANTES de -List y de cualquier bloque que necesite $script:HW: comprobar actualizaciones no
+# depende del hardware ni de admin, y no tiene por que pagar los ~3.7s de CIM. Por eso -Update
+# tampoco entra en el gate de carga de HW de arriba.
+if($Update){
+    Write-Host "== AXE $($script:AXEVersion) - actualizacion =="
+    $r = Invoke-AXEUpdate -Check:$Check
+    Write-Host ''
+    Write-Host $r.Message
+    Write-Host ''
+    # Exit codes pensados para encadenar desde un script: 0 = nada que hacer o ya hecho,
+    # 1 = hay algo que el usuario tiene que resolver a mano, 2 = no se pudo comprobar.
+    switch($r.Status){
+        'current'   { exit 0 }
+        'updated'   { exit 0 }
+        'available' { exit 0 }
+        'refused'   { exit 1 }
+        default     { exit 2 }
+    }
 }
 
 if($List){

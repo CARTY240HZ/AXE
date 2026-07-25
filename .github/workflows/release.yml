@@ -1,0 +1,151 @@
+name: AXE Release
+
+# Subproyectos A+B (spec 2026-07-24). Dos modos con el MISMO camino de codigo:
+#   - push de un tag v*  -> construye, firma (si hay secret) y PUBLICA el release
+#   - pull_request       -> dry-run: construye y verifica los artefactos, NO publica
+# El dry-run existe para que un fallo del pipeline se vea en la PR y no la primera vez que se
+# etiqueta una version, que es justo cuando menos margen hay para descubrirlo.
+on:
+  push:
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ axe, main ]
+    paths:
+      - 'AXE/scripts/New-AXERelease.ps1'
+      - 'AXE/scripts/New-AXEWingetManifest.ps1'
+      - 'AXE/src/43-update.ps1'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write        # necesario para crear el release; nada mas
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester + PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser -ErrorAction Stop
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop
+
+      # El gate completo (Pester + SelfTest + harness del host web) ANTES de empaquetar nada.
+      # Un release solo puede salir de un arbol que pasa exactamente lo mismo que exige la CI.
+      - name: Build + gate completo
+        shell: pwsh
+        run: ./AXE/build.ps1 -CI
+
+      # El tag manda sobre el fichero VERSION: si no coinciden, el release publicaria una
+      # version distinta de la que el motor reporta por -SelfTest y por el puente. Es la misma
+      # clase de deriva que degrado la version a '6.1.0-dev' (documentada en build.ps1).
+      - name: Coherencia tag <-> VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}' -replace '^v',''
+          $ver = (Get-Content AXE/VERSION -Raw).Trim()
+          if ($tag -ne $ver) {
+            Write-Host "::error::El tag '${{ github.ref_name }}' no coincide con AXE/VERSION ('$ver'). Actualiza VERSION, rebuild y commitea antes de etiquetar."
+            exit 1
+          }
+          Write-Host "tag y VERSION coinciden: $ver"
+
+      # Firma: SOLO si el repo tiene el secret. Sin el, este paso se salta entero y el release
+      # sale marcado 'unsigned' de forma explicita (New-AXERelease lo dice en su resumen, y las
+      # notas del release de abajo tambien). No se finge una firma que no existe.
+      - name: Preparar certificado (si hay secret)
+        id: cert
+        env:
+          PFX: ${{ secrets.AXE_CODESIGN_PFX_BASE64 }}
+        shell: pwsh
+        run: |
+          if (-not $env:PFX) { Write-Host 'Sin secret de firma: se omite.'; exit 0 }
+          $path = Join-Path $env:RUNNER_TEMP 'axe-cs.pfx'
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:PFX))
+          "path=$path" >> $env:GITHUB_OUTPUT
+
+      - name: Artefactos de release (firmados si hay cert)
+        id: pack
+        shell: pwsh
+        env:
+          PFX_PATH: ${{ steps.cert.outputs.path }}
+          PFX_PASS: ${{ secrets.AXE_CODESIGN_PFX_PASSWORD }}
+        run: |
+          $p = @{ SkipBuild = $true }   # el gate de arriba ya construyo dist/AXE.ps1
+          if ($env:PFX_PATH) {
+            $p.PfxPath = $env:PFX_PATH
+            if ($env:PFX_PASS) { $p.PfxPassword = (ConvertTo-SecureString $env:PFX_PASS -AsPlainText -Force) }
+          } else {
+            Write-Warning 'Sin secret de firma: el release saldra SIN FIRMAR (degradacion honesta, spec §6).'
+          }
+          $r = ./AXE/scripts/New-AXERelease.ps1 @p
+          "signed=$($r.Signed)" >> $env:GITHUB_OUTPUT
+
+      # El PFX vive lo minimo posible en el disco del runner, pase lo que pase arriba.
+      - name: Borrar el certificado del runner
+        if: always()
+        shell: pwsh
+        run: Remove-Item (Join-Path $env:RUNNER_TEMP 'axe-cs.pfx') -Force -ErrorAction SilentlyContinue
+
+      # Verificacion independiente del release ya generado. New-AXERelease ya lo hace, pero
+      # repetirlo aqui cuesta 2s y cierra el caso de que algo entre medias tocara los ficheros.
+      - name: Verificar SHA256SUMS
+        shell: pwsh
+        run: |
+          . ./AXE/src/43-update.ps1
+          $bad = @(Test-AXEChecksums -Dir ./AXE/dist/release)
+          if ($bad.Count) { Write-Host "::error::SHA256SUMS no verifica: $($bad -join '; ')"; exit 1 }
+          Get-Content ./AXE/dist/release/SHA256SUMS
+          Write-Host 'SHA256SUMS verificado.'
+
+      - name: Manifiestos winget
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: ./AXE/scripts/New-AXEWingetManifest.ps1 -Tag '${{ github.ref_name }}'
+
+      - name: Artifact (siempre, tambien en el dry-run de PR)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AXE-release
+          path: AXE/dist/release/**
+          if-no-files-found: error
+
+      - name: Publicar release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            AXE/dist/release/AXE.ps1
+            AXE/dist/release/AXE-*.zip
+            AXE/dist/release/SHA256SUMS
+            AXE/dist/release/sbom.json
+          generate_release_notes: true
+          # Se antepone a las notas automaticas. Dice la verdad sobre la firma en vez de dejar
+          # que el usuario la suponga por el hecho de que exista un release.
+          body: |
+            ## Verifica antes de ejecutar
+
+            **Estado de la firma: `${{ steps.pack.outputs.signed == 'true' && 'FIRMADO (Authenticode + timestamp RFC3161)' || 'SIN FIRMAR' }}`**
+
+            ```powershell
+            # Integridad (que el fichero llego entero)
+            (Get-FileHash .\AXE.ps1 -Algorithm SHA256).Hash.ToLower()
+            # comparalo con la linea de AXE.ps1 en SHA256SUMS
+
+            # Autenticidad (quien lo publico)
+            Get-AuthenticodeSignature .\AXE.ps1 | Format-List Status, SignerCertificate
+            ```
+            Desde Linux/WSL: `sha256sum -c SHA256SUMS`
+
+            `sbom.json` (CycloneDX 1.5) lista los componentes de terceros que van dentro del zip,
+            con su hash y su licencia. PresentMon **no** se redistribuye: lo aporta el usuario.
+
+            > Si el release sale **sin firmar**, `AXE -Update` **no** lo instalara automaticamente.
+            > Es deliberado: AXE se ejecuta elevado, y el checksum viaja en el mismo release que
+            > el fichero, asi que prueba que llego entero pero no **quien** lo publico. Instala a
+            > mano tras verificar el hash si quieres continuar.
