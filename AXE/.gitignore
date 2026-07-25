@@ -6,6 +6,13 @@ dist/*.cat
 *.snk
 *.pfx
 
+# Artefactos de release (los genera scripts/New-AXERelease.ps1). Se publican como assets del
+# GitHub Release, NO se commitean: son derivados de src/ + VERSION, y commitearlos replantearia
+# la misma clase de deriva que el guard anti-dist existe para cazar, ademas con un .zip binario
+# y con un SHA256SUMS que quedaria obsoleto en cuanto alguien tocara src/ sin regenerarlo.
+dist/release/
+dist/_pkg/
+
 # Backups .reg y estado de runtime que el motor escribe FUERA del repo normalmente,
 # pero por si alguien apunta AXEData al arbol:
 *.log

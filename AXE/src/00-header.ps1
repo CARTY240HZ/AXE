@@ -25,6 +25,10 @@
 #                 mejor / peor / RUIDO. Nunca declara mejora dentro del margen de ruido.
 #   -Diag         Configuracion mal puesta que cuesta mas FPS que todo el catalogo junto
 #                 (XMP/EXPO, canales de RAM, Hz del monitor, SSD). Solo detecta, no toca nada.
+#   -Update [-Check]  Comprueba si hay version nueva en el repo oficial. Sin -Check la instala,
+#                 pero SOLO tras verificar SHA256 + firma Authenticode; sin firma valida avisa
+#                 y NO reemplaza nada (el destino es escribible por el usuario y AXE corre
+#                 elevado: un updater laxo seria la via de escalada). No envia nada del equipo.
 #   (sin args)    GUI (requiere admin via el launcher .bat)
 # =====================================================
 
@@ -65,7 +69,15 @@ param(
     # una variable de script. Ninguno de los dos se usa como variable de ruta => S24 no aplica.
     [switch]$Benchmark,
     [string]$After,
-    [int]$BenchPasses = 7
+    [int]$BenchPasses = 7,
+    # Updater con cadena de confianza (subproyectos A+B, spec 2026-07-24). '-Update' comprueba
+    # y, si hay version nueva, la instala SOLO tras verificar checksum + firma Authenticode.
+    # '-Update -Check' se queda en informar y no descarga nada.
+    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
+    # 'Update' y 'Check' no aparecen como variable en ningun modulo (grep sobre src/ = 0 hits),
+    # asi que no pueden tipar a [switch] una variable de ruta ajena. S24 los vigila igual.
+    [switch]$Update,
+    [switch]$Check
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).

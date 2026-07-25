@@ -6,6 +6,37 @@ y [Versionado Semántico](https://semver.org/lang/es/).
 ## [Sin publicar]
 
 ### Añadido
+- **Cadena de confianza + updater** (subproyectos A+B, `src/43-update.ps1`, CLI `-Update` /
+  `-Update -Check`): AXE pasa de «script que corres» a **producto instalable y actualizable con
+  procedencia verificable**. Tres piezas, cada una garantiza algo distinto — `SHA256SUMS`
+  (formato coreutils, verificable con `sha256sum -c` sin fiarse de nuestro código) da
+  **integridad**; `sbom.json` (CycloneDX 1.5, generado a mano sin dependencias externas) da
+  **transparencia** de lo que va dentro, con hash y licencia real por componente; la firma
+  **Authenticode** con timestamp RFC3161 da **autenticidad**.
+  **El updater se niega a reemplazar nada que no haya verificado.** El checksum por sí solo no
+  basta, y no se finge que baste: viaja en el mismo release que el asset, así que prueba que el
+  fichero llegó entero, no **quién** lo publicó. Como AXE se instala en una ruta escribible por
+  el usuario y `AXE.bat` lo eleva después, un updater laxo sería una vía de escalada de
+  privilegios — sin firma válida informa y se para. Owner/repo **hardcoded**, host de descarga
+  validado contra lista, reemplazo atómico, cero telemetría (solo un GET público a la API de
+  GitHub). 56 tests + SelfTest S30, con todos los rechazos ejercidos por fixtures y sin red.
+  *La mayoría de optimizadores de GitHub se distribuyen como un `.bat` que hace `Invoke-WebRequest`
+  a una URL y lo ejecuta; hone/Atlas piden confianza ciega en un binario cerrado.*
+- **Pipeline de release** (`.github/workflows/release.yml`, `scripts/New-AXERelease.ps1`): un tag
+  `v*` dispara el gate completo, empaqueta, firma **si hay certificado** y publica. Sin cert
+  **degrada honesto**: el release sale marcado `SIN FIRMAR` en las notas y el updater no lo
+  auto-instalará. No se finge una firma que no existe. Guard de coherencia tag ↔ `VERSION` (la
+  misma clase de deriva que degradó la versión a `6.1.0-dev`), y dry-run en PR para que el
+  pipeline falle allí y no la primera vez que se etiqueta una versión.
+- **Distribución winget** (`scripts/New-AXEWingetManifest.ps1`, `packaging/winget/README.md`):
+  manifiestos **generados** del release real, nunca a mano — de sus ~40 campos, tres cambian por
+  versión y uno es un hash de 64 caracteres. La descripción del paquete dice también lo que AXE
+  **no** hace (no toca la imagen de Windows, no desactiva Defender, no instala driver de kernel,
+  no promete FPS sin medirlos). La PR a `microsoft/winget-pkgs` se abre a mano, a propósito.
+- **Instalador ligero** (`scripts/New-AXEInstaller.ps1`): copia a `%LOCALAPPDATA%\AXE` + acceso
+  directo. Sin admin, sin registro, sin MSIX y **sin tarea programada de auto-update**. Preserva
+  el subárbol de runtime al actualizar: borrarlo destruiría los snapshots de revert del usuario.
+  `-Verify` comprueba `SHA256SUMS` y firma **antes** de copiar nada.
 - **Benchmark «pruébalo en tu PC»** (subproyecto C, `src/41-bench.ps1`, CLI `-Benchmark` /
   `-Benchmark -After <id>`, puente `bench.baseline` / `bench.after`): prueba **medible y
   compartible** del efecto real en tu equipo. Dos fases con reinicio humano en medio — el
