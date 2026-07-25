@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 7.0.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-25 02:11:43Z
+# Build UTC: 2026-07-25 11:00:45Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 43-update.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -2939,7 +2939,12 @@ function Get-AXEWebView2Runtime {
 $script:AXESessionFamilies = @{
     voz        = @('discord','discordptb','discordcanary','teamspeak','teamspeak3','ts3client','mumble','ventrilo')
     anticheat  = @('easyanticheat','easyanticheat_eos','beservice','battleye','bedaisy','vgc','vgtray','vgk','faceitservice','faceit')
-    shell      = @('dwm','explorer','csrss','winlogon','wininit','services','lsass','smss','fontdrvhost','sihost','ctfmon','textinputhost','startmenuexperiencehost','searchhost','searchapp','shellexperiencehost','taskhostw','runtimebroker','dllhost','applicationframehost','systemsettings','lockapp')
+    # svchost/conhost/audiodg estan aqui por una razon que el spec de A no vio: Windows aloja los
+    # servicios POR-USUARIO (CDPUserSvc, WpnUserService, OneSyncSvc, UnistoreSvc, PimIndexMaintenance
+    # ...) en instancias de svchost que corren en la SESION INTERACTIVA, no en la 0. "Session 0 queda
+    # fuera por definicion" no los cubre. Congelar uno cuelga a quien le haga un RPC SINCRONO -shell,
+    # notificaciones, portapapeles- hasta el timeout. Lo caza el test del puente sobre una maquina real.
+    shell      = @('dwm','explorer','csrss','winlogon','wininit','services','lsass','smss','svchost','conhost','audiodg','fontdrvhost','sihost','ctfmon','textinputhost','startmenuexperiencehost','searchhost','searchapp','shellexperiencehost','taskhostw','runtimebroker','dllhost','applicationframehost','systemsettings','lockapp')
     navegador  = @('chrome','brave','msedge','edge','firefox','opera','opera_gx','vivaldi','browser')
     musica     = @('spotify','tidal','deezer','foobar2000','aimp','musicbee')
     mensajeria = @('whatsapp','telegram','signal','slack')
@@ -3013,11 +3018,112 @@ function Get-AXESessionPlan {
     [pscustomobject]@{ Intacto=@($intacto); Degradado=@($degradado); Congelado=@($congelado) }
 }
 
+# --- Reparto configurable por app: persistencia (spec 2026-07-25) ---------------------------
+# El planificador ya aceptaba -Config y estaba testeado con overrides; lo que faltaba era el par
+# leer/escribir y quien lo edite (la seccion de la WebUI). Fichero PROPIO, no dentro de
+# game_profiles.json: ese es un ARRAY de perfiles de plan de energia que recorre Tick-GameProfiles;
+# meter un mapa app->nivel en el mismo array mezcla dos esquemas sin relacion, obliga a filtrar a
+# todos sus consumidores y arriesga el monitor que si toca el plan de energia en vivo.
+$script:AXESessionLevels = @('intacto','degradado','congelado')
+
+function Write-AXESessionLog {
+    # 40-session se dot-sourcea SUELTO en tests (sin 05-core, donde vive Write-AXELog): loguear es
+    # best-effort, nunca un error que tumbe una sesion.
+    param([string]$Message,[string]$Level='INFO')
+    if(Get-Command Write-AXELog -EA SilentlyContinue){ Write-AXELog $Message $Level }
+}
+
+function Get-AXESessionAppName {
+    # PURA. Normaliza a la clave con la que trabajan familias y overrides: minusculas, sin .exe.
+    param([string]$Name)
+    (([string]$Name).Trim().ToLowerInvariant()) -replace '\.exe$',''
+}
+
+function Get-AXESessionLevelsPath {
+    # Sin $script:AXEData (motor cargado suelto) devuelve $null: el llamante degrada, no inventa ruta.
+    if([string]::IsNullOrWhiteSpace($script:AXEData)){ return $null }
+    Join-Path $script:AXEData 'session_levels.json'
+}
+
+function Get-AXESessionFamily {
+    # PURA. Nombre -> familia ('navegador','voz','musica'...) o $null si no esta en ninguna. No adivina.
+    param([string]$Name)
+    $n = Get-AXESessionAppName $Name
+    foreach($fam in @($script:AXESessionFamilies.Keys)){
+        if($script:AXESessionFamilies[$fam] -contains $n){ return [string]$fam }
+    }
+    $null
+}
+
+function Test-AXESessionHardApp {
+    # PURA. Duro = shell o anticheat. El planificador los deja INTACTOS ganando a la config, asi que
+    # un override sobre ellos no haria NADA: se rechaza al escribir en vez de ignorarlo en silencio.
+    param([string]$Name)
+    $n = Get-AXESessionAppName $Name
+    $fam = $script:AXESessionFamilies
+    [bool](($fam.shell -contains $n) -or ($fam.anticheat -contains $n) -or ($n -match 'anticheat|battleye|easyanti'))
+}
+
 function Read-AXESessionOverrides {
-    # Overrides por-app {nombre->nivel}. La persistencia (UI de sesion) esta FUERA de este spec
-    # (CLI primero). El planificador puro ya acepta -Config y esta testeado con overrides; aqui
-    # se devuelve vacio hasta que exista la UI que los escriba. Honesto: no inventa config.
-    @{}
+    # Overrides por-app {nombre->nivel} desde disco. Tolerante como Read-Profiles: ausente, corrupto
+    # o con entradas invalidas -> se descarta lo que no vale y NUNCA lanza. Un fichero corrupto no se
+    # borra: se deja para inspeccion (el usuario puede haberlo editado a mano).
+    $out = @{}
+    $path = Get-AXESessionLevelsPath
+    if(-not $path -or -not (Test-Path $path)){ return $out }
+    $raw = $null
+    try { $raw = Get-Content $path -Raw -Encoding UTF8 -EA Stop } catch { return $out }
+    if([string]::IsNullOrWhiteSpace($raw)){ return $out }
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json -EA Stop } catch {
+        Write-AXESessionLog 'Sesion: session_levels.json ilegible; se usan los niveles por defecto.' 'WARN'
+        return $out
+    }
+    foreach($p in @($obj.PSObject.Properties)){
+        $name = Get-AXESessionAppName $p.Name
+        if([string]::IsNullOrWhiteSpace($name)){ continue }
+        $lvl = ([string]$p.Value).Trim().ToLowerInvariant()
+        if($script:AXESessionLevels -notcontains $lvl){ continue }   # nivel inventado: se descarta
+        $out[$name] = $lvl
+    }
+    $out
+}
+
+function Set-AXESessionOverride {
+    # Escribe o borra UN override. -Level 'default' borra (vuelve al reparto por familias).
+    # Devuelve {Ok,Reason,Overrides}; nunca lanza.
+    param([string]$Name,[string]$Level)
+    $n = Get-AXESessionAppName $Name
+    if([string]::IsNullOrWhiteSpace($n)){
+        return [pscustomobject]@{ Ok=$false; Reason='falta el nombre de la app.'; Overrides=(Read-AXESessionOverrides) }
+    }
+    $lvl = ([string]$Level).Trim().ToLowerInvariant()
+    if($lvl -ne 'default' -and $script:AXESessionLevels -notcontains $lvl){
+        return [pscustomobject]@{ Ok=$false; Overrides=(Read-AXESessionOverrides)
+            Reason=("nivel '{0}' invalido: usa {1} o default." -f $Level,($script:AXESessionLevels -join '/')) }
+    }
+    if(Test-AXESessionHardApp $n){
+        return [pscustomobject]@{ Ok=$false; Overrides=(Read-AXESessionOverrides)
+            Reason=("'{0}' es shell o anticheat: AXE nunca lo toca, asi que su nivel no es configurable." -f $n) }
+    }
+    $path = Get-AXESessionLevelsPath
+    if(-not $path){
+        return [pscustomobject]@{ Ok=$false; Reason='sin carpeta de datos de AXE: no puedo guardar el nivel.'; Overrides=@{} }
+    }
+    $map = Read-AXESessionOverrides
+    if($lvl -eq 'default'){ [void]$map.Remove($n) } else { $map[$n] = $lvl }
+    try {
+        $dir = Split-Path $path -Parent
+        if($dir -and -not (Test-Path $dir)){ New-Item -ItemType Directory -Path $dir -Force -EA Stop | Out-Null }
+        # '{}' explicito cuando queda vacio: ConvertTo-Json de un hashtable vacio no emite nada y
+        # Set-Content dejaria el fichero anterior intacto (misma trampa que documenta Save-Profiles).
+        $json = if($map.Count -eq 0){ '{}' } else { ConvertTo-Json -InputObject $map -Depth 3 }
+        Set-Content -Path $path -Value $json -Encoding UTF8 -EA Stop
+    } catch {
+        return [pscustomobject]@{ Ok=$false; Reason=("no pude guardar el nivel: {0}" -f $_.Exception.Message); Overrides=(Read-AXESessionOverrides) }
+    }
+    Write-AXESessionLog ("Sesion: nivel de '{0}' -> {1}." -f $n,$lvl)
+    [pscustomobject]@{ Ok=$true; Reason=$null; Overrides=$map }
 }
 
 function Start-AXESession {
@@ -3093,6 +3199,92 @@ function Watch-AXESession {
     if($PollMs -lt 100){ $PollMs = 100 }
     while(Get-Process -Id ([int]$Session.GamePid) -EA SilentlyContinue){
         Start-Sleep -Milliseconds $PollMs
+    }
+}
+
+# --- Ciclo de vida no bloqueante para la ventana (spec 2026-07-25) ---------------------------
+# La CLI usa Watch-AXESession (bloqueante). La ventana NO puede: colgaria el hilo que atiende el
+# puente. El ciclo vive aqui porque es logica de negocio y 48-webbridge no lleva logica; el
+# frontend lo mueve sondeando session.status cada 2 s. UNA sesion por proceso AXE (invariante del
+# spec A): dos handles romperian lo unico que hace segura la recuperacion, que cerrar EL handle
+# descongele TODO.
+$script:AXESessionCur   = $null   # sesion viva, o $null
+$script:AXESessionEnded = $null   # motivo del ultimo cierre, para que la UI diga por que se apago
+
+function Get-AXESessionCurrent { $script:AXESessionCur }
+
+function Start-AXESessionTracked {
+    # Idempotente a proposito: con sesion viva devuelve LA MISMA, no crea un segundo job. La UI no
+    # ofrece ON mientras hay sesion, asi que este camino es una red defensiva; se loguea.
+    param([string]$GameName)
+    if($script:AXESessionCur){
+        Write-AXESessionLog 'Sesion: ON ignorado, ya habia una sesion activa (un proceso, un dueno, un handle).' 'WARN'
+        return $script:AXESessionCur
+    }
+    $s = Start-AXESession -GameName $GameName
+    if($s -and $s.Ok){
+        $script:AXESessionCur = $s; $script:AXESessionEnded = $null
+        Write-AXESessionLog ("Sesion ON - juego '{0}' (pid {1}): {2} congelados, {3} fallidos, {4} degradados." -f `
+            $s.Game,$s.GamePid,$s.Assigned,$s.Failed,@($s.Degraded).Count)
+    }
+    $s
+}
+
+function Stop-AXESessionTracked {
+    # Cierra el handle (el kernel descongela) y restaura prioridades. Guarda el motivo para la UI.
+    param([string]$Reason='OFF manual.')
+    if(-not $script:AXESessionCur){ return $null }
+    $s = $script:AXESessionCur
+    Stop-AXESession $s
+    $script:AXESessionCur   = $null
+    $script:AXESessionEnded = [string]$Reason
+    Write-AXESessionLog ("Sesion OFF - {0} Fondo descongelado y prioridades restauradas." -f $Reason)
+    $s
+}
+
+function Sync-AXESessionTracked {
+    # Salida automatica: si el proceso del juego murio, la sesion se cierra AQUI. Lo llama
+    # session.status en cada sondeo. Si AXE muere antes de sondear, el kernel descongela igual: lo
+    # que se pierde con la ventana cerrada no es la recuperacion, es el aviso.
+    if(-not $script:AXESessionCur){ return $null }
+    if(-not (Get-Process -Id ([int]$script:AXESessionCur.GamePid) -EA SilentlyContinue)){
+        [void](Stop-AXESessionTracked -Reason ("el juego '{0}' se cerro." -f $script:AXESessionCur.Game))
+        return $null
+    }
+    $script:AXESessionCur
+}
+
+function Get-AXESessionStatus {
+    # PURA sobre su argumento: NO lee la sesion viva (la resuelve el llamante), por eso es testeable
+    # headless igual que Get-AXESessionPlan. DTO plano y JSON-seguro, con las mismas lineas que ve la
+    # CLI: la honestidad del texto vive en Format-AXESession, no duplicada aqui.
+    param($Session,[string]$EndedReason)
+    $ended = $(if([string]::IsNullOrWhiteSpace($EndedReason)){ $null } else { [string]$EndedReason })
+    $lines = @(Format-AXESession $Session)
+    if(-not $Session -or -not $Session.Ok){
+        return [pscustomobject]@{
+            active=$false; game=$null; gamePid=$null; sessionId=$null
+            frozen=0; failed=0; degraded=0; intact=0; elapsedS=$null; startedAt=$null
+            reason=$(if($Session){ [string]$Session.Reason } else { $null })
+            endedReason=$ended; lines=$lines
+        }
+    }
+    $elapsed = $null
+    if($Session.Started){ $elapsed = [int][math]::Max(0, ((Get-Date) - [datetime]$Session.Started).TotalSeconds) }
+    [pscustomobject]@{
+        active    = $true
+        game      = [string]$Session.Game
+        gamePid   = [int]$Session.GamePid
+        sessionId = [int]$Session.SessionId
+        frozen    = [int]$Session.Assigned
+        failed    = [int]$Session.Failed
+        degraded  = @($Session.Degraded).Count
+        intact    = @($Session.Plan.Intacto).Count
+        elapsedS  = $elapsed
+        startedAt = $(if($Session.Started){ ([datetime]$Session.Started).ToString('HH:mm:ss') } else { $null })
+        reason    = $null
+        endedReason = $ended
+        lines     = $lines
     }
 }
 
@@ -4362,9 +4554,43 @@ if($SelfTest){
         foreach($grp in $int,$deg,$cong){ if($grp -contains 'svchost'){ [void]$fails.Add('S28: proceso de Session 0 entro en el plan') } }
         $empty = Get-AXESessionPlan -Processes @() -GamePid 0 -GameName 'x' -SelfPid 1 -SessionId 1
         if(@($empty.Congelado).Count -ne 0){ [void]$fails.Add('S28: plan de lista vacia no salio vacio') }
+        # Servicios POR-USUARIO: viven en svchost DENTRO de la sesion interactiva, no en la 0, asi que
+        # la frontera de sesion no los protege. Congelar uno cuelga a quien le haga un RPC sincrono.
+        $plUser = Get-AXESessionPlan -Processes @([pscustomobject]@{Pid=1100;Name='svchost';SessionId=1;Path=$null}) `
+            -GamePid 1000 -GameName 'thegame' -SelfPid 99 -SessionId 1 -Config @{ svchost='congelado' }
+        if(@($plUser.Congelado).Count -ne 0 -or @($plUser.Degradado).Count -ne 0){
+            [void]$fails.Add('S28: svchost de la sesion interactiva (servicios por-usuario) salio tocable')
+        }
         foreach($fn in 'Start-AXESession','Stop-AXESession','Watch-AXESession','Format-AXESession','Get-AXESessionProcesses'){
             if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S28: funcion de sesion '$fn' no definida") }
         }
+        # Persistencia del reparto (spec 2026-07-25). Misma leccion: se EJERCE el round-trip, contra
+        # un temporal y NUNCA contra el AXE/ del usuario. $script:AXEData se restaura en el finally.
+        $oldData = $script:AXEData
+        try {
+            $script:AXEData = Join-Path ([IO.Path]::GetTempPath()) ('axe-selftest-sess-' + [guid]::NewGuid().ToString('N'))
+            [void](New-Item -ItemType Directory -Path $script:AXEData -Force)
+            if(-not (Set-AXESessionOverride -Name 'chrome' -Level 'congelado').Ok){ [void]$fails.Add('S28: no pude guardar un override valido') }
+            if((Read-AXESessionOverrides)['chrome'] -ne 'congelado'){ [void]$fails.Add('S28: el override guardado no se vuelve a leer') }
+            if((Set-AXESessionOverride -Name 'explorer' -Level 'congelado').Ok){ [void]$fails.Add('S28: un proceso DURO acepto override (seria un ajuste que no hace nada)') }
+            if((Set-AXESessionOverride -Name 'chrome' -Level 'turbo').Ok){ [void]$fails.Add('S28: acepto un nivel inventado') }
+            if(-not (Set-AXESessionOverride -Name 'chrome' -Level 'default').Ok -or (Read-AXESessionOverrides).ContainsKey('chrome')){
+                [void]$fails.Add("S28: 'default' no borro el override")
+            }
+        } finally {
+            if($script:AXEData -and ($script:AXEData -ne $oldData) -and (Test-Path $script:AXEData)){ Remove-Item $script:AXEData -Recurse -Force -EA SilentlyContinue }
+            $script:AXEData = $oldData
+        }
+        # DTO que pinta la ventana: sin sesion nunca sale activa, y el motivo de cierre viaja.
+        $stOff = Get-AXESessionStatus -Session $null -EndedReason 'el juego se cerro.'
+        if($stOff.active){ [void]$fails.Add('S28: estado sin sesion salio como ACTIVA') }
+        if($stOff.endedReason -notmatch 'cerro'){ [void]$fails.Add('S28: el motivo de cierre no llega a la ventana') }
+        $stOn = Get-AXESessionStatus -Session ([pscustomobject]@{
+            Ok=$true; Game='thegame'; GamePid=1000; SessionId=1; Assigned=2; Failed=1
+            Plan=[pscustomobject]@{ Intacto=@(1,2,3); Degradado=@(1); Congelado=@(1,2) }
+            Degraded=@([pscustomobject]@{Pid=1;Prev='Normal'}); Started=(Get-Date)
+        })
+        if(-not $stOn.active -or $stOn.frozen -ne 2 -or $stOn.intact -ne 3){ [void]$fails.Add('S28: el DTO de estado no refleja el reparto') }
     } catch { [void]$fails.Add("S28: planificador de sesion lanzo: $($_.Exception.Message)") }
 
     # S29: benchmark "pruebalo en tu PC" (region 8e, spec 2026-07-24). Misma leccion que S22/S25:
@@ -4539,7 +4765,15 @@ if($SelfTest){
         if((Invoke-AXEUpdate -Release $urlMala).Status -ne 'refused'){ [void]$fails.Add('S30: un asset alojado FUERA del repo oficial no se rechazo') }
         # Un release sin tag no es un release: no puede acabar en "estas al dia".
         if($null -ne (ConvertFrom-AXEReleaseJson ([pscustomobject]@{ assets=@() }))){ [void]$fails.Add('S30: un release sin tag_name no devolvio null') }
-        if((Invoke-AXEUpdate -Release $null -Check).Status -ne 'error'){ [void]$fails.Add('S30: sin poder consultar la API el updater no dijo "error"') }
+        # "No pude comprobar" NUNCA puede salir como "estas al dia": eso deja al usuario en una
+        # version vieja creyendo lo contrario.
+        #   -Release $null es indistinguible de omitir el parametro, asi que esta sonda caia en
+        # Get-AXELatestRelease y llamaba a la API de GitHub DE VERDAD: verde solo mientras no hubiera
+        # red ni releases publicados, y en cuanto hubo release empezo a devolver 'current'. Se
+        # sombrea la funcion en un scope hijo (PowerShell resuelve comandos por la cadena de scopes
+        # del LLAMANTE, asi que Invoke-AXEUpdate ve esta version): sin red, deterministico.
+        $sinApi = & { function Get-AXELatestRelease { $null }; (Invoke-AXEUpdate -Check).Status }
+        if($sinApi -ne 'error'){ [void]$fails.Add('S30: sin poder consultar la API el updater no dijo "error"') }
 
         foreach($fn in 'Invoke-AXEUpdate','Get-AXELatestRelease','Test-AXESignature','New-AXEChecksums','New-AXESbom','Test-AXEAssetUrl'){
             if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S30: funcion de la cadena de confianza '$fn' no definida") }
@@ -5192,6 +5426,102 @@ $script:AXEBridgeMap = @{
         if(-not (Test-Admin)){ throw 'requiere admin: relanza AXE con AXE.bat (se eleva solo)' }
         $r = New-AXERestorePoint
         [pscustomobject]@{ status=[string]$r.Status; message=[string]$r.Message }
+    }
+
+    # --- Sesion de juego (region 12b + spec 2026-07-25) ---
+    # El ciclo de vida vive en 40-session (Start/Stop/Sync-AXESessionTracked): aqui solo se
+    # re-empaqueta, como manda la cabecera de este fichero. session.preview es READ-ONLY: enseña el
+    # reparto ANTES de congelar nada (ni job, ni assign, ni freeze) porque congelar ~15 procesos es
+    # la accion mas agresiva de AXE y un ON a ciegas pide una confianza que no se ha ganado.
+    'session.preview' = { param($a)
+        $game  = [string]$a.game
+        $gproc = $null
+        if(-not [string]::IsNullOrWhiteSpace($game)){
+            $gproc = Get-Process -Name ($game -replace '\.exe$','') -EA SilentlyContinue | Select-Object -First 1
+        }
+        # Sonda de JobObjectFreezeInformation: si no esta, la sesion se abortaria sin tocar nada
+        # (regla del spec A: sin fallback a suspension manual). El front deshabilita ON con esto.
+        $freezeOk = $false; $freezeReason = 'capa nativa de sesion ausente (reinicia AXE tras rebuild).'
+        if(('AXE.Native' -as [type]) -and [AXE.Native].GetMethod('JobProbeFreeze')){
+            $probe = [AXE.Native]::JobProbeFreeze()
+            if($probe -eq 0){ $freezeOk = $true; $freezeReason = $null }
+            else { $freezeReason = ("JobObjectFreezeInformation no disponible aqui (status 0x{0:X8}): la sesion se abortaria sin tocar nada." -f $probe) }
+        }
+        # Sin juego abierto el plan se enseña IGUAL (es informativo) contra la sesion interactiva de
+        # AXE; gameFound=false y el front no deja arrancar.
+        $gpid = 0; $sid = [int](Get-Process -Id $PID).SessionId
+        if($gproc){ $gpid = [int]$gproc.Id; $sid = [int]$gproc.SessionId }
+        $ovr   = Read-AXESessionOverrides
+        $plan  = Get-AXESessionPlan -Processes (Get-AXESessionProcesses) -GamePid $gpid -GameName $game -SelfPid $PID -SessionId $sid -Config $ovr
+        # Una fila por (APP, NIVEL), no por pid: 12 procesos de Chrome son UNA decision, no doce.
+        #   La clave lleva el nivel a proposito. Agrupar solo por nombre mezclaba procesos con trato
+        # distinto: si el juego -o AXE- comparte nombre con otro proceso (dos pwsh, dos instancias
+        # del mismo launcher), la fila se creaba en el pase 'congelado' por el ajeno y luego se
+        # marcaba dura por el propio => el DTO decia "congelar" y "intocable" a la vez. Con el nivel
+        # en la clave cada fila dice la verdad de su grupo y los pids viajan para auditarla.
+        $groups = @{ congelado=@($plan.Congelado); degradado=@($plan.Degradado); intacto=@($plan.Intacto) }
+        $rows = [ordered]@{}
+        foreach($lvl in 'congelado','degradado','intacto'){
+            foreach($p in $groups[$lvl]){
+                $n   = Get-AXESessionAppName $p.Name
+                $key = "$n|$lvl"
+                if(-not $rows.Contains($key)){
+                    $rows[$key] = [pscustomobject]@{
+                        name=$n; level=$lvl; count=0; pids=@()
+                        family=(Get-AXESessionFamily $n); hard=[bool](Test-AXESessionHardApp $n)
+                        override=[bool]($ovr.ContainsKey($n))
+                    }
+                }
+                $r = $rows[$key]
+                $r.count = [int]$r.count + 1
+                $r.pids  = @($r.pids) + [int]$p.Pid
+                # El juego y AXE tampoco se configuran mientras sean ESTOS pids (siempre en intacto).
+                if([int]$p.Pid -eq $gpid -or [int]$p.Pid -eq $PID){ $r.hard = $true }
+            }
+        }
+        $order = @('congelado','degradado','intacto')
+        $apps  = @(@($rows.Values) | Sort-Object @{Expression={ $order.IndexOf($_.level) }}, @{Expression='count';Descending=$true}, 'name')
+        [pscustomobject]@{
+            freezeOk=$freezeOk; freezeReason=$freezeReason
+            gameFound=[bool]$gproc; gamePid=$gpid; sessionId=$sid
+            counts=[pscustomobject]@{
+                congelado=@($plan.Congelado).Count; degradado=@($plan.Degradado).Count
+                intacto=@($plan.Intacto).Count; apps=@($apps).Count
+            }
+            apps=$apps
+        }
+    }
+    # MODIFICA el sistema: crea el job, asigna y congela. Sin admin no se niega (degrada a lo que el
+    # usuario posee) pero los assign fallidos viajan en 'failed'. No exige admin a proposito: negarse
+    # dejaria sin funcion a quien abre AXE sin elevar, cuando lo suyo si se puede congelar.
+    'session.start' = { param($a)
+        if([string]::IsNullOrWhiteSpace([string]$a.game)){ throw 'falta el nombre del proceso del juego (ej: cs2)' }
+        $s = Start-AXESessionTracked -GameName ([string]$a.game)
+        if(-not $s){ throw 'no pude iniciar la sesion (ver log)' }
+        if(-not $s.Ok){ throw [string]$s.Reason }
+        Get-AXESessionStatus -Session $s
+    }
+    # Sondeo del front (~2 s). Sync-AXESessionTracked cierra la sesion si el juego murio: es la
+    # salida automatica del spec A, sin timer en el puente ni Watch bloqueante en el hilo de la UI.
+    'session.status' = { param($a)
+        Get-AXESessionStatus -Session (Sync-AXESessionTracked) -EndedReason $script:AXESessionEnded
+    }
+    'session.stop' = { param($a)
+        if(Get-AXESessionCurrent){ [void](Stop-AXESessionTracked -Reason 'OFF manual.') }
+        Get-AXESessionStatus -Session $null -EndedReason $script:AXESessionEnded
+    }
+    # Nivel por app, persistido. El motor rechaza duros y niveles invalidos con motivo; aqui se
+    # convierte en error del puente para que el front lo pinte tal cual. needsRestart es honesto: un
+    # cambio con sesion viva no re-reparte lo ya congelado, entra en la siguiente.
+    'session.setLevel' = { param($a)
+        if([string]::IsNullOrWhiteSpace([string]$a.name)){ throw 'falta la app' }
+        if([string]::IsNullOrWhiteSpace([string]$a.level)){ throw 'falta el nivel (intacto/degradado/congelado o default)' }
+        $r = Set-AXESessionOverride -Name ([string]$a.name) -Level ([string]$a.level)
+        if(-not $r.Ok){ throw [string]$r.Reason }
+        [pscustomobject]@{
+            name=(Get-AXESessionAppName ([string]$a.name)); level=([string]$a.level).Trim().ToLowerInvariant()
+            overrides=$r.Overrides; needsRestart=[bool](Get-AXESessionCurrent)
+        }
     }
 }
 

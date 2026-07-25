@@ -280,7 +280,7 @@
   const navItems = [...document.querySelectorAll('.nav-item[data-view]')];
   const loaded = {};
   // cada vista se inicializa una sola vez, la primera vez que se abre (init perezoso, sin pegar el arranque).
-  const lazyInit = { optimizar: initOptimizar, telemetria: initTele, prueba: initPrueba, seguridad: initSeguridad, ajustes: initAjustes };
+  const lazyInit = { optimizar: initOptimizar, telemetria: initTele, sesion: initSesion, prueba: initPrueba, seguridad: initSeguridad, ajustes: initAjustes };
   function showView(name) {
     if (!viewEls[name]) return;
     Object.keys(viewEls).forEach((k) => { viewEls[k].hidden = (k !== name); });
@@ -309,7 +309,7 @@
   $('confirmNo').addEventListener('click', () => closeConfirm(false));
   confirmSheet.addEventListener('click', (e) => { if (e.target === confirmSheet) closeConfirm(false); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape' && confirmSheet.classList.contains('open')) closeConfirm(false); });
-  const keyMap = { '1': 'panel', '2': 'telemetria', '3': 'optimizar', '5': 'prueba', '6': 'seguridad', '7': 'ajustes' };
+  const keyMap = { '1': 'panel', '2': 'telemetria', '3': 'optimizar', '4': 'sesion', '5': 'prueba', '6': 'seguridad', '7': 'ajustes' };
   addEventListener('keydown', (e) => {
     if (sheetOpen()) return;
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return; // no robar teclas a los campos
@@ -555,6 +555,157 @@
       finally { b.disabled = false; }
     });
   }
+
+  // ---------- Sesión de juego (subsistema A · spec 2026-07-25) ----------
+  // El dueño del ciclo de vida es el motor (40-session): aquí sólo se previsualiza, se arranca/para
+  // y se sondea session.status cada 2 s — que es la llamada en la que el motor detecta que el juego
+  // murió y cierra la sesión él mismo. Sin lógica de reparto en el frontend: los niveles los decide
+  // Get-AXESessionPlan y llegan ya resueltos, así que esta pantalla no puede contradecir al motor.
+  const S_LEVELS = ['congelado', 'degradado', 'intacto'];
+  const S_META = { congelado: { cls: 't2', label: 'congelar' }, degradado: { cls: 't1', label: 'degradar' }, intacto: { cls: 't0', label: 'intacto' } };
+  let sessPoll = null, sessActive = false;
+
+  function setSessBar(msg, kind) { const b = $('sessBar'); b.className = 'obar' + (kind ? ' ' + kind : ''); b.textContent = msg; }
+  function fmtDur(s) {
+    if (s == null) return '—';
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    return (h ? h + ' h ' : '') + (h || m ? m + ' min ' : '') + x + ' s';
+  }
+
+  function initSesion() {
+    $('btnSessPreview').addEventListener('click', () => sessPreview(false));
+    $('btnSessStart').addEventListener('click', sessStart);
+    $('btnSessStop').addEventListener('click', sessStop);
+    $('sessGame').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sessPreview(false); } });
+    // Estado primero: si ya hay sesión viva (el usuario volvió a esta vista) se pinta tal cual; si
+    // no la hay, renderSessStatus dispara la previsualización de arranque.
+    AXE.call('session.status', {}).then(renderSessStatus).catch((e) => setSessBar('No pude leer el estado de la sesión: ' + e.message, 'err'));
+  }
+
+  // quiet = refresco de fondo (tras guardar un nivel o al cerrarse la sesión): no pisa la barra.
+  function sessPreview(quiet) {
+    const game = $('sessGame').value.trim();
+    const b = $('btnSessPreview'); b.disabled = true; b.classList.add('busy');
+    if (!quiet) setSessBar('leyendo procesos y calculando el reparto… (no se toca nada)');
+    AXE.call('session.preview', { game: game }).then((p) => renderSessPreview(p, game, quiet))
+      .catch((e) => setSessBar('No pude previsualizar: ' + e.message, 'err'))
+      .finally(() => { b.disabled = false; b.classList.remove('busy'); });
+  }
+
+  function renderSessPreview(p, game, quiet) {
+    if (!p) return;
+    const c = p.counts || { congelado: 0, degradado: 0, intacto: 0, apps: 0 };
+    if (!sessActive) { $('sessNFrozen').textContent = c.congelado; $('sessNDeg').textContent = c.degradado; $('sessNInt').textContent = c.intacto; }
+    const fz = $('sessFreeze');
+    fz.textContent = p.freezeOk ? 'soportado · sondeado en este Windows' : (p.freezeReason || 'no soportado aquí');
+    fz.className = 'mono ' + (p.freezeOk ? 'ok' : 'err');
+    renderSessApps(p.apps || []);
+    // ON exige las dos cosas: que el kernel soporte freeze y que el juego esté corriendo. Sin
+    // alguna de ellas el motor abortaría sin tocar nada, así que ni se ofrece.
+    const bs = $('btnSessStart');
+    bs.disabled = sessActive || !(p.freezeOk && p.gameFound);
+    bs.querySelector('span').textContent = !p.freezeOk ? 'freeze no disponible aquí'
+      : (sessActive ? 'ya hay una sesión activa' : (p.gameFound ? 'congelar el fondo' : 'el juego no está abierto'));
+    if (sessActive || quiet) return;
+    if (!game) setSessBar(c.apps + ' apps en tu sesión · ' + c.congelado + ' se congelarían y ' + c.degradado + ' se degradarían. Escribe el proceso del juego para poder arrancar.');
+    else if (!p.gameFound) setSessBar('«' + game + '» no está corriendo. Ábrelo y vuelve a previsualizar.', 'warn');
+    else setSessBar('listo · ' + c.congelado + ' a congelar, ' + c.degradado + ' a degradar, ' + c.intacto + ' intactos (pid del juego: ' + p.gamePid + ')', 'ok');
+  }
+
+  function renderSessApps(apps) {
+    const host = $('sessApps'); host.textContent = '';
+    if (!apps.length) { host.appendChild(elt('div', 'mini', 'sin procesos que repartir en esta sesión.')); return; }
+    apps.forEach((a) => {
+      const meta = S_META[a.level] || { cls: '', label: a.level };
+      const row = elt('div', 'sapp ' + meta.cls);
+      const nm = elt('div', 'sapp-name');
+      nm.appendChild(elt('b', null, a.name));
+      if (a.count > 1) nm.appendChild(elt('span', 'sapp-n', '×' + a.count));
+      if (a.family) nm.appendChild(elt('span', 'badge', a.family));
+      if (a.override) nm.appendChild(elt('span', 'badge reboot', 'tu ajuste'));
+      row.appendChild(nm);
+      if (a.hard) {
+        // Duros: el planificador los deja intactos ganando a la config, así que un selector aquí
+        // sería un control que no hace nada. Se dice por qué en vez de ofrecerlo.
+        row.appendChild(elt('span', 'sapp-hard', 'AXE nunca lo toca'));
+      } else {
+        const sel = document.createElement('select');
+        sel.className = 'slevel';
+        sel.setAttribute('aria-label', 'nivel para ' + a.name);
+        S_LEVELS.forEach((l) => {
+          const o = document.createElement('option');
+          o.value = l; o.textContent = S_META[l].label; if (l === a.level) o.selected = true;
+          sel.appendChild(o);
+        });
+        if (a.override) { const o = document.createElement('option'); o.value = 'default'; o.textContent = 'por defecto'; sel.appendChild(o); }
+        sel.addEventListener('change', () => setSessLevel(a.name, sel.value));
+        row.appendChild(sel);
+      }
+      host.appendChild(row);
+    });
+  }
+
+  function setSessLevel(name, level) {
+    AXE.call('session.setLevel', { name: name, level: level }).then((r) => {
+      setSessBar('«' + r.name + '» → ' + (r.level === 'default' ? 'nivel por defecto' : r.level) +
+        (r.needsRestart ? ' · guardado, entra en la próxima sesión (no re-reparte la activa)' : ' · guardado'), 'ok');
+      sessPreview(true);
+    }).catch((e) => { setSessBar('No pude guardar el nivel: ' + e.message, 'err'); sessPreview(true); });
+  }
+
+  function sessStart() {
+    const game = $('sessGame').value.trim();
+    if (!game) { setSessBar('Escribe el nombre del proceso del juego (ej: cs2).', 'warn'); $('sessGame').focus(); return; }
+    const b = $('btnSessStart'); b.disabled = true; b.classList.add('busy');
+    setSessBar('creando el job y congelando el fondo…');
+    AXE.call('session.start', { game: game }).then((st) => {
+      renderSessStatus(st);
+      setSessBar('sesión activa · ' + st.frozen + ' congelados' +
+        (st.failed ? ' · ' + st.failed + ' no se pudieron asignar (procesos elevados: relanza AXE como admin)' : '') +
+        ' · el fondo vuelve solo al cerrar el juego', st.failed ? 'warn' : 'ok');
+    }).catch((e) => { setSessBar('No pude iniciar la sesión: ' + e.message, 'err'); sessPreview(true); })
+      .finally(() => { b.classList.remove('busy'); });
+  }
+
+  function sessStop() {
+    const b = $('btnSessStop'); b.disabled = true;
+    AXE.call('session.stop', {}).then((st) => { renderSessStatus(st); setSessBar('sesión cerrada: fondo descongelado y prioridades restauradas.', 'ok'); })
+      .catch((e) => setSessBar('No pude cerrar la sesión: ' + e.message, 'err'))
+      .finally(() => { b.disabled = false; });
+  }
+
+  function renderSessStatus(st) {
+    if (!st) return;
+    const was = sessActive;
+    sessActive = !!st.active;
+    $('sessOut').textContent = (st.lines || []).join('\n');
+    const stateEl = $('sessState');
+    stateEl.textContent = st.active ? ('ON · ' + st.game + ' (pid ' + st.gamePid + ')') : 'OFF';
+    stateEl.className = 'mono ' + (st.active ? 'ok' : '');
+    $('btnSessStop').hidden = !st.active;
+    $('sessElapsedRow').hidden = !st.active;
+    if (st.active) {
+      $('btnSessStart').disabled = true;
+      $('btnSessStart').querySelector('span').textContent = 'ya hay una sesión activa';
+      $('sessElapsed').textContent = (st.startedAt || '—') + ' · ' + fmtDur(st.elapsedS);
+      $('sessNFrozen').textContent = st.frozen; $('sessNDeg').textContent = st.degraded; $('sessNInt').textContent = st.intact;
+      if (!$('sessGame').value.trim() && st.game) $('sessGame').value = st.game;
+      startSessPoll();
+      return;
+    }
+    stopSessPoll();
+    // Salida automática: el motivo lo pone el motor (el juego se cerró / OFF manual), no se inventa.
+    if (was && st.endedReason) setSessBar('sesión cerrada: ' + st.endedReason + ' Fondo descongelado y prioridades restauradas.', 'ok');
+    sessPreview(!!was);
+  }
+
+  function startSessPoll() {
+    if (sessPoll) return;
+    // Corre aunque el usuario navegue a otra vista: que el fondo vuelva al cerrar el juego no puede
+    // depender de que estés mirando esta pantalla, sólo de que la ventana siga abierta.
+    sessPoll = setInterval(() => { AXE.call('session.status', {}).then(renderSessStatus).catch(() => {}); }, 2000);
+  }
+  function stopSessPoll() { if (sessPoll) { clearInterval(sessPoll); sessPoll = null; } }
 
   // Ajustes: información local + privacidad. Sin lógica de red, sin auto-update (es otro spec).
   function initAjustes() {

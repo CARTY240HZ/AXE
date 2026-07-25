@@ -248,6 +248,11 @@ Describe 'Invoke-AXEUpdate - nunca reemplaza lo que no verifico' -Tag 'unit' {
     It 'sin poder consultar la API dice error, no "estas al dia"' {
         # Confundir "no pude comprobar" con "al dia" dejaria al usuario en una version vieja
         # creyendo lo contrario.
+        #   El mock NO es decorativo: -Release $null es indistinguible de omitirlo, asi que sin el
+        # esta prueba caia en Get-AXELatestRelease y llamaba a la API de GitHub DE VERDAD. Pasaba
+        # solo mientras no hubiera red ni releases publicados; en cuanto hubo release empezo a
+        # devolver 'current', es decir, a probar lo contrario de lo que dice su nombre.
+        Mock Get-AXELatestRelease { $null }
         (Invoke-AXEUpdate -Release $null -Check).Status | Should -Be 'error'
     }
     It 'una version remota ilegible da error en vez de intentar instalarla' {

@@ -33,9 +33,9 @@
       <svg viewBox="0 0 24 24"><path d="M12 3v3m0 12v3m9-9h-3M6 12H3m14.5-6.5-2 2m-9 9-2 2m0-13 2 2m9 9 2 2"/><circle cx="12" cy="12" r="3.2"/></svg>
       Optimizar <span class="kbd">3</span>
     </div>
-    <div class="nav-item soon" title="Llega en una fase posterior">
+    <div class="nav-item" data-view="sesion" tabindex="0" role="button">
       <svg viewBox="0 0 24 24"><path d="M6 9h12l1 9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/><path d="M9 9V6a3 3 0 0 1 6 0v3"/></svg>
-      Sesión de juego <span class="soon-tag">pronto</span>
+      Sesión de juego <span class="kbd">4</span>
     </div>
     <div class="nav-item" data-view="prueba" tabindex="0" role="button">
       <svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7z"/><path d="M9 12l2 2 4-4"/></svg>
@@ -169,7 +169,7 @@
           <b>Medir ahora</b><span>timer · jitter · cobertura · reproducible</span>
         </button>
         <button class="btn" data-view="optimizar"><b>Optimizar</b><span>catálogo por tier</span></button>
-        <button class="btn" disabled><b>Sesión de juego</b><span class="soon-tag">pronto</span></button>
+        <button class="btn" data-view="sesion"><b>Sesión de juego</b><span>congela el fondo mientras juegas</span></button>
         <button class="btn wide danger" data-view="optimizar"><b>Master revert</b><span>en Optimizar · deshacer todo</span></button>
       </div>
     </section>
@@ -217,6 +217,60 @@
         <h3>Barrido de resolución de timer</h3>
         <div class="mini">mide, no asume: el óptimo es por-máquina (ref. valleyofdoom). Si no es concluyente, lo dice.</div>
         <pre class="mono-out" id="sweepOut">Pulsa «Medir barrido de timer» para ejecutar el barrido en esta máquina.</pre>
+      </div>
+    </section>
+
+    <!-- ===== SESIÓN DE JUEGO (subsistema A · spec 2026-07-25) ===== -->
+    <section class="scr view" id="viewSesion" data-view="sesion" hidden>
+      <div class="ohead">
+        <div>
+          <h1>Sesión de juego</h1>
+          <div class="sub">congela el fondo mientras juegas · lo descongela el kernel, no un vigilante que también puede fallar</div>
+        </div>
+        <button class="btn danger" id="btnSessStop" style="max-width:230px" hidden><b>OFF</b><span>descongelar ahora</span></button>
+      </div>
+      <div class="obar" id="sessBar">escribe el proceso del juego y previsualiza: verás exactamente qué se congela ANTES de tocar nada</div>
+
+      <div class="card">
+        <h3>Arranque</h3>
+        <div class="mini">entrada manual a propósito: tú eliges el proceso, AXE no mantiene una base de datos de títulos. La sesión termina al cerrar el juego, al pulsar OFF, o si AXE muere.</div>
+        <div class="fps-row">
+          <input id="sessGame" class="in" type="text" placeholder="proceso del juego (ej: cs2, valorant)" spellcheck="false" autocomplete="off">
+          <button class="btn" id="btnSessPreview"><b>Previsualizar</b><span>no toca nada</span></button>
+          <button class="btn primary" id="btnSessStart" disabled><b>ON</b><span>congelar el fondo</span></button>
+        </div>
+        <div class="kv"><span>freeze del kernel</span><b class="mono" id="sessFreeze">sin comprobar</b></div>
+        <div class="kv"><span>estado</span><b class="mono" id="sessState">OFF</b></div>
+        <div class="kv" id="sessElapsedRow" hidden><span>activa desde</span><b class="mono" id="sessElapsed">—</b></div>
+      </div>
+
+      <div class="card">
+        <h3>Reparto <span class="mini-inline">· una fila por app, no por proceso</span></h3>
+        <div class="mini">CONGELAR suspende de verdad (job object del kernel). DEGRADAR deja la app viva y usable, con prioridad baja. INTACTO no se toca. El nivel lo decides tú: se guarda y sobrevive al reinicio. Shell y anticheat no son configurables porque AXE nunca los toca.</div>
+        <div class="tier-row" id="sessCounts" style="margin-top:12px">
+          <div class="tier t2"><div class="k">Congelar</div><div class="n" id="sessNFrozen">—</div></div>
+          <div class="tier t1"><div class="k">Degradar</div><div class="n" id="sessNDeg">—</div></div>
+          <div class="tier t0"><div class="k">Intacto</div><div class="n" id="sessNInt">—</div></div>
+        </div>
+        <div class="sgrid" id="sessApps"></div>
+      </div>
+
+      <div class="card">
+        <h3>Salida del motor</h3>
+        <div class="mini">el mismo texto que imprime la CLI (<span class="mono">AXE -Session &lt;proceso&gt;</span>): la honestidad vive en el motor, no en esta pantalla.</div>
+        <pre class="mono-out" id="sessOut">sin sesión.</pre>
+      </div>
+
+      <div class="card">
+        <h3>Lo que hay que saber</h3>
+        <ul class="seg-list">
+          <li><b>La recuperación es del kernel</b> — el handle del job vive en el proceso de AXE. Si AXE muere (crash, kill duro, BSOD), Windows descongela solo. No hay código de rescate que pueda fallar a su vez.</li>
+          <li><b>La ventana tiene que quedarse abierta</b> — minimizada vale. Al cerrarla se cierra la sesión; lo que se pierde no es la recuperación, es el aviso de que el juego terminó.</li>
+          <li><b>Degradar el navegador no iguala a congelarlo</b> — Chrome con muchas pestañas es de lo que más consume de fondo. Se degrada por defecto porque puede que lo estés usando; si prefieres congelarlo, cámbialo aquí arriba.</li>
+          <li><b>Anticheat: no verificado título a título</b> — AXE no toca el proceso del juego ni el del anticheat, sólo lo demás. Es bastante menos arriesgado, pero no está probado por título. Va como riesgo abierto, no como resuelto.</li>
+          <li><b>Sin admin se congela menos</b> — los procesos elevados no se pueden asignar al job. Se cuentan como fallidos y se dicen; el resto de la sesión funciona igual.</li>
+          <li><b>Aquí no se promete FPS</b> — mide ON vs OFF en «Prueba y receta» con la misma escena. Si el cambio cae dentro del ruido, AXE lo dice.</li>
+        </ul>
       </div>
     </section>
 

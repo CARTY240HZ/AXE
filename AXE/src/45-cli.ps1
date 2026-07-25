@@ -352,9 +352,43 @@ if($SelfTest){
         foreach($grp in $int,$deg,$cong){ if($grp -contains 'svchost'){ [void]$fails.Add('S28: proceso de Session 0 entro en el plan') } }
         $empty = Get-AXESessionPlan -Processes @() -GamePid 0 -GameName 'x' -SelfPid 1 -SessionId 1
         if(@($empty.Congelado).Count -ne 0){ [void]$fails.Add('S28: plan de lista vacia no salio vacio') }
+        # Servicios POR-USUARIO: viven en svchost DENTRO de la sesion interactiva, no en la 0, asi que
+        # la frontera de sesion no los protege. Congelar uno cuelga a quien le haga un RPC sincrono.
+        $plUser = Get-AXESessionPlan -Processes @([pscustomobject]@{Pid=1100;Name='svchost';SessionId=1;Path=$null}) `
+            -GamePid 1000 -GameName 'thegame' -SelfPid 99 -SessionId 1 -Config @{ svchost='congelado' }
+        if(@($plUser.Congelado).Count -ne 0 -or @($plUser.Degradado).Count -ne 0){
+            [void]$fails.Add('S28: svchost de la sesion interactiva (servicios por-usuario) salio tocable')
+        }
         foreach($fn in 'Start-AXESession','Stop-AXESession','Watch-AXESession','Format-AXESession','Get-AXESessionProcesses'){
             if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S28: funcion de sesion '$fn' no definida") }
         }
+        # Persistencia del reparto (spec 2026-07-25). Misma leccion: se EJERCE el round-trip, contra
+        # un temporal y NUNCA contra el AXE/ del usuario. $script:AXEData se restaura en el finally.
+        $oldData = $script:AXEData
+        try {
+            $script:AXEData = Join-Path ([IO.Path]::GetTempPath()) ('axe-selftest-sess-' + [guid]::NewGuid().ToString('N'))
+            [void](New-Item -ItemType Directory -Path $script:AXEData -Force)
+            if(-not (Set-AXESessionOverride -Name 'chrome' -Level 'congelado').Ok){ [void]$fails.Add('S28: no pude guardar un override valido') }
+            if((Read-AXESessionOverrides)['chrome'] -ne 'congelado'){ [void]$fails.Add('S28: el override guardado no se vuelve a leer') }
+            if((Set-AXESessionOverride -Name 'explorer' -Level 'congelado').Ok){ [void]$fails.Add('S28: un proceso DURO acepto override (seria un ajuste que no hace nada)') }
+            if((Set-AXESessionOverride -Name 'chrome' -Level 'turbo').Ok){ [void]$fails.Add('S28: acepto un nivel inventado') }
+            if(-not (Set-AXESessionOverride -Name 'chrome' -Level 'default').Ok -or (Read-AXESessionOverrides).ContainsKey('chrome')){
+                [void]$fails.Add("S28: 'default' no borro el override")
+            }
+        } finally {
+            if($script:AXEData -and ($script:AXEData -ne $oldData) -and (Test-Path $script:AXEData)){ Remove-Item $script:AXEData -Recurse -Force -EA SilentlyContinue }
+            $script:AXEData = $oldData
+        }
+        # DTO que pinta la ventana: sin sesion nunca sale activa, y el motivo de cierre viaja.
+        $stOff = Get-AXESessionStatus -Session $null -EndedReason 'el juego se cerro.'
+        if($stOff.active){ [void]$fails.Add('S28: estado sin sesion salio como ACTIVA') }
+        if($stOff.endedReason -notmatch 'cerro'){ [void]$fails.Add('S28: el motivo de cierre no llega a la ventana') }
+        $stOn = Get-AXESessionStatus -Session ([pscustomobject]@{
+            Ok=$true; Game='thegame'; GamePid=1000; SessionId=1; Assigned=2; Failed=1
+            Plan=[pscustomobject]@{ Intacto=@(1,2,3); Degradado=@(1); Congelado=@(1,2) }
+            Degraded=@([pscustomobject]@{Pid=1;Prev='Normal'}); Started=(Get-Date)
+        })
+        if(-not $stOn.active -or $stOn.frozen -ne 2 -or $stOn.intact -ne 3){ [void]$fails.Add('S28: el DTO de estado no refleja el reparto') }
     } catch { [void]$fails.Add("S28: planificador de sesion lanzo: $($_.Exception.Message)") }
 
     # S29: benchmark "pruebalo en tu PC" (region 8e, spec 2026-07-24). Misma leccion que S22/S25:
@@ -529,7 +563,15 @@ if($SelfTest){
         if((Invoke-AXEUpdate -Release $urlMala).Status -ne 'refused'){ [void]$fails.Add('S30: un asset alojado FUERA del repo oficial no se rechazo') }
         # Un release sin tag no es un release: no puede acabar en "estas al dia".
         if($null -ne (ConvertFrom-AXEReleaseJson ([pscustomobject]@{ assets=@() }))){ [void]$fails.Add('S30: un release sin tag_name no devolvio null') }
-        if((Invoke-AXEUpdate -Release $null -Check).Status -ne 'error'){ [void]$fails.Add('S30: sin poder consultar la API el updater no dijo "error"') }
+        # "No pude comprobar" NUNCA puede salir como "estas al dia": eso deja al usuario en una
+        # version vieja creyendo lo contrario.
+        #   -Release $null es indistinguible de omitir el parametro, asi que esta sonda caia en
+        # Get-AXELatestRelease y llamaba a la API de GitHub DE VERDAD: verde solo mientras no hubiera
+        # red ni releases publicados, y en cuanto hubo release empezo a devolver 'current'. Se
+        # sombrea la funcion en un scope hijo (PowerShell resuelve comandos por la cadena de scopes
+        # del LLAMANTE, asi que Invoke-AXEUpdate ve esta version): sin red, deterministico.
+        $sinApi = & { function Get-AXELatestRelease { $null }; (Invoke-AXEUpdate -Check).Status }
+        if($sinApi -ne 'error'){ [void]$fails.Add('S30: sin poder consultar la API el updater no dijo "error"') }
 
         foreach($fn in 'Invoke-AXEUpdate','Get-AXELatestRelease','Test-AXESignature','New-AXEChecksums','New-AXESbom','Test-AXEAssetUrl'){
             if(-not (Get-Command $fn -EA SilentlyContinue)){ [void]$fails.Add("S30: funcion de la cadena de confianza '$fn' no definida") }

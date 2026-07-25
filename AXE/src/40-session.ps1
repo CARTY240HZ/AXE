@@ -16,7 +16,12 @@
 $script:AXESessionFamilies = @{
     voz        = @('discord','discordptb','discordcanary','teamspeak','teamspeak3','ts3client','mumble','ventrilo')
     anticheat  = @('easyanticheat','easyanticheat_eos','beservice','battleye','bedaisy','vgc','vgtray','vgk','faceitservice','faceit')
-    shell      = @('dwm','explorer','csrss','winlogon','wininit','services','lsass','smss','fontdrvhost','sihost','ctfmon','textinputhost','startmenuexperiencehost','searchhost','searchapp','shellexperiencehost','taskhostw','runtimebroker','dllhost','applicationframehost','systemsettings','lockapp')
+    # svchost/conhost/audiodg estan aqui por una razon que el spec de A no vio: Windows aloja los
+    # servicios POR-USUARIO (CDPUserSvc, WpnUserService, OneSyncSvc, UnistoreSvc, PimIndexMaintenance
+    # ...) en instancias de svchost que corren en la SESION INTERACTIVA, no en la 0. "Session 0 queda
+    # fuera por definicion" no los cubre. Congelar uno cuelga a quien le haga un RPC SINCRONO -shell,
+    # notificaciones, portapapeles- hasta el timeout. Lo caza el test del puente sobre una maquina real.
+    shell      = @('dwm','explorer','csrss','winlogon','wininit','services','lsass','smss','svchost','conhost','audiodg','fontdrvhost','sihost','ctfmon','textinputhost','startmenuexperiencehost','searchhost','searchapp','shellexperiencehost','taskhostw','runtimebroker','dllhost','applicationframehost','systemsettings','lockapp')
     navegador  = @('chrome','brave','msedge','edge','firefox','opera','opera_gx','vivaldi','browser')
     musica     = @('spotify','tidal','deezer','foobar2000','aimp','musicbee')
     mensajeria = @('whatsapp','telegram','signal','slack')
@@ -90,11 +95,112 @@ function Get-AXESessionPlan {
     [pscustomobject]@{ Intacto=@($intacto); Degradado=@($degradado); Congelado=@($congelado) }
 }
 
+# --- Reparto configurable por app: persistencia (spec 2026-07-25) ---------------------------
+# El planificador ya aceptaba -Config y estaba testeado con overrides; lo que faltaba era el par
+# leer/escribir y quien lo edite (la seccion de la WebUI). Fichero PROPIO, no dentro de
+# game_profiles.json: ese es un ARRAY de perfiles de plan de energia que recorre Tick-GameProfiles;
+# meter un mapa app->nivel en el mismo array mezcla dos esquemas sin relacion, obliga a filtrar a
+# todos sus consumidores y arriesga el monitor que si toca el plan de energia en vivo.
+$script:AXESessionLevels = @('intacto','degradado','congelado')
+
+function Write-AXESessionLog {
+    # 40-session se dot-sourcea SUELTO en tests (sin 05-core, donde vive Write-AXELog): loguear es
+    # best-effort, nunca un error que tumbe una sesion.
+    param([string]$Message,[string]$Level='INFO')
+    if(Get-Command Write-AXELog -EA SilentlyContinue){ Write-AXELog $Message $Level }
+}
+
+function Get-AXESessionAppName {
+    # PURA. Normaliza a la clave con la que trabajan familias y overrides: minusculas, sin .exe.
+    param([string]$Name)
+    (([string]$Name).Trim().ToLowerInvariant()) -replace '\.exe$',''
+}
+
+function Get-AXESessionLevelsPath {
+    # Sin $script:AXEData (motor cargado suelto) devuelve $null: el llamante degrada, no inventa ruta.
+    if([string]::IsNullOrWhiteSpace($script:AXEData)){ return $null }
+    Join-Path $script:AXEData 'session_levels.json'
+}
+
+function Get-AXESessionFamily {
+    # PURA. Nombre -> familia ('navegador','voz','musica'...) o $null si no esta en ninguna. No adivina.
+    param([string]$Name)
+    $n = Get-AXESessionAppName $Name
+    foreach($fam in @($script:AXESessionFamilies.Keys)){
+        if($script:AXESessionFamilies[$fam] -contains $n){ return [string]$fam }
+    }
+    $null
+}
+
+function Test-AXESessionHardApp {
+    # PURA. Duro = shell o anticheat. El planificador los deja INTACTOS ganando a la config, asi que
+    # un override sobre ellos no haria NADA: se rechaza al escribir en vez de ignorarlo en silencio.
+    param([string]$Name)
+    $n = Get-AXESessionAppName $Name
+    $fam = $script:AXESessionFamilies
+    [bool](($fam.shell -contains $n) -or ($fam.anticheat -contains $n) -or ($n -match 'anticheat|battleye|easyanti'))
+}
+
 function Read-AXESessionOverrides {
-    # Overrides por-app {nombre->nivel}. La persistencia (UI de sesion) esta FUERA de este spec
-    # (CLI primero). El planificador puro ya acepta -Config y esta testeado con overrides; aqui
-    # se devuelve vacio hasta que exista la UI que los escriba. Honesto: no inventa config.
-    @{}
+    # Overrides por-app {nombre->nivel} desde disco. Tolerante como Read-Profiles: ausente, corrupto
+    # o con entradas invalidas -> se descarta lo que no vale y NUNCA lanza. Un fichero corrupto no se
+    # borra: se deja para inspeccion (el usuario puede haberlo editado a mano).
+    $out = @{}
+    $path = Get-AXESessionLevelsPath
+    if(-not $path -or -not (Test-Path $path)){ return $out }
+    $raw = $null
+    try { $raw = Get-Content $path -Raw -Encoding UTF8 -EA Stop } catch { return $out }
+    if([string]::IsNullOrWhiteSpace($raw)){ return $out }
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json -EA Stop } catch {
+        Write-AXESessionLog 'Sesion: session_levels.json ilegible; se usan los niveles por defecto.' 'WARN'
+        return $out
+    }
+    foreach($p in @($obj.PSObject.Properties)){
+        $name = Get-AXESessionAppName $p.Name
+        if([string]::IsNullOrWhiteSpace($name)){ continue }
+        $lvl = ([string]$p.Value).Trim().ToLowerInvariant()
+        if($script:AXESessionLevels -notcontains $lvl){ continue }   # nivel inventado: se descarta
+        $out[$name] = $lvl
+    }
+    $out
+}
+
+function Set-AXESessionOverride {
+    # Escribe o borra UN override. -Level 'default' borra (vuelve al reparto por familias).
+    # Devuelve {Ok,Reason,Overrides}; nunca lanza.
+    param([string]$Name,[string]$Level)
+    $n = Get-AXESessionAppName $Name
+    if([string]::IsNullOrWhiteSpace($n)){
+        return [pscustomobject]@{ Ok=$false; Reason='falta el nombre de la app.'; Overrides=(Read-AXESessionOverrides) }
+    }
+    $lvl = ([string]$Level).Trim().ToLowerInvariant()
+    if($lvl -ne 'default' -and $script:AXESessionLevels -notcontains $lvl){
+        return [pscustomobject]@{ Ok=$false; Overrides=(Read-AXESessionOverrides)
+            Reason=("nivel '{0}' invalido: usa {1} o default." -f $Level,($script:AXESessionLevels -join '/')) }
+    }
+    if(Test-AXESessionHardApp $n){
+        return [pscustomobject]@{ Ok=$false; Overrides=(Read-AXESessionOverrides)
+            Reason=("'{0}' es shell o anticheat: AXE nunca lo toca, asi que su nivel no es configurable." -f $n) }
+    }
+    $path = Get-AXESessionLevelsPath
+    if(-not $path){
+        return [pscustomobject]@{ Ok=$false; Reason='sin carpeta de datos de AXE: no puedo guardar el nivel.'; Overrides=@{} }
+    }
+    $map = Read-AXESessionOverrides
+    if($lvl -eq 'default'){ [void]$map.Remove($n) } else { $map[$n] = $lvl }
+    try {
+        $dir = Split-Path $path -Parent
+        if($dir -and -not (Test-Path $dir)){ New-Item -ItemType Directory -Path $dir -Force -EA Stop | Out-Null }
+        # '{}' explicito cuando queda vacio: ConvertTo-Json de un hashtable vacio no emite nada y
+        # Set-Content dejaria el fichero anterior intacto (misma trampa que documenta Save-Profiles).
+        $json = if($map.Count -eq 0){ '{}' } else { ConvertTo-Json -InputObject $map -Depth 3 }
+        Set-Content -Path $path -Value $json -Encoding UTF8 -EA Stop
+    } catch {
+        return [pscustomobject]@{ Ok=$false; Reason=("no pude guardar el nivel: {0}" -f $_.Exception.Message); Overrides=(Read-AXESessionOverrides) }
+    }
+    Write-AXESessionLog ("Sesion: nivel de '{0}' -> {1}." -f $n,$lvl)
+    [pscustomobject]@{ Ok=$true; Reason=$null; Overrides=$map }
 }
 
 function Start-AXESession {
@@ -170,6 +276,92 @@ function Watch-AXESession {
     if($PollMs -lt 100){ $PollMs = 100 }
     while(Get-Process -Id ([int]$Session.GamePid) -EA SilentlyContinue){
         Start-Sleep -Milliseconds $PollMs
+    }
+}
+
+# --- Ciclo de vida no bloqueante para la ventana (spec 2026-07-25) ---------------------------
+# La CLI usa Watch-AXESession (bloqueante). La ventana NO puede: colgaria el hilo que atiende el
+# puente. El ciclo vive aqui porque es logica de negocio y 48-webbridge no lleva logica; el
+# frontend lo mueve sondeando session.status cada 2 s. UNA sesion por proceso AXE (invariante del
+# spec A): dos handles romperian lo unico que hace segura la recuperacion, que cerrar EL handle
+# descongele TODO.
+$script:AXESessionCur   = $null   # sesion viva, o $null
+$script:AXESessionEnded = $null   # motivo del ultimo cierre, para que la UI diga por que se apago
+
+function Get-AXESessionCurrent { $script:AXESessionCur }
+
+function Start-AXESessionTracked {
+    # Idempotente a proposito: con sesion viva devuelve LA MISMA, no crea un segundo job. La UI no
+    # ofrece ON mientras hay sesion, asi que este camino es una red defensiva; se loguea.
+    param([string]$GameName)
+    if($script:AXESessionCur){
+        Write-AXESessionLog 'Sesion: ON ignorado, ya habia una sesion activa (un proceso, un dueno, un handle).' 'WARN'
+        return $script:AXESessionCur
+    }
+    $s = Start-AXESession -GameName $GameName
+    if($s -and $s.Ok){
+        $script:AXESessionCur = $s; $script:AXESessionEnded = $null
+        Write-AXESessionLog ("Sesion ON - juego '{0}' (pid {1}): {2} congelados, {3} fallidos, {4} degradados." -f `
+            $s.Game,$s.GamePid,$s.Assigned,$s.Failed,@($s.Degraded).Count)
+    }
+    $s
+}
+
+function Stop-AXESessionTracked {
+    # Cierra el handle (el kernel descongela) y restaura prioridades. Guarda el motivo para la UI.
+    param([string]$Reason='OFF manual.')
+    if(-not $script:AXESessionCur){ return $null }
+    $s = $script:AXESessionCur
+    Stop-AXESession $s
+    $script:AXESessionCur   = $null
+    $script:AXESessionEnded = [string]$Reason
+    Write-AXESessionLog ("Sesion OFF - {0} Fondo descongelado y prioridades restauradas." -f $Reason)
+    $s
+}
+
+function Sync-AXESessionTracked {
+    # Salida automatica: si el proceso del juego murio, la sesion se cierra AQUI. Lo llama
+    # session.status en cada sondeo. Si AXE muere antes de sondear, el kernel descongela igual: lo
+    # que se pierde con la ventana cerrada no es la recuperacion, es el aviso.
+    if(-not $script:AXESessionCur){ return $null }
+    if(-not (Get-Process -Id ([int]$script:AXESessionCur.GamePid) -EA SilentlyContinue)){
+        [void](Stop-AXESessionTracked -Reason ("el juego '{0}' se cerro." -f $script:AXESessionCur.Game))
+        return $null
+    }
+    $script:AXESessionCur
+}
+
+function Get-AXESessionStatus {
+    # PURA sobre su argumento: NO lee la sesion viva (la resuelve el llamante), por eso es testeable
+    # headless igual que Get-AXESessionPlan. DTO plano y JSON-seguro, con las mismas lineas que ve la
+    # CLI: la honestidad del texto vive en Format-AXESession, no duplicada aqui.
+    param($Session,[string]$EndedReason)
+    $ended = $(if([string]::IsNullOrWhiteSpace($EndedReason)){ $null } else { [string]$EndedReason })
+    $lines = @(Format-AXESession $Session)
+    if(-not $Session -or -not $Session.Ok){
+        return [pscustomobject]@{
+            active=$false; game=$null; gamePid=$null; sessionId=$null
+            frozen=0; failed=0; degraded=0; intact=0; elapsedS=$null; startedAt=$null
+            reason=$(if($Session){ [string]$Session.Reason } else { $null })
+            endedReason=$ended; lines=$lines
+        }
+    }
+    $elapsed = $null
+    if($Session.Started){ $elapsed = [int][math]::Max(0, ((Get-Date) - [datetime]$Session.Started).TotalSeconds) }
+    [pscustomobject]@{
+        active    = $true
+        game      = [string]$Session.Game
+        gamePid   = [int]$Session.GamePid
+        sessionId = [int]$Session.SessionId
+        frozen    = [int]$Session.Assigned
+        failed    = [int]$Session.Failed
+        degraded  = @($Session.Degraded).Count
+        intact    = @($Session.Plan.Intacto).Count
+        elapsedS  = $elapsed
+        startedAt = $(if($Session.Started){ ([datetime]$Session.Started).ToString('HH:mm:ss') } else { $null })
+        reason    = $null
+        endedReason = $ended
+        lines     = $lines
     }
 }
 
