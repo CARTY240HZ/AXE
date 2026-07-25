@@ -25,6 +25,18 @@ y [Versionado Semántico](https://semver.org/lang/es/).
   nada es peor que un rechazo.
 
 ### Corregido
+- **La prioridad degradada ya no se queda baja si AXE muere** (`src/40-session.ps1`,
+  `src/47-webhost.ps1`, `src/49-webmain.ps1`). El diseño apoyaba TODA la recuperación en el kernel:
+  al cerrarse el handle del job, Windows descongela. Cierto para lo congelado y **falso para lo
+  degradado** — bajar la prioridad no es estado del job, es una propiedad del proceso. Cerrar la
+  ventana con sesión activa dejaba el navegador en `BelowNormal` hasta reiniciarlo, que es el «dejar
+  la máquina a medias» que el spec prohíbe; y la sección nueva pone esa ruta al alcance de todos, no
+  sólo de quien usa CLI. Ahora el cierre limpio llama a `Stop-AXESessionTracked` desde `Add_Closed`, y
+  la salida sucia (kill, BSOD, corte de luz) la cubre un diario en `AXE/session_degraded.json` que el
+  arranque siguiente consume. El diario verifica **pid + nombre + instante de arranque** antes de
+  tocar nada, porque los pid se reusan y restaurar por pid a secas sube la prioridad de un tercero; y
+  lleva **dueño**, para que con dos AXE abiertos el segundo no restaure a media partida ni borre la
+  red del primero. Se ejerce con un proceso real degradado y restaurado, sin admin.
 - **Los servicios POR-USUARIO ya no son congelables** (`src/40-session.ps1`). El spec del daemon
   asumía que «Session 0 queda fuera por definición» cubría a los servicios. No los cubre: Windows
   aloja `CDPUserSvc`, `WpnUserService`, `OneSyncSvc`, `UnistoreSvc` y compañía en instancias de
@@ -35,6 +47,9 @@ y [Versionado Semántico](https://semver.org/lang/es/).
   `session.preview` sobre los procesos **reales** de la máquina: los 15 tests sintéticos no podían
   verlo porque su fixture ponía `svchost` en Session 0 — precisamente lo que la suposición daba por
   cierto.
+- **El router de la ventana robaba teclas al selector de nivel** (`webui/app.js`): con el `<select>`
+  enfocado, teclear para elegir una opción cambiaba de vista. `SELECT` entra en la misma exclusión
+  que `INPUT`/`TEXTAREA`.
 - **`Update.Tests.ps1` probaba lo contrario de lo que decía.** El caso «sin poder consultar la API
   dice error» pasaba `-Release $null`, que es indistinguible de omitir el parámetro, así que caía en
   `Get-AXELatestRelease` y **llamaba a la API de GitHub de verdad**. Verde sólo mientras no hubiera

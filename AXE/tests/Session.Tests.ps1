@@ -218,6 +218,139 @@ Describe 'Overrides del reparto - persistencia' -Tag 'unit' {
     }
 }
 
+# --- Diario de prioridades (auditoria 2026-07-25). La red que el kernel NO da: descongelar es
+# estado del job, bajar la prioridad no. Aqui se ejerce con un proceso REAL propio (sin admin): se
+# degrada, se simula que AXE murio sin cerrar, y se comprueba que el arranque siguiente la devuelve.
+Describe 'Diario de prioridades - la red de la salida sucia' -Tag 'unit' {
+
+    # El helper va en BeforeAll, no en el cuerpo del Describe: Pester 5 corre el cuerpo en la fase de
+    # descubrimiento, y lo definido ahi no existe cuando corren los It.
+    BeforeAll {
+        # Cobaya: otro proceso del MISMO host que corre esta suite. Nadie mas lo toca.
+        function New-Guinea {
+            $exe = (Get-Process -Id $PID).Path
+            $p = Start-Process -FilePath $exe -ArgumentList '-NoProfile', '-Command', 'Start-Sleep 60' -PassThru -WindowStyle Hidden
+            Start-Sleep -Milliseconds 500   # que StartTime exista antes de leerlo
+            $p
+        }
+    }
+
+    BeforeEach {
+        $script:AXEData = Join-Path ([System.IO.Path]::GetTempPath()) ('axe-test-jrn-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:AXEData -Force | Out-Null
+    }
+    AfterEach {
+        if($script:AXEData -and (Test-Path $script:AXEData)){ Remove-Item $script:AXEData -Recurse -Force -EA SilentlyContinue }
+    }
+
+    It 'sin diario no hay nada que restaurar' {
+        Restore-AXESessionDegraded | Should -Be 0
+    }
+
+    It 'un diario ilegible se descarta y se borra, sin lanzar' {
+        Set-Content -Path (Get-AXESessionJournalPath) -Value '{ esto no es json' -Encoding UTF8
+        { Restore-AXESessionDegraded } | Should -Not -Throw
+        Test-Path (Get-AXESessionJournalPath) | Should -BeFalse
+    }
+
+    It 'restaura DE VERDAD la prioridad de un proceso degradado tras una muerte sucia' {
+        $g = New-Guinea
+        try {
+            $pr   = Get-Process -Id $g.Id
+            $prev = [string]$pr.PriorityClass
+            $pr.PriorityClass = 'BelowNormal'
+            # Lo que deja Start-AXESession; despues, nadie llama a Stop (kill/BSOD).
+            Write-AXESessionJournal @([pscustomobject]@{
+                Pid = [int]$g.Id; Name = [string]$pr.ProcessName; Prev = $prev; StartTicks = [long]$pr.StartTime.Ticks })
+            Test-Path (Get-AXESessionJournalPath) | Should -BeTrue
+            Restore-AXESessionDegraded | Should -Be 1
+            [string](Get-Process -Id $g.Id).PriorityClass | Should -Be $prev
+            Test-Path (Get-AXESessionJournalPath) | Should -BeFalse   # consumido, no se repite
+        } finally { Stop-Process -Id $g.Id -Force -EA SilentlyContinue }
+    }
+
+    It 'un pid REUSADO no se toca: si el nombre no cuadra, se ignora' {
+        $g = New-Guinea
+        try {
+            (Get-Process -Id $g.Id).PriorityClass = 'BelowNormal'
+            Write-AXESessionJournal @([pscustomobject]@{ Pid = [int]$g.Id; Name = 'otracosa'; Prev = 'High'; StartTicks = 0 })
+            Restore-AXESessionDegraded | Should -Be 0
+            [string](Get-Process -Id $g.Id).PriorityClass | Should -Be 'BelowNormal'
+        } finally { Stop-Process -Id $g.Id -Force -EA SilentlyContinue }
+    }
+
+    It 'mismo pid y mismo nombre pero otro arranque tampoco se toca' {
+        $g = New-Guinea
+        try {
+            $pr = Get-Process -Id $g.Id
+            $pr.PriorityClass = 'BelowNormal'
+            Write-AXESessionJournal @([pscustomobject]@{ Pid = [int]$g.Id; Name = [string]$pr.ProcessName; Prev = 'High'; StartTicks = 1 })
+            Restore-AXESessionDegraded | Should -Be 0
+            [string](Get-Process -Id $g.Id).PriorityClass | Should -Be 'BelowNormal'
+        } finally { Stop-Process -Id $g.Id -Force -EA SilentlyContinue }
+    }
+
+    It 'un diario de OTRA instancia de AXE viva no se toca ni se borra' {
+        # Dos AXE abiertos: el segundo no puede reparar la sesion del primero. Restaurar a media
+        # partida seria molesto; borrar el diario seria peor, porque dejaria al primero sin red si
+        # muriese sucio. El JSON se escribe a mano a proposito: lo que se prueba aqui es el LECTOR.
+        $owner  = New-Guinea       # hace de "otra instancia de AXE" viva
+        $victim = New-Guinea       # el proceso degradado que ese diario dice haber tocado
+        try {
+            $op = Get-Process -Id $owner.Id
+            $vp = Get-Process -Id $victim.Id
+            $vp.PriorityClass = 'BelowNormal'
+            $doc = [pscustomobject]@{
+                owner    = [pscustomobject]@{ pid = [int]$owner.Id; name = [string]$op.ProcessName; startTicks = [long]$op.StartTime.Ticks }
+                degraded = @([pscustomobject]@{ pid = [int]$victim.Id; name = [string]$vp.ProcessName; prev = 'Normal'; startTicks = [long]$vp.StartTime.Ticks })
+            }
+            Set-Content -Path (Get-AXESessionJournalPath) -Value (ConvertTo-Json -InputObject $doc -Depth 4) -Encoding UTF8
+            Restore-AXESessionDegraded | Should -Be 0
+            [string](Get-Process -Id $victim.Id).PriorityClass | Should -Be 'BelowNormal'
+            Test-Path (Get-AXESessionJournalPath) | Should -BeTrue   # sigue siendo la red del otro
+        } finally {
+            Stop-Process -Id $owner.Id  -Force -EA SilentlyContinue
+            Stop-Process -Id $victim.Id -Force -EA SilentlyContinue
+        }
+    }
+
+    It 'si el dueño ya murio, el diario se repara (es justo el caso que existe para cubrir)' {
+        $owner = New-Guinea
+        $ownerPid = [int]$owner.Id; $ownerName = (Get-Process -Id $ownerPid).ProcessName
+        $ownerTicks = [long](Get-Process -Id $ownerPid).StartTime.Ticks
+        Stop-Process -Id $ownerPid -Force            # muerte sucia del "AXE" anterior
+        $victim = New-Guinea
+        try {
+            $vp = Get-Process -Id $victim.Id
+            $vp.PriorityClass = 'BelowNormal'
+            $doc = [pscustomobject]@{
+                owner    = [pscustomobject]@{ pid = $ownerPid; name = [string]$ownerName; startTicks = $ownerTicks }
+                degraded = @([pscustomobject]@{ pid = [int]$victim.Id; name = [string]$vp.ProcessName; prev = 'Normal'; startTicks = [long]$vp.StartTime.Ticks })
+            }
+            Set-Content -Path (Get-AXESessionJournalPath) -Value (ConvertTo-Json -InputObject $doc -Depth 4) -Encoding UTF8
+            Restore-AXESessionDegraded | Should -Be 1
+            [string](Get-Process -Id $victim.Id).PriorityClass | Should -Be 'Normal'
+        } finally { Stop-Process -Id $victim.Id -Force -EA SilentlyContinue }
+    }
+
+    It 'Test-AXESessionSameProcess reconoce al propio proceso y rechaza lo dudoso' {
+        $me = Get-Process -Id $PID
+        Test-AXESessionSameProcess -ProcessId $PID -Name $me.ProcessName -StartTicks ([long]$me.StartTime.Ticks) | Should -BeTrue
+        Test-AXESessionSameProcess -ProcessId $PID -Name $me.ProcessName -StartTicks 1 | Should -BeFalse
+        Test-AXESessionSameProcess -ProcessId $PID -Name 'otracosa'      -StartTicks 0 | Should -BeFalse
+        Test-AXESessionSameProcess -ProcessId 0    -Name $me.ProcessName -StartTicks 0 | Should -BeFalse
+    }
+
+    It 'sin carpeta de datos el diario no existe y restaurar es un no-op' {
+        $old = $script:AXEData
+        $script:AXEData = $null
+        try {
+            Get-AXESessionJournalPath  | Should -BeNullOrEmpty
+            Restore-AXESessionDegraded | Should -Be 0
+        } finally { $script:AXEData = $old }
+    }
+}
+
 Describe 'Get-AXESessionFamily / Test-AXESessionHardApp - puras' -Tag 'unit' {
 
     It 'clasifica por familia, con o sin extension' {
