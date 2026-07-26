@@ -472,8 +472,11 @@ Pester **834 passed, 0 failed** (+36 en `tests/Advisor.Tests.ps1`) · SelfTest 8
 
 - `Get-AXEAdviceNow` y `Get-AXEAppliedIds` **no tienen test**: la primera mide de verdad (~1 s) y
   la segunda ejecuta el `Test` de 82 tweaks contra el registro real. Se validan ejecutando.
-- La tarjeta del consejero en la WebUI **no se ha comprobado en navegador**. Reutiliza el markup
-  `.finding` ya verificado y vive en una columna flex, no en la rejilla del panel, así que el
-  riesgo es bajo — pero bajo no es cero, y aquí se dice.
+- ~~La tarjeta del consejero en la WebUI no se ha comprobado en navegador.~~ **Comprobada**
+  después de escribir esto: camino de error (sin puente degrada con mensaje y rehabilita el
+  botón) y camino de éxito (3 tarjetas, severidad correcta `cuello`/`revisar`→rojo y
+  `catalogo`→neutro, pie con la salvedad observacional), sin desborde horizontal. Se deja el
+  tachado a la vista en vez de borrar la línea: el registro de lo que faltaba vale más que un
+  documento que parezca que salió perfecto a la primera.
 - El historial arranca vacío: hasta la sexta medición el consejero no puede opinar sobre ningún
   ajuste. Es correcto por diseño, pero significa que el valor diferencial **tarda en aparecer**.
