@@ -410,3 +410,70 @@ ninguna de las siete vistas.
   mapa de bits. Aceptado, no resuelto.
 - `Start-AXESession` resuelve el juego por nombre (`Get-Process -Name X | Select -First 1`). Con
   varios procesos del mismo nombre elige arbitrariamente. Preexistente, no tocado en esta sesión.
+
+---
+
+## 10. Consejero — 2026-07-26 (`42-advisor.ps1`)
+
+Petición del autor: *"haz que sea ultra smart que parezca ia pero solo sea software"*. Se
+construyó como software determinista y **sin poner la etiqueta «IA» en ninguna parte** de la
+interfaz: llamar IA a lo que no lo es sería la mentira que hunde al único producto del mercado que
+vende honestidad, y además el código es público.
+
+### El hueco que tapa
+
+AXE sabía muchas cosas sueltas —82 tweaks con gating, un diagnóstico, mediciones de timer y
+jitter, un monitor de red— y no juntaba ninguna. El usuario leía cuatro pantallas y decidía solo.
+
+### Las tres piezas
+
+| Función | Qué aporta |
+|---|---|
+| `Get-AXEBottleneck` | razona sobre **combinaciones** («single channel **+** panel de 180 Hz»), no sobre campos sueltos |
+| `Get-AXETweakEvidence` | compara tu score con cada ajuste puesto y sin él, **en esta máquina** |
+| `Get-AXEAdvice` | funde todo en **un plan ordenado por efecto real** |
+
+### El orden, que es lo que protege un test
+
+Diagnóstico (10-40 %) → lo que tu máquina asocia a ir peor → catálogo (un dígito), el último y
+declarando su tamaño. Un optimizador que vende tweaks invierte ese orden; el test
+`el diagnostico va SIEMPRE antes que el catalogo` lo impide.
+
+### La línea que no se cruza
+
+La evidencia local es **observacional**: entre dos medidas cambian más cosas que el ajuste. Por eso
+el veredicto más fuerte posible es *«asociado a»*, jamás *«causa»*, y con menos de 3 muestras a
+cada lado no se concluye nada. El bucle se cierra solo: pedir consejo mide y guarda, así que usar
+el programa es lo que construye la evidencia, sin botones extra ni telemetría — `outcomes.json` no
+sale del disco, y el `hwHash` que lo indexa (reutilizado de `41-bench`) no lleva serial, usuario,
+MAC ni IP.
+
+### Dos defectos propios, encontrados ejecutando
+
+- **`@()` sobre `System.Collections.Generic.List[T]` lanza en PowerShell 7.6.4** («Argument types
+  do not match»), reproducido en un proceso limpio sin el motor cargado. Todo el proyecto ya usaba
+  `.ToArray()`; el que rompió la convención fui yo. Auditado el resto de `src/`: **no hay más
+  casos**. Test de regresión puesto.
+- **Un carácter no-ASCII en salida de consola** salía como mojibake bajo `powershell.exe` 5.1. Era
+  la **única** cadena de todo `src/` que llegaba a consola con caracteres no-ASCII —el resto viven
+  en comentarios, que no se imprimen—, o sea que la convención ya existía y me la salté. Hay un
+  test que recorre la salida y falla ante cualquier byte fuera de ASCII.
+- Menor: `ConvertFrom-Json` rehidrata las fechas ISO-8601 a `[datetime]`; reescribirlas sin
+  normalizar hacía derivar el formato del fichero, y un `[string]` sobre ellas habría escrito
+  `26/07/2026` en `es-ES`. Se normaliza al leer.
+
+### Verificado
+
+Pester **834 passed, 0 failed** (+36 en `tests/Advisor.Tests.ps1`) · SelfTest 82 tweaks /
+112 checks / 0 fallos · S-webui-3 verde (puente y `app.js` coherentes) · `node --check app.js` OK ·
+`-Advice` ejecutado contra la máquina de referencia.
+
+### Sin cubrir (declarado)
+
+- `Get-AXEAdviceNow` y `Get-AXEAppliedIds` **no tienen test**: la primera mide de verdad (~1 s) y
+  la segunda ejecuta el `Test` de 82 tweaks contra el registro real. Se validan ejecutando.
+- La tarjeta del consejero en la WebUI **no se ha comprobado en navegador**. Reutiliza el markup
+  `.finding` ya verificado y vive en una columna flex, no en la rejilla del panel, así que el
+  riesgo es bajo — pero bajo no es cero, y aquí se dice.
+- El historial arranca vacío: hasta la sexta medición el consejero no puede opinar sobre ningún
+  ajuste. Es correcto por diseño, pero significa que el valor diferencial **tarda en aparecer**.

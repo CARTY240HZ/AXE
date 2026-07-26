@@ -42,6 +42,31 @@ cada cambio es reversible con fidelidad y cada tweak declara si su efecto es pro
 1. Descarga o clona el repo.
 2. Ejecuta **`AXE.bat`** — se auto-eleva a administrador y abre la interfaz (WebView2).
 
+### «¿Y ahora qué hago?»
+
+Es la única pregunta que importa, y AXE la responde en una lista ordenada (botón **¿Qué hago
+ahora?**, o `-Advice`). Lo que la hace distinta no es que sea larga, sino **el orden**:
+
+1. **Lo que vale 10-40 %** — RAM en single channel, XMP apagado, el monitor por debajo de sus Hz,
+   Windows en disco mecánico. Va primero **aunque AXE no pueda arreglarlo**: vive en la BIOS, en
+   los slots o en Configuración de Windows.
+2. **Lo que tu propia máquina asocia a ir peor** con un ajuste puesto.
+3. **Los ajustes del catálogo, los últimos**, diciendo que mueven porcentajes de un dígito y que
+   varios están marcados como probable placebo.
+
+Un optimizador que vende tweaks pone ese orden justo al revés. Aquí hay un test que lo impide.
+
+Y razona sobre **combinaciones**, no sobre campos sueltos: «tienes la RAM en single channel **y**
+un panel de 180 Hz, o sea que pagaste por unos frames que la memoria no deja llegar» necesita
+cruzar dos hechos, y es lo que hace que parezca que el programa entiende tu equipo.
+
+**Aprende de lo tuyo, y sin salir de tu disco.** Cada vez que pides consejo, AXE mide y guarda el
+resultado junto a los ajustes que tenías puestos. Con el tiempo compara tu score con cada ajuste
+puesto y sin él, **en esta máquina**. Con menos de 3 medidas a cada lado **no afirma nada**, y
+cuando afirma dice *«asociado a»*, nunca *«causa»*: entre dos medidas cambian más cosas que el
+ajuste, así que es una observación, no un experimento. No hay modelo, ni nube, ni cuenta: es
+aritmética sobre un `outcomes.json` tuyo, y el código está a la vista.
+
 ### Se adapta al equipo que tengas
 
 AXE lee tu máquina campo a campo: torre o portátil (por chasis, y por batería si el fabricante
@@ -73,6 +98,7 @@ AXE.bat -Export perfil.json  :: exporta el estado actual
 AXE.bat -Import perfil.json  :: aplica un perfil (requiere admin)
 AXE.bat -Diag                :: config mal puesta que cuesta más FPS que el catálogo entero
 AXE.bat -NetMon              :: ping, jitter de red y pérdida (router + internet). Solo mide
+AXE.bat -Advice              :: qué hacer ahora, ordenado por efecto real. Mide y recuerda
 ```
 
 `-NetMon` mide el **camino ICMP**, y los juegos van por UDP: muchos routers y operadores

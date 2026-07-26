@@ -10,7 +10,9 @@ $script:HW = $null
 #     Sin el, la metrica 'score' cambiaria entre fases por el orden de carga y no por el sistema.
 #     -NetMon tambien: Measure-AXENetwork rotula la medicion con el adaptador y el medio
 #     (Wi-Fi/cable) desde $script:HW. Sin el, el informe no diria SOBRE QUE enlace se midio.
-if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag -or $Benchmark -or $NetMon){
+#     -Advice es el que mas lo necesita: cruza hechos del hardware (Hz del panel, bateria, VM)
+#     con el diagnostico, y Get-AXEAppliedIds llama a Get-BlockReason una vez por tweak.
+if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag -or $Benchmark -or $NetMon -or $Advice){
     try { $script:HW = Get-AXEHardware } catch { $script:HW = $null }
 }
 
@@ -771,6 +773,18 @@ if($Diag){
     $findings = Get-AXEDiagFindings -Facts (Get-AXEDiagFacts)
     foreach($line in (Format-AXEDiag -Findings $findings)){ Write-Host $line }
     exit ([int](@($findings | Where-Object Status -eq 'BAD').Count -gt 0))
+}
+if($Advice){
+    # Consejero (region 12c). Junta diagnostico + cuellos + catalogo + historico de ESTA maquina
+    # en un plan ordenado. Mide y GUARDA la medida: usar el consejero es lo que construye la
+    # evidencia local, sin que haya que acordarse de registrar nada aparte.
+    #   Salida 1 si hay algun cuello de botella real, para poder encadenarlo en scripts. El id
+    # 'clean' no cuenta: es justo el caso en que NO hay cuello, y devolver error por estar todo
+    # bien seria absurdo.
+    $adv = Get-AXEAdviceNow
+    Write-Host ''
+    foreach($line in (Format-AXEAdvice -Plan $adv.Plan -Samples $adv.Samples)){ Write-Host $line }
+    exit ([int](@($adv.Plan | Where-Object { $_.Kind -eq 'cuello' -and $_.Id -ne 'clean' }).Count -gt 0))
 }
 if($NetMon){
     # Monitor de red (region 9.5). Solo mide: ninguna rama de este modo escribe nada.

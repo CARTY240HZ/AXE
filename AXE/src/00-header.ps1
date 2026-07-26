@@ -48,6 +48,11 @@ param(
     [switch]$TimerSweep,
     # Verificado sin colision contra el resto de src/ antes de anadirlo (ver nota de $GameList).
     [switch]$Diag,
+    # Consejero (42-advisor). Comprobado como manda la leccion S24 antes de anadirlo:
+    # 'grep $Advice src/' = 0 apariciones fuera de aqui y de 45-cli, ninguna como variable de
+    # ruta. Declarar un switch cuyo nombre ya usa un modulo como variable local lo tipa a nivel de
+    # script y revienta esa asignacion en silencio: fue exactamente lo que paso con $Games.
+    [switch]$Advice,
     # OJO: NO llamar a este switch '$Games'. 20-tweaks.ps1 usa $Games como variable local para
     # la ruta de la tarea MMCSS ('...\SystemProfile\Tasks\Games'); declararlo aqui como [switch]
     # la tipa a nivel de script y la asignacion de esa cadena revienta => gpu_mmcss se queda

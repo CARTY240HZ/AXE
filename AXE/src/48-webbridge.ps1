@@ -332,6 +332,28 @@ $script:AXEBridgeMap = @{
     # MODIFICA el sistema: crea el job, asigna y congela. Sin admin no se niega (degrada a lo que el
     # usuario posee) pero los assign fallidos viajan en 'failed'. No exige admin a proposito: negarse
     # dejaria sin funcion a quien abre AXE sin elevar, cuando lo suyo si se puede congelar.
+    # Consejero (42-advisor). Es la UNICA entrada del puente que escribe algo por si sola:
+    # Get-AXEAdviceNow mide y guarda la medida en outcomes.json con la huella de ajustes puestos.
+    # Se declara aqui porque escribir sin decirlo seria justo lo que este proyecto le reprocha a
+    # los demas. No toca registro, ni servicios, ni procesos: solo anexa una fila a un json propio.
+    #   Coste: arrastra Get-AXESnapshot, o sea el busy-loop de jitter (~1s) en este hilo. Es una
+    # accion que pulsa el usuario, no un sondeo de fondo, asi que se acepta igual que measure.score.
+    'advisor.get' = { param($a)
+        $r = Get-AXEAdviceNow
+        [pscustomobject]@{
+            plan = @(@($r.Plan) | ForEach-Object {
+                [pscustomobject]@{
+                    order=[int]$_.Order; kind=[string]$_.Kind; id=[string]$_.Id
+                    title=[string]$_.Title; detail=[string]$_.Detail
+                    why=[string]$_.Why; impact=[string]$_.Impact; action=[string]$_.Action
+                }
+            })
+            samples = [int]@($r.Samples).Count
+            score   = $r.Score
+            ts      = $r.Timestamp
+        }
+    }
+
     # Smart detect. READ-ONLY y sin efectos: solo lee la tabla de procesos y puntua. Es la puerta
     # de entrada que faltaba - la seccion pedia ESCRIBIR el nombre del proceso, cosa que solo sabe
     # hacer quien ya sabe que Valorant corre como 'VALORANT-Win64-Shipping'. Devuelve las RAZONES
