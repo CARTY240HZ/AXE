@@ -1,7 +1,7 @@
 # ================================================================
 # AXE 7.0.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-25 21:25:40Z
-# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 43-update.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
+# Build UTC: 2026-07-26 01:46:17Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 43-update.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
@@ -30,6 +30,10 @@
 #   -Benchmark -After <id> [-Report <file>]
 #                 Vuelve a medir tras aplicar+reiniciar y da el veredicto por metrica:
 #                 mejor / peor / RUIDO. Nunca declara mejora dentro del margen de ruido.
+#   -NetMon [-NetMonTarget <ip>] [-NetMonCount N]
+#                 Ping, jitter de RED y perdida contra la puerta de enlace y una ancla publica.
+#                 Solo mide. Distingue "tu enlace" de "tu operador"; no puntua el ping a
+#                 internet porque no hay umbral honesto para eso.
 #   -Diag         Configuracion mal puesta que cuesta mas FPS que todo el catalogo junto
 #                 (XMP/EXPO, canales de RAM, Hz del monitor, SSD). Solo detecta, no toca nada.
 #   -Update [-Check]  Comprueba si hay version nueva en el repo oficial. Sin -Check la instala,
@@ -84,7 +88,14 @@ param(
     # 'Update' y 'Check' no aparecen como variable en ningun modulo (grep sobre src/ = 0 hits),
     # asi que no pueden tipar a [switch] una variable de ruta ajena. S24 los vigila igual.
     [switch]$Update,
-    [switch]$Check
+    [switch]$Check,
+    # Monitor de red (37-netmon.ps1). Cubre el hueco que el audit de 2026-07-25 dejo abierto:
+    # el jitter de 32-measure es de TIMER, no de red, y de red no se medi­a nada.
+    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
+    # grep '$NetMon' sobre src/ = 0 hits fuera de 45-cli. Ninguno se usa como variable de ruta.
+    [switch]$NetMon,
+    [string]$NetMonTarget = '1.1.1.1',
+    [int]$NetMonCount = 20
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
@@ -552,11 +563,16 @@ Add-Tweak @{Id='net_ecn';Cat='RED';Tier=1;Reboot=$false;Name='ECN OFF';Desc='Evi
  Test={ $t=Get-AXECache 'nettcp' { try{Get-NetTCPSetting -SettingName Internet -EA Stop}catch{$null} }; if(-not $t){$false}else{$t.EcnCapability -eq 'Disabled'} };Apply={netsh int tcp set global ecncapability=disabled | Out-Null};Revert={netsh int tcp set global ecncapability=default | Out-Null}}
 Add-Tweak @{Id='net_qos';Cat='RED';Tier=1;Reboot=$true;Name='QoS sin reserva de banda';Desc='NonBestEffortLimit=0 (REINICIO). EFECTO DISCUTIDO: la reserva del 20% solo la consumen apps que usan la API de QoS; si ninguna reserva, el ancho ya esta disponible. Ganancia probable ~0 en un PC domestico';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-qos';
  Test={(Get-RV 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit') -eq 0};Apply={Set-RD 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit' 0};Revert={Del-RV 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit'}}
-Add-Tweak @{Id='net_intmod';Cat='RED';Tier=1;Reboot=$false;Name='Interrupt Moderation NIC OFF';Desc='Menos buffering en el adaptador activo. COMPROMISO REAL: baja latencia a cambio de MAS uso de CPU por interrupciones. En CPU justa puede salir peor';Requires=@{};Source='https://learn.microsoft.com/en-us/windows-server/networking/technologies/network-subsystem/net-sub-performance-tuning-nics';
+Add-Tweak @{Id='net_intmod';Cat='RED';Tier=1;Reboot=$false;Name='Interrupt Moderation NIC OFF';Desc='Menos buffering en el adaptador activo. COMPROMISO REAL: baja latencia a cambio de MAS uso de CPU por interrupciones. En CPU justa puede salir peor';Requires=@{NicProp='*InterruptModeration'};Source='https://learn.microsoft.com/en-us/windows-server/networking/technologies/network-subsystem/net-sub-performance-tuning-nics';
  # El catch de antes devolvia $true: CUALQUIER error al leer la propiedad se reportaba como
  # "aplicado", y ademas sumaba en TweaksOn del score. Un fallo silencioso presentado como exito.
  # Ahora se distingue: si el adaptador no expone la propiedad no hay nada que aplicar (true
  # vacuo, correcto); si la expone se lee su valor real. Sin rama que convierta error en exito.
+ # El "true vacuo" de abajo YA NO es lo que ve el usuario: Requires.NicProp saca el tweak de la
+ # lista con motivo ("el adaptador X no expone *InterruptModeration") antes de llegar aqui. Se
+ # conserva como defensa para las rutas que evaluan el catalogo entero sin gating (-List) y para
+ # el hueco entre el arranque de la GUI y la llegada del HW desde el runspace, donde
+ # Get-BlockReason retorna $null por no tener hardware que consultar.
  Test={ if(-not $script:HW.NicName){return $true};
         $p=Get-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -EA SilentlyContinue
         if($null -eq $p){ return $true }
@@ -707,6 +723,22 @@ Add-Tweak @{Id='svc_wsearch';Cat='SERVICIOS';Tier=1;Reboot=$false;Name='Indexaci
  Test={(Get-SvcStart 'WSearch') -eq 'Disabled'};
  Apply={Set-SvcStart 'WSearch' 'disabled'; Stop-Service 'WSearch' -Force -EA SilentlyContinue};
  Revert={Set-SvcStart 'WSearch' 'auto'; Start-Service 'WSearch' -EA SilentlyContinue}}
+Add-Tweak @{Id='svc_hostsplit';Cat='SERVICIOS';Tier=2;Reboot=$true;Name='Agrupar servicios en menos svchost';Desc='Deshace el reparto 1-servicio-por-proceso de Win10 1703+. Ahorra procesos y RAM de sobrecarga, NO da FPS. Precio real: se pierde el aislamiento por servicio que Microsoft puso a posta (un cuelgue se lleva al grupo). Solo se ofrece con RAM justa (REINICIO)';Requires=@{MaxRam=8};Source='https://learn.microsoft.com/en-us/windows/application-management/svchost-service-refactoring';SourceType='official';PlaceboLikely=$true;NotesEng='Windows 10 1703+ hosts each service in its own svchost.exe when physical RAM exceeds the threshold in SvcHostSplitThresholdInKB (MS default 0x380000 = 3.5GB in KB). Raising the threshold above installed RAM restores the pre-1703 grouped hosting. Mechanism VERIFIED on the reference machine rather than assumed: with the threshold above RAM, 92 running services occupy 41 processes with only 2 launched in split form (-k <group> -p -s <service>), and same-group services share a PID (netsvcs 20 services / 3 PIDs, DcomLaunch 7 / 1). The saving is process count and per-process overhead, not frames: PlaceboLikely stays true so this never enters the recommended or latency sets. The cost is the reason MS split them: grouped services lose per-service crash isolation and per-service token hardening. Gated by MaxRam=8 because above that the memory saved is irrelevant and only the downside remains; below ~3.5GB Windows already groups and the tweak is a no-op.';
+ # Test pregunta por la REGLA, no por un numero magico: "el umbral configurado fuerza agrupacion
+ # en ESTA maquina?". Un -eq contra una constante daria falso en cualquier equipo con otra RAM.
+ Test={ $ram=Get-AXECache 'osmem' { try{(Get-CimInstance Win32_OperatingSystem -EA Stop).TotalVisibleMemorySize}catch{$null} }
+        if(-not $ram){ return $false }
+        $t=Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control' 'SvcHostSplitThresholdInKB'
+        ($null -ne $t) -and ([int64]$t -gt [int64]$ram) };
+ Apply={ $ram=(Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize
+         Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control' 'SvcHostSplitThresholdInKB' ([int]($ram + 1024)) };
+ # Via normal = Restore-TweakState (devuelve el valor REAL previo capturado por Set-RD). Aqui se
+ # llega solo sin snapshot; 0x380000 no es una conjetura del default sino el valor que Microsoft
+ # documenta en la pagina citada, y se avisa igual porque la maquina podia venir ya modificada
+ # por otro optimizador (en la de referencia venia con 137922056, no con el default).
+ Revert={
+   Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control' 'SvcHostSplitThresholdInKB' 3670016
+   Write-AXELog 'svc_hostsplit: revertido al umbral documentado por Microsoft (0x380000 = 3.5GB). Si tu equipo tenia otro valor puesto por otra herramienta, ese no se recupera desde aqui.' 'WARN'}}
 # FIX M1: svc_remotereg = hardening UNIDIRECCIONAL documentado (Apply==Revert a posta; no es un toggle falso)
 Add-Tweak @{Id='svc_remotereg';Cat='SERVICIOS';Tier=0;Reboot=$false;Name='RemoteRegistry OFF (seguridad)';Desc='Hardening: siempre lo deja disabled (no es reversible por seguridad)';Requires=@{};
  Test={(Get-SvcStart 'RemoteRegistry') -eq 'Disabled'};Apply={Set-SvcStart 'RemoteRegistry' 'disabled'};Revert={Set-SvcStart 'RemoteRegistry' 'disabled'}}
@@ -842,6 +874,30 @@ if($script:CAT.Count -lt 10){
     if($SelfTest -or $List -or $Export -or $Import){ exit 1 }
 }
 
+# --- Propiedades avanzadas del adaptador activo (soporte del gate NicProp) ---
+# POR QUE EXISTE: varios Test de RED devuelven "true vacuo" cuando el adaptador no expone la
+# propiedad que el tweak toca (net_intmod, mas abajo). Es correcto -- no hay nada que aplicar --
+# pero la UI lo pinta IGUAL que "aplicado", y para el usuario "no aplica aqui" y "hecho" no son
+# el mismo estado. Verificado en la maquina de referencia: el Wi-Fi activo no expone
+# *InterruptModeration y el tweak salia verde sin haber tocado nada.
+#   La salida NO es un tercer valor de retorno de Test: lo consumen el score, el SelfTest, el
+# puente y la GUI como booleano, y volverlo tri-estado los rompe a todos en silencio. Es el gate
+# que YA existe: si la propiedad no esta, el tweak no aplica a esta maquina y Get-BlockReason lo
+# dice nombrando el adaptador. Gatear con Requires=@{Wired=$true} habria sido falso para un Wi-Fi
+# que si expone la propiedad; esto pregunta por LA PROPIEDAD, no por el medio.
+#   La enumeracion NDIS es cara y no cambia mientras no cambie el adaptador => cache permanente,
+# igual que la topologia PnP. La clave lleva el nombre del NIC: otro adaptador, otra entrada.
+function Get-AXENicProps {
+    # Sin HW detectado NO se cachea: en la GUI el hardware llega desde un runspace de fondo y
+    # una lista vacia guardada en el cache PERMANENTE dejaria el gate mintiendo toda la sesion.
+    if(-not $script:HW -or -not $script:HW.NicName){ return @() }
+    Get-AXECache "nic:adv:$($script:HW.NicName)" {
+        try { @(Get-NetAdapterAdvancedProperty -Name $script:HW.NicName -EA Stop | ForEach-Object { $_.RegistryKeyword }) }
+        catch { @() }
+    } -Permanent
+}
+function Test-AXENicProp([string]$Keyword){ (Get-AXENicProps) -contains $Keyword }
+
 # =====================================================
 # REGION 6 - GATING  (devuelve $null=OK | string=motivo)
 # =====================================================
@@ -861,6 +917,11 @@ function Get-BlockReason($tw){
     }
     # --- ecosistema extendido (§3.2) ---
     if($r.MinRam -and $script:HW.RamGB -lt $r.MinRam){ return "requiere >= $($r.MinRam)GB RAM, tienes $($script:HW.RamGB)GB (con menos RAM = peor rendimiento)" }
+    # Techo de RAM. Simetrico a MinRam y no redundante: hay ajustes cuyo unico beneficio es
+    # ahorrar memoria/procesos y que por encima de cierta RAM son coste puro (svc_hostsplit).
+    if($r.MaxRam -and $script:HW.RamGB -gt $r.MaxRam){ return "requiere <= $($r.MaxRam)GB RAM, tienes $($script:HW.RamGB)GB (con esta RAM el ahorro no compensa lo que se pierde)" }
+    # Tercer estado real: la palanca no existe en ESTE adaptador. Distinto de "no aplicado".
+    if($r.NicProp -and -not (Test-AXENicProp $r.NicProp)){ return "el adaptador '$($script:HW.NicName)' no expone $($r.NicProp): no hay nada que aplicar aqui" }
     if($r.WinBuild){ if([int]$script:HW.BuildNumber -notin $r.WinBuild){ return "requiere build $($r.WinBuild -join '/'), tienes $($script:HW.BuildNumber)" } }
     if($r.CpuArch){ if($script:HW.CpuArch -notin $r.CpuArch){ return "requiere CPU $($r.CpuArch -join '/'), tienes $($script:HW.CpuArch)" } }
     if($r.CpuVendor){ if($script:HW.CpuVendor -notin $r.CpuVendor){ return "requiere $($r.CpuVendor -join '/'), tienes $($script:HW.CpuVendor)" } }
@@ -920,7 +981,7 @@ $script:RECRULES = @{
     'cpu_park'        = { param($h) -not $h.IsLaptop }                             # desparkear en portatil = termicas y bateria
     'sys_hibernate'   = { param($h) -not $h.IsLaptop }                             # en portatil la hibernacion si se usa
     'lat_msi_audio'   = { param($h) -not $h.IsLaptop }                             # MSI en audio: IRQ compartida es mas fragil en portatil
-    'net_intmod'      = { param($h) -not $h.IsWifi }                               # moderacion de interrupciones es cosa del NIC cableado
+    'net_intmod'      = { param($h) Test-AXENicProp '*InterruptModeration' }       # se pregunta por la propiedad, no por el medio: hay Wi-Fi que si la expone
     'net_rss'         = { param($h) $h.Threads -ge 8 }                             # repartir RX entre nucleos necesita nucleos
     'net_ctcp'        = { param($h) $h.IsWifi }                                    # CTCP recupera antes tras perdida: la radio pierde mas
     'gpu_ulps'        = { param($h) $h.HasNvidia }                                 # ULPS es especifico de NVIDIA
@@ -981,7 +1042,7 @@ $script:LATRULES = @{
     'cpu_park'        = { param($h) (-not $h.IsLaptop) -and (-not $h.IsHybrid) }   # en portatil throttlea; en hibrida pelea con Thread Director
     'lat_msi_audio'   = { param($h) -not $h.IsLaptop }                             # MSI en audio: la IRQ compartida de portatil es mas fragil
     'rend_ultperf'    = { param($h) (-not $h.IsLaptop) -and (-not $h.OnBattery) }  # evita el downclock en idle que se nota como lag al reaccionar
-    'net_intmod'      = { param($h) -not $h.IsWifi }                               # moderacion de interrupciones: cosa del NIC cableado
+    'net_intmod'      = { param($h) Test-AXENicProp '*InterruptModeration' }       # idem RECRULES: decide la propiedad expuesta, no Wi-Fi vs cable
     'net_rss'         = { param($h) $h.Threads -ge 8 }                             # repartir RX entre nucleos necesita nucleos
     'net_ctcp'        = { param($h) $h.IsWifi }                                    # la radio pierde paquetes; CTCP recupera antes
     'mem_pagingexec'  = { param($h) $h.RamGB -ge 23 }                              # kernel fuera del pagefile = menos micro-tirones (24GB+)
@@ -1024,8 +1085,12 @@ function Get-AXELatencyNotes {
     if($h.OnBattery){ [void]$n.Add('EN BATERIA: Power Throttling y plan de energia quedan fuera. Ademas la medicion en bateria no es comparable con la de enchufado: conecta el cargador antes de medir.') }
     if($h.IsLaptop){  [void]$n.Add('Portatil: fuera MSI de audio y core parking. En chasis compacto la IRQ compartida y las termicas cuestan mas de lo que dan.') }
     if($h.IsHybrid){  [void]$n.Add('CPU hibrida P/E: core parking fuera, se pelea con Thread Director.') }
-    if($h.IsWifi){    [void]$n.Add('Wi-Fi: dentro CTCP (recupera antes tras perdida), fuera moderacion de interrupciones (es del NIC cableado). El jitter lo domina la radio: por cable bajaria mas.') }
-    else {            [void]$n.Add('Ethernet: dentro moderacion de interrupciones del adaptador.') }
+    # La nota de moderacion de interrupciones ya no se deduce del medio: se consulta el adaptador.
+    # Un Wi-Fi que expone *InterruptModeration la recibe; un Ethernet que no la expone, no.
+    $im = Test-AXENicProp '*InterruptModeration'
+    if($h.IsWifi){    [void]$n.Add('Wi-Fi: dentro CTCP (recupera antes tras perdida). El jitter lo domina la radio: por cable bajaria mas.') }
+    if($im){          [void]$n.Add("Adaptador '$($h.NicName)': expone moderacion de interrupciones, asi que entra en el plan.") }
+    else {            [void]$n.Add("Adaptador '$($h.NicName)': no expone moderacion de interrupciones, el ajuste no aplica aqui (no es que falle: no existe la palanca).") }
     if(-not $h.IsSSD){ [void]$n.Add('Disco mecanico: apagar el indexador de busqueda es aqui la mayor ganancia de frametimes, por encima de cualquier valor de registro.') }
     else {             [void]$n.Add('SSD: dentro apagar la precarga (SysMain), que sobre SSD solo genera I/O de fondo.') }
     if($h.RamGB -lt 15){ [void]$n.Add('RAM justa: se prioriza liberar memoria sobre cachear. Kernel-en-RAM y quitar compresion quedan fuera: costarian mas de lo que dan.') }
@@ -2758,6 +2823,239 @@ function Export-AXEReport {
 }
 
 
+# >>>>> MODULE: 37-netmon.ps1 >>>>>
+# =====================================================
+# REGION 9.5 - MONITOR DE RED EN VIVO (ping, jitter de red, perdida)
+# =====================================================
+# POR QUE EXISTE: hasta ahora la cobertura de red medida era CERO. El jitter que reporta
+# 32-measure.ps1 es jitter de TIMER (despertar del scheduler), no de red: son dos cosas
+# distintas y confundirlas es el tipo de metrica de vanidad que este proyecto rechaza. El
+# catalogo toca ~8 ajustes de RED y no habia forma de ver si alguno hacia algo.
+#
+# QUE MIDE Y QUE NO (leerlo antes de sacar conclusiones):
+#   - Mide el camino ICMP. Los juegos usan UDP. Muchos routers y operadores DESPRIORIZAN o
+#     limitan ICMP, asi que un ping alto no implica que el juego vaya mal, ni un ping bajo
+#     que vaya bien. Es un indicador, no el dato del juego.
+#   - Por eso se miden DOS destinos y se reportan por separado:
+#       * puerta de enlace -> calidad del ENLACE local (radio Wi-Fi, cable, driver del NIC).
+#         Aqui si hay conclusiones duras: perder paquetes contra tu propio router no es normal.
+#       * ancla publica    -> el camino a internet. Sin veredicto absoluto: la latencia depende
+#         de la geografia y no existe un umbral honesto de "buen ping".
+#   - No hay puntuacion 0-100. Un numero unico aqui seria inventado.
+#
+# La parte que decide (Get-AXENetStats / Get-AXENetFindings) es PURA: recibe muestras y
+# devuelve numeros y hallazgos sin tocar la red. Asi se testea sin hardware ni conexion.
+
+function Get-AXENetStats {
+    # PURA. $Samples = RTT en ms por sonda; $null = paquete perdido.
+    param([object[]]$Samples)
+
+    $all  = @($Samples)
+    $ok   = @($all | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
+    $sent = $all.Count
+    $recv = $ok.Count
+
+    if($sent -eq 0){
+        return [pscustomobject]@{
+            Sent=0; Received=0; LostPct=$null; MinMs=$null; AvgMs=$null
+            MaxMs=$null; P95Ms=$null; JitterMs=$null
+        }
+    }
+    $lost = [math]::Round(100.0 * ($sent - $recv) / $sent, 1)
+    if($recv -eq 0){
+        return [pscustomobject]@{
+            Sent=$sent; Received=0; LostPct=$lost; MinMs=$null; AvgMs=$null
+            MaxMs=$null; P95Ms=$null; JitterMs=$null
+        }
+    }
+
+    $sorted = @($ok | Sort-Object)
+    # P95 por rango mas cercano, sin interpolar. Con 20 sondas la interpolacion finge una
+    # precision que no existe; el indice entero es honesto y reproducible.
+    $idx = [int][math]::Ceiling(0.95 * $sorted.Count) - 1
+    if($idx -lt 0){ $idx = 0 }
+    if($idx -ge $sorted.Count){ $idx = $sorted.Count - 1 }
+
+    # Jitter de red = media del |delta| entre RTT CONSECUTIVOS, que es lo que se percibe como
+    # inestabilidad. NO es la desviacion tipica: un RTT que sube despacio y de forma monotona
+    # da desviacion alta y no se nota; saltar 5ms arriba y abajo cada paquete si se nota.
+    #   Los deltas se toman solo entre sondas CONSECUTIVAS RECIBIDAS. Saltarse las perdidas y
+    # encadenar los dos extremos del hueco inflaria el jitter con un intervalo que en realidad
+    # cubre varios periodos: la perdida ya se reporta aparte y no se cobra dos veces.
+    $deltas = New-Object System.Collections.Generic.List[double]
+    for($i=1; $i -lt $all.Count; $i++){
+        $a = $all[$i-1]; $b = $all[$i]
+        if($null -eq $a -or $null -eq $b){ continue }
+        [void]$deltas.Add([math]::Abs([double]$b - [double]$a))
+    }
+    $jit = $null
+    if($deltas.Count -gt 0){ $jit = [math]::Round((($deltas | Measure-Object -Average).Average), 2) }
+
+    [pscustomobject]@{
+        Sent     = $sent
+        Received = $recv
+        LostPct  = $lost
+        MinMs    = [math]::Round(($ok | Measure-Object -Minimum).Minimum, 2)
+        AvgMs    = [math]::Round(($ok | Measure-Object -Average).Average, 2)
+        MaxMs    = [math]::Round(($ok | Measure-Object -Maximum).Maximum, 2)
+        P95Ms    = [math]::Round($sorted[$idx], 2)
+        JitterMs = $jit
+    }
+}
+
+function Get-AXENetFindings {
+    # PURA. Solo emite hallazgos donde el dato es INEQUIVOCO. Deliberadamente corta: la
+    # tentacion es puntuar el ping a internet, y no hay umbral defendible (200ms desde otro
+    # continente puede ser perfectamente normal). Contra la propia puerta de enlace si lo hay.
+    param($Gw, $Pub)
+
+    $out = New-Object System.Collections.ArrayList
+
+    if($Gw -and $Gw.Sent -gt 0){
+        if($Gw.Received -eq 0){
+            [void]$out.Add([pscustomobject]@{ Sev='ERR'; Msg='La puerta de enlace no responde a ninguna sonda. O filtra ICMP, o el enlace esta caido.' })
+        } else {
+            # Perdida contra el router: no atraviesa internet, no hay operador de por medio.
+            # Cualquier valor > 0 apunta a radio, cable o driver del adaptador.
+            if($Gw.LostPct -gt 0){
+                [void]$out.Add([pscustomobject]@{ Sev='ERR'; Msg=("Perdida del {0}% contra tu propia puerta de enlace. Eso no cruza internet: mira la radio Wi-Fi, el cable o el driver del NIC." -f $Gw.LostPct) })
+            }
+            # Jitter local. El umbral es un corte practico, no una constante fisica: por cable el
+            # enlace local aporta decimas de ms, asi que varios ms de variacion consecutiva ya
+            # delatan la radio o un adaptador con problemas. Se dice que es un corte, no una ley.
+            #   AVISO DE INTERPRETACION, y no es un tecnicismo: un router responde a los pings
+            # DIRIGIDOS A EL con su CPU de gestion, que tiene la prioridad mas baja del aparato,
+            # mientras que el trafico que solo REENVIA va por la ruta rapida. Por eso se ve a
+            # menudo mas jitter contra el propio router que contra un destino de internet que
+            # pasa por el. Medido en la maquina de referencia: 7.91ms contra la puerta de enlace
+            # frente a 0.55ms contra 1.1.1.1, que atraviesa ese mismo router.
+            #   Afirmar "tu radio va mal" con este dato seria pasarse. Se reporta la medida y las
+            # DOS lecturas posibles, y se apunta a la comparacion que si distingue: si el tramo a
+            # internet sale estable, el enlace no puede ser el cuello.
+            if($null -ne $Gw.JitterMs -and $Gw.JitterMs -gt 5){
+                $msg = "Jitter de {0}ms hasta el router (corte practico: 5ms)." -f $Gw.JitterMs
+                if($Pub -and $Pub.Received -gt 0 -and $null -ne $Pub.JitterMs -and $Pub.JitterMs -le $Gw.JitterMs){
+                    $msg += " Pero el tramo a internet, que pasa por ese mismo router, sale en {0}ms: entonces lo que ves es la CPU de gestion del router respondiendo tarde a sus propios pings, no tu enlace. No es accionable desde el PC." -f $Pub.JitterMs
+                } else {
+                    $msg += ' Dos lecturas posibles: enlace inestable (radio, cable, driver) o la CPU de gestion del router respondiendo tarde a sus propios pings. Mide tambien hacia internet: si ese tramo sale estable, el enlace no es el problema.'
+                }
+                [void]$out.Add([pscustomobject]@{ Sev='WARN'; Msg=$msg })
+            }
+        }
+    }
+    # Perdida hacia fuera con enlace local limpio: separa "tu PC" de "tu operador". Sin el 0%
+    # local no se puede afirmar, porque la perdida podria venir del propio enlace.
+    if($Pub -and $Pub.Sent -gt 0 -and $Pub.Received -gt 0 -and $Pub.LostPct -gt 0 -and $Gw -and $Gw.Received -gt 0 -and $Gw.LostPct -eq 0){
+        [void]$out.Add([pscustomobject]@{ Sev='WARN'; Msg=("Perdida del {0}% hacia internet con 0% hasta tu router: el problema esta fuera de casa (operador o ruta), no en el PC." -f $Pub.LostPct) })
+    }
+    if($out.Count -eq 0){
+        [void]$out.Add([pscustomobject]@{ Sev='OK'; Msg='Sin hallazgos inequivocos. Los numeros de arriba siguen siendo del camino ICMP, no del trafico del juego.' })
+    }
+    $out.ToArray()
+}
+
+function Get-AXENetGateway {
+    # Puerta de enlace IPv4 por defecto. $null si no hay (sin red, o red solo IPv6).
+    try {
+        $r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -EA Stop |
+             Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } |
+             Sort-Object RouteMetric | Select-Object -First 1
+        if($r){ return [string]$r.NextHop }
+    } catch {}
+    try {
+        $c = Get-NetIPConfiguration -EA Stop | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1
+        if($c){ return [string]$c.IPv4DefaultGateway.NextHop }
+    } catch {}
+    $null
+}
+
+function Measure-AXENetProbe {
+    # Sondea UN destino. Devuelve el objeto de Get-AXENetStats con Target anadido.
+    # Sin dependencias externas: System.Net.NetworkInformation.Ping viene con .NET.
+    param(
+        [string]$Target,
+        [int]$Count = 20,
+        [int]$IntervalMs = 200,
+        [int]$TimeoutMs = 1000
+    )
+    if([string]::IsNullOrWhiteSpace($Target)){ return $null }
+
+    $samples = New-Object System.Collections.Generic.List[object]
+    $ping = New-Object System.Net.NetworkInformation.Ping
+    # 32 bytes = lo que manda ping.exe, para poder contrastar con el ping del sistema.
+    $payload = New-Object byte[] 32
+    try {
+        for($i=0; $i -lt $Count; $i++){
+            $rtt = $null
+            try {
+                $r = $ping.Send($Target, $TimeoutMs, $payload)
+                # Solo Success cuenta como recibido. TimedOut, TtlExpired o DestinationUnreachable
+                # son perdida desde el punto de vista del que juega: la respuesta no llego.
+                if($r.Status -eq 'Success'){ $rtt = [double]$r.RoundtripTime }
+            } catch { $rtt = $null }
+            [void]$samples.Add($rtt)
+            # Sin espera tras la ultima sonda: solo alargaria la medicion sin aportar nada.
+            if($i -lt ($Count-1) -and $IntervalMs -gt 0){ Start-Sleep -Milliseconds $IntervalMs }
+        }
+    } finally { $ping.Dispose() }
+
+    $st = Get-AXENetStats -Samples $samples.ToArray()
+    $st | Add-Member -NotePropertyName Target -NotePropertyValue $Target -PassThru
+}
+
+function Measure-AXENetwork {
+    # Medicion completa: enlace local + ancla publica, con hallazgos.
+    #   El ancla por defecto es 1.1.1.1 porque responde a ICMP de forma estable y es anycast
+    # global, o sea que mide TU camino y no la distancia a un pais concreto. No se elige "el
+    # DNS mas rapido" ni se rankean proveedores: eso fue justo lo que se borro de
+    # 22-catalogs.ps1 por rankear sin medir.
+    param(
+        [string]$Target = '1.1.1.1',
+        [int]$Count = 20,
+        [int]$IntervalMs = 200,
+        [switch]$NoGateway
+    )
+    $gw = $null
+    $gwIp = $(if($NoGateway){ $null } else { Get-AXENetGateway })
+    if($gwIp){ $gw = Measure-AXENetProbe -Target $gwIp -Count $Count -IntervalMs $IntervalMs }
+    $pub = Measure-AXENetProbe -Target $Target -Count $Count -IntervalMs $IntervalMs
+
+    [pscustomobject]@{
+        Timestamp = (Get-Date).ToUniversalTime().ToString('u')
+        Adapter   = $(if($script:HW){ $script:HW.NicName } else { $null })
+        IsWifi    = $(if($script:HW){ [bool]$script:HW.IsWifi } else { $null })
+        Gateway   = $gw
+        Public    = $pub
+        Findings  = (Get-AXENetFindings -Gw $gw -Pub $pub)
+    }
+}
+
+function Format-AXENetwork {
+    param($r)
+    if(-not $r){ return 'Sin medicion de red.' }
+    $L = New-Object System.Collections.ArrayList
+    $ad = $(if($r.Adapter){ $r.Adapter } else { 'adaptador desconocido' })
+    $md = $(if($r.IsWifi -eq $true){ 'Wi-Fi' } elseif($r.IsWifi -eq $false){ 'cable' } else { 'medio desconocido' })
+    [void]$L.Add("RED EN VIVO - $ad ($md)")
+    [void]$L.Add('Camino ICMP. Los juegos van por UDP y muchos routers despriorizan ICMP: es un indicador, no el dato del juego.')
+    [void]$L.Add('')
+    foreach($p in @(@{T='Enlace local (router)';S=$r.Gateway}, @{T='Internet';S=$r.Public})){
+        $s = $p.S
+        if(-not $s){ [void]$L.Add(("{0,-22} : no medido" -f $p.T)); continue }
+        if($s.Received -eq 0){
+            [void]$L.Add(("{0,-22} : {1}  sin respuesta ({2} sondas, 100% perdida)" -f $p.T,$s.Target,$s.Sent))
+            continue
+        }
+        [void]$L.Add(("{0,-22} : {1}" -f $p.T,$s.Target))
+        [void]$L.Add(("  ping   min/med/max  {0}/{1}/{2} ms    P95 {3} ms" -f $s.MinMs,$s.AvgMs,$s.MaxMs,$s.P95Ms))
+        [void]$L.Add(("  jitter {0} ms (media del salto entre paquetes)    perdida {1}% ({2}/{3})" -f $s.JitterMs,$s.LostPct,($s.Sent-$s.Received),$s.Sent))
+    }
+    [void]$L.Add('')
+    foreach($f in @($r.Findings)){ [void]$L.Add(("[{0,-4}] {1}" -f $f.Sev,$f.Msg)) }
+    ($L -join "`r`n")
+}
+
+
 # >>>>> MODULE: 38-regedit.ps1 >>>>>
 # =====================================================
 # REGION 8c - REGEDIT (diagnostico): saltar al regedit.exe de Windows en la clave de un tweak
@@ -4347,7 +4645,9 @@ $script:HW = $null
 #     -Diag entra aqui porque Get-AXEDiagFacts reusa $script:HW.IsSSD en vez de recalcularlo.
 #     -Benchmark tambien: Get-AXESnapshot mide cobertura via Get-BlockReason, que necesita $HW.
 #     Sin el, la metrica 'score' cambiaria entre fases por el orden de carga y no por el sistema.
-if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag -or $Benchmark){
+#     -NetMon tambien: Measure-AXENetwork rotula la medicion con el adaptador y el medio
+#     (Wi-Fi/cable) desde $script:HW. Sin el, el informe no diria SOBRE QUE enlace se midio.
+if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag -or $Benchmark -or $NetMon){
     try { $script:HW = Get-AXEHardware } catch { $script:HW = $null }
 }
 
@@ -4431,13 +4731,28 @@ if($SelfTest){
     # Whitelist: cualquier clave desconocida (typo tipo 'MimRam') => FAIL, porque Get-BlockReason
     # la ignoraria en silencio y el tweak quedaria siempre visible (el linter no lo detecta).
     $checks++
-    $knownReq = @('MinRam','Desktop','NotLaptop','NotHybrid','AC','Wired','NotHome','Nvidia','WinVer','WinBuild','CpuArch','CpuVendor','HAGS','TamperOff','Defender','NotSMode')
+    $knownReq = @('MinRam','MaxRam','Desktop','NotLaptop','NotHybrid','AC','Wired','NotHome','Nvidia','WinVer','WinBuild','CpuArch','CpuVendor','HAGS','TamperOff','Defender','NotSMode','NicProp')
     foreach($tw in $script:CAT){
         $rq = $tw.Requires
         if($rq -isnot [hashtable]){ continue }
         foreach($k in $rq.Keys){ if($k -notin $knownReq){ [void]$fails.Add("S19: $($tw.Id) clave Requires desconocida '$k' (typo? no gatea)") } }
         if($rq.ContainsKey('HAGS') -and $tw.Cat -ne 'GPU'){ [void]$fails.Add("S19: $($tw.Id) HAGS solo aplica a Cat=GPU") }
         if($rq.ContainsKey('MinRam')){ $mr=$rq['MinRam']; if(-not ($mr -is [int]) -or $mr -le 0){ [void]$fails.Add("S19: $($tw.Id) MinRam invalido: $mr") } }
+        if($rq.ContainsKey('MaxRam')){ $xr=$rq['MaxRam']; if(-not ($xr -is [int]) -or $xr -le 0){ [void]$fails.Add("S19: $($tw.Id) MaxRam invalido: $xr") } }
+        # Ventana imposible: con MinRam >= MaxRam el tweak queda bloqueado en TODA maquina y nadie
+        # se entera, porque cada clave por separado es valida. Mismo fallo de clase que un typo en
+        # el nombre de la clave: gatea siempre y en silencio.
+        if($rq.ContainsKey('MinRam') -and $rq.ContainsKey('MaxRam') -and $rq['MinRam'] -ge $rq['MaxRam']){
+            [void]$fails.Add("S19: $($tw.Id) ventana de RAM vacia: MinRam=$($rq['MinRam']) >= MaxRam=$($rq['MaxRam'])")
+        }
+        # NicProp tiene que ser el RegistryKeyword literal de NDIS ('*InterruptModeration'): si no
+        # empieza por '*' no casa con ninguna propiedad y el gate bloquearia el tweak siempre.
+        if($rq.ContainsKey('NicProp')){
+            $np=$rq['NicProp']
+            if($np -isnot [string] -or [string]::IsNullOrWhiteSpace($np) -or -not $np.StartsWith('*')){
+                [void]$fails.Add("S19: $($tw.Id) NicProp invalido: '$np' (se espera el RegistryKeyword NDIS, p.ej. '*InterruptModeration')")
+            }
+        }
         foreach($ak in 'CpuArch','CpuVendor','WinBuild'){ if($rq.ContainsKey($ak) -and ($rq[$ak] -isnot [array])){ [void]$fails.Add("S19: $($tw.Id) $ak debe ser array") } }
     }
     # S11: masa critica actualizada (el catalogo crece con cada fusion)
@@ -5094,6 +5409,15 @@ if($Diag){
     foreach($line in (Format-AXEDiag -Findings $findings)){ Write-Host $line }
     exit ([int](@($findings | Where-Object Status -eq 'BAD').Count -gt 0))
 }
+if($NetMon){
+    # Monitor de red (region 9.5). Solo mide: ninguna rama de este modo escribe nada.
+    # Salida 1 si hay hallazgo ERR (perdida contra el propio router o enlace mudo), para
+    # poder encadenarlo igual que -Diag.
+    $r = Measure-AXENetwork -Target $NetMonTarget -Count $NetMonCount
+    Write-Host ''
+    Write-Host (Format-AXENetwork $r)
+    exit ([int](@($r.Findings | Where-Object Sev -eq 'ERR').Count -gt 0))
+}
 
 # --- GPU POR JUEGO (region 10c) -------------------------------------------------------
 # Escriben en HKCU, asi que NO piden admin: se pueden correr sin el launcher .bat.
@@ -5478,6 +5802,27 @@ $script:AXEBridgeMap = @{
             conclusive = [bool]$sw.Conclusive
             bestMs     = $bestMs
             originalMs = $sw.OriginalMs
+        }
+    }
+
+    # Monitor de red (37-netmon.ps1). BLOQUEANTE por diseno: count * intervalo (~4s con los
+    # valores por defecto). Se acota el count por el mismo motivo que fps.capture acota los
+    # segundos: el payload viene del front y un numero grande dejaria el puente mudo un rato
+    # largo. Solo mide; ninguna rama de este cmd escribe nada.
+    'net.probe' = { param($a)
+        $n = 20; if($a.count){ $n = [int]$a.count }
+        if($n -lt 4){ $n = 4 }; if($n -gt 60){ $n = 60 }
+        $r = Measure-AXENetwork -Count $n
+        # Los stats viajan tal cual (ya son planos y JSON-seguros); null donde no se midio, que
+        # es lo que el front necesita para pintar '—' en vez de inventar un cero.
+        [pscustomobject]@{
+            adapter  = $r.Adapter
+            isWifi   = $r.IsWifi
+            gateway  = $r.Gateway
+            public   = $r.Public
+            findings = @($r.Findings | ForEach-Object { [pscustomobject]@{ sev=[string]$_.Sev; msg=[string]$_.Msg } })
+            lines    = @((Format-AXENetwork $r) -split "`r?`n")
+            ts       = $r.Timestamp
         }
     }
 

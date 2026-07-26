@@ -218,6 +218,17 @@
         <div class="mini">mide, no asume: el óptimo es por-máquina (ref. valleyofdoom). Si no es concluyente, lo dice.</div>
         <pre class="mono-out" id="sweepOut">Pulsa «Medir barrido de timer» para ejecutar el barrido en esta máquina.</pre>
       </div>
+      <div class="card">
+        <div class="scope-head">
+          <div>
+            <h3>Red en vivo — ping, jitter de red y pérdida</h3>
+            <div class="mini">jitter de RED, no el del osciloscopio de arriba (ése es del timer). Camino ICMP: indicador, no el dato del juego.</div>
+          </div>
+          <button class="btn" id="btnNet" style="max-width:220px"><b>Medir red</b><span>router + internet · ~4 s</span></button>
+        </div>
+        <pre class="mono-out" id="netOut">Pulsa «Medir red» para sondear tu router y una ancla pública desde esta máquina.</pre>
+        <div id="netFinds"></div>
+      </div>
     </section>
 
     <!-- ===== SESIÓN DE JUEGO (subsistema A · spec 2026-07-25) ===== -->

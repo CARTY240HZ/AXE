@@ -132,11 +132,16 @@ Add-Tweak @{Id='net_ecn';Cat='RED';Tier=1;Reboot=$false;Name='ECN OFF';Desc='Evi
  Test={ $t=Get-AXECache 'nettcp' { try{Get-NetTCPSetting -SettingName Internet -EA Stop}catch{$null} }; if(-not $t){$false}else{$t.EcnCapability -eq 'Disabled'} };Apply={netsh int tcp set global ecncapability=disabled | Out-Null};Revert={netsh int tcp set global ecncapability=default | Out-Null}}
 Add-Tweak @{Id='net_qos';Cat='RED';Tier=1;Reboot=$true;Name='QoS sin reserva de banda';Desc='NonBestEffortLimit=0 (REINICIO). EFECTO DISCUTIDO: la reserva del 20% solo la consumen apps que usan la API de QoS; si ninguna reserva, el ancho ya esta disponible. Ganancia probable ~0 en un PC domestico';Requires=@{};Source='https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-qos';
  Test={(Get-RV 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit') -eq 0};Apply={Set-RD 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit' 0};Revert={Del-RV 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit'}}
-Add-Tweak @{Id='net_intmod';Cat='RED';Tier=1;Reboot=$false;Name='Interrupt Moderation NIC OFF';Desc='Menos buffering en el adaptador activo. COMPROMISO REAL: baja latencia a cambio de MAS uso de CPU por interrupciones. En CPU justa puede salir peor';Requires=@{};Source='https://learn.microsoft.com/en-us/windows-server/networking/technologies/network-subsystem/net-sub-performance-tuning-nics';
+Add-Tweak @{Id='net_intmod';Cat='RED';Tier=1;Reboot=$false;Name='Interrupt Moderation NIC OFF';Desc='Menos buffering en el adaptador activo. COMPROMISO REAL: baja latencia a cambio de MAS uso de CPU por interrupciones. En CPU justa puede salir peor';Requires=@{NicProp='*InterruptModeration'};Source='https://learn.microsoft.com/en-us/windows-server/networking/technologies/network-subsystem/net-sub-performance-tuning-nics';
  # El catch de antes devolvia $true: CUALQUIER error al leer la propiedad se reportaba como
  # "aplicado", y ademas sumaba en TweaksOn del score. Un fallo silencioso presentado como exito.
  # Ahora se distingue: si el adaptador no expone la propiedad no hay nada que aplicar (true
  # vacuo, correcto); si la expone se lee su valor real. Sin rama que convierta error en exito.
+ # El "true vacuo" de abajo YA NO es lo que ve el usuario: Requires.NicProp saca el tweak de la
+ # lista con motivo ("el adaptador X no expone *InterruptModeration") antes de llegar aqui. Se
+ # conserva como defensa para las rutas que evaluan el catalogo entero sin gating (-List) y para
+ # el hueco entre el arranque de la GUI y la llegada del HW desde el runspace, donde
+ # Get-BlockReason retorna $null por no tener hardware que consultar.
  Test={ if(-not $script:HW.NicName){return $true};
         $p=Get-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -EA SilentlyContinue
         if($null -eq $p){ return $true }
@@ -287,6 +292,22 @@ Add-Tweak @{Id='svc_wsearch';Cat='SERVICIOS';Tier=1;Reboot=$false;Name='Indexaci
  Test={(Get-SvcStart 'WSearch') -eq 'Disabled'};
  Apply={Set-SvcStart 'WSearch' 'disabled'; Stop-Service 'WSearch' -Force -EA SilentlyContinue};
  Revert={Set-SvcStart 'WSearch' 'auto'; Start-Service 'WSearch' -EA SilentlyContinue}}
+Add-Tweak @{Id='svc_hostsplit';Cat='SERVICIOS';Tier=2;Reboot=$true;Name='Agrupar servicios en menos svchost';Desc='Deshace el reparto 1-servicio-por-proceso de Win10 1703+. Ahorra procesos y RAM de sobrecarga, NO da FPS. Precio real: se pierde el aislamiento por servicio que Microsoft puso a posta (un cuelgue se lleva al grupo). Solo se ofrece con RAM justa (REINICIO)';Requires=@{MaxRam=8};Source='https://learn.microsoft.com/en-us/windows/application-management/svchost-service-refactoring';SourceType='official';PlaceboLikely=$true;NotesEng='Windows 10 1703+ hosts each service in its own svchost.exe when physical RAM exceeds the threshold in SvcHostSplitThresholdInKB (MS default 0x380000 = 3.5GB in KB). Raising the threshold above installed RAM restores the pre-1703 grouped hosting. Mechanism VERIFIED on the reference machine rather than assumed: with the threshold above RAM, 92 running services occupy 41 processes with only 2 launched in split form (-k <group> -p -s <service>), and same-group services share a PID (netsvcs 20 services / 3 PIDs, DcomLaunch 7 / 1). The saving is process count and per-process overhead, not frames: PlaceboLikely stays true so this never enters the recommended or latency sets. The cost is the reason MS split them: grouped services lose per-service crash isolation and per-service token hardening. Gated by MaxRam=8 because above that the memory saved is irrelevant and only the downside remains; below ~3.5GB Windows already groups and the tweak is a no-op.';
+ # Test pregunta por la REGLA, no por un numero magico: "el umbral configurado fuerza agrupacion
+ # en ESTA maquina?". Un -eq contra una constante daria falso en cualquier equipo con otra RAM.
+ Test={ $ram=Get-AXECache 'osmem' { try{(Get-CimInstance Win32_OperatingSystem -EA Stop).TotalVisibleMemorySize}catch{$null} }
+        if(-not $ram){ return $false }
+        $t=Get-RV 'HKLM:\SYSTEM\CurrentControlSet\Control' 'SvcHostSplitThresholdInKB'
+        ($null -ne $t) -and ([int64]$t -gt [int64]$ram) };
+ Apply={ $ram=(Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize
+         Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control' 'SvcHostSplitThresholdInKB' ([int]($ram + 1024)) };
+ # Via normal = Restore-TweakState (devuelve el valor REAL previo capturado por Set-RD). Aqui se
+ # llega solo sin snapshot; 0x380000 no es una conjetura del default sino el valor que Microsoft
+ # documenta en la pagina citada, y se avisa igual porque la maquina podia venir ya modificada
+ # por otro optimizador (en la de referencia venia con 137922056, no con el default).
+ Revert={
+   Set-RD 'HKLM:\SYSTEM\CurrentControlSet\Control' 'SvcHostSplitThresholdInKB' 3670016
+   Write-AXELog 'svc_hostsplit: revertido al umbral documentado por Microsoft (0x380000 = 3.5GB). Si tu equipo tenia otro valor puesto por otra herramienta, ese no se recupera desde aqui.' 'WARN'}}
 # FIX M1: svc_remotereg = hardening UNIDIRECCIONAL documentado (Apply==Revert a posta; no es un toggle falso)
 Add-Tweak @{Id='svc_remotereg';Cat='SERVICIOS';Tier=0;Reboot=$false;Name='RemoteRegistry OFF (seguridad)';Desc='Hardening: siempre lo deja disabled (no es reversible por seguridad)';Requires=@{};
  Test={(Get-SvcStart 'RemoteRegistry') -eq 'Disabled'};Apply={Set-SvcStart 'RemoteRegistry' 'disabled'};Revert={Set-SvcStart 'RemoteRegistry' 'disabled'}}
@@ -422,6 +443,30 @@ if($script:CAT.Count -lt 10){
     if($SelfTest -or $List -or $Export -or $Import){ exit 1 }
 }
 
+# --- Propiedades avanzadas del adaptador activo (soporte del gate NicProp) ---
+# POR QUE EXISTE: varios Test de RED devuelven "true vacuo" cuando el adaptador no expone la
+# propiedad que el tweak toca (net_intmod, mas abajo). Es correcto -- no hay nada que aplicar --
+# pero la UI lo pinta IGUAL que "aplicado", y para el usuario "no aplica aqui" y "hecho" no son
+# el mismo estado. Verificado en la maquina de referencia: el Wi-Fi activo no expone
+# *InterruptModeration y el tweak salia verde sin haber tocado nada.
+#   La salida NO es un tercer valor de retorno de Test: lo consumen el score, el SelfTest, el
+# puente y la GUI como booleano, y volverlo tri-estado los rompe a todos en silencio. Es el gate
+# que YA existe: si la propiedad no esta, el tweak no aplica a esta maquina y Get-BlockReason lo
+# dice nombrando el adaptador. Gatear con Requires=@{Wired=$true} habria sido falso para un Wi-Fi
+# que si expone la propiedad; esto pregunta por LA PROPIEDAD, no por el medio.
+#   La enumeracion NDIS es cara y no cambia mientras no cambie el adaptador => cache permanente,
+# igual que la topologia PnP. La clave lleva el nombre del NIC: otro adaptador, otra entrada.
+function Get-AXENicProps {
+    # Sin HW detectado NO se cachea: en la GUI el hardware llega desde un runspace de fondo y
+    # una lista vacia guardada en el cache PERMANENTE dejaria el gate mintiendo toda la sesion.
+    if(-not $script:HW -or -not $script:HW.NicName){ return @() }
+    Get-AXECache "nic:adv:$($script:HW.NicName)" {
+        try { @(Get-NetAdapterAdvancedProperty -Name $script:HW.NicName -EA Stop | ForEach-Object { $_.RegistryKeyword }) }
+        catch { @() }
+    } -Permanent
+}
+function Test-AXENicProp([string]$Keyword){ (Get-AXENicProps) -contains $Keyword }
+
 # =====================================================
 # REGION 6 - GATING  (devuelve $null=OK | string=motivo)
 # =====================================================
@@ -441,6 +486,11 @@ function Get-BlockReason($tw){
     }
     # --- ecosistema extendido (§3.2) ---
     if($r.MinRam -and $script:HW.RamGB -lt $r.MinRam){ return "requiere >= $($r.MinRam)GB RAM, tienes $($script:HW.RamGB)GB (con menos RAM = peor rendimiento)" }
+    # Techo de RAM. Simetrico a MinRam y no redundante: hay ajustes cuyo unico beneficio es
+    # ahorrar memoria/procesos y que por encima de cierta RAM son coste puro (svc_hostsplit).
+    if($r.MaxRam -and $script:HW.RamGB -gt $r.MaxRam){ return "requiere <= $($r.MaxRam)GB RAM, tienes $($script:HW.RamGB)GB (con esta RAM el ahorro no compensa lo que se pierde)" }
+    # Tercer estado real: la palanca no existe en ESTE adaptador. Distinto de "no aplicado".
+    if($r.NicProp -and -not (Test-AXENicProp $r.NicProp)){ return "el adaptador '$($script:HW.NicName)' no expone $($r.NicProp): no hay nada que aplicar aqui" }
     if($r.WinBuild){ if([int]$script:HW.BuildNumber -notin $r.WinBuild){ return "requiere build $($r.WinBuild -join '/'), tienes $($script:HW.BuildNumber)" } }
     if($r.CpuArch){ if($script:HW.CpuArch -notin $r.CpuArch){ return "requiere CPU $($r.CpuArch -join '/'), tienes $($script:HW.CpuArch)" } }
     if($r.CpuVendor){ if($script:HW.CpuVendor -notin $r.CpuVendor){ return "requiere $($r.CpuVendor -join '/'), tienes $($script:HW.CpuVendor)" } }
@@ -500,7 +550,7 @@ $script:RECRULES = @{
     'cpu_park'        = { param($h) -not $h.IsLaptop }                             # desparkear en portatil = termicas y bateria
     'sys_hibernate'   = { param($h) -not $h.IsLaptop }                             # en portatil la hibernacion si se usa
     'lat_msi_audio'   = { param($h) -not $h.IsLaptop }                             # MSI en audio: IRQ compartida es mas fragil en portatil
-    'net_intmod'      = { param($h) -not $h.IsWifi }                               # moderacion de interrupciones es cosa del NIC cableado
+    'net_intmod'      = { param($h) Test-AXENicProp '*InterruptModeration' }       # se pregunta por la propiedad, no por el medio: hay Wi-Fi que si la expone
     'net_rss'         = { param($h) $h.Threads -ge 8 }                             # repartir RX entre nucleos necesita nucleos
     'net_ctcp'        = { param($h) $h.IsWifi }                                    # CTCP recupera antes tras perdida: la radio pierde mas
     'gpu_ulps'        = { param($h) $h.HasNvidia }                                 # ULPS es especifico de NVIDIA
@@ -561,7 +611,7 @@ $script:LATRULES = @{
     'cpu_park'        = { param($h) (-not $h.IsLaptop) -and (-not $h.IsHybrid) }   # en portatil throttlea; en hibrida pelea con Thread Director
     'lat_msi_audio'   = { param($h) -not $h.IsLaptop }                             # MSI en audio: la IRQ compartida de portatil es mas fragil
     'rend_ultperf'    = { param($h) (-not $h.IsLaptop) -and (-not $h.OnBattery) }  # evita el downclock en idle que se nota como lag al reaccionar
-    'net_intmod'      = { param($h) -not $h.IsWifi }                               # moderacion de interrupciones: cosa del NIC cableado
+    'net_intmod'      = { param($h) Test-AXENicProp '*InterruptModeration' }       # idem RECRULES: decide la propiedad expuesta, no Wi-Fi vs cable
     'net_rss'         = { param($h) $h.Threads -ge 8 }                             # repartir RX entre nucleos necesita nucleos
     'net_ctcp'        = { param($h) $h.IsWifi }                                    # la radio pierde paquetes; CTCP recupera antes
     'mem_pagingexec'  = { param($h) $h.RamGB -ge 23 }                              # kernel fuera del pagefile = menos micro-tirones (24GB+)
@@ -604,8 +654,12 @@ function Get-AXELatencyNotes {
     if($h.OnBattery){ [void]$n.Add('EN BATERIA: Power Throttling y plan de energia quedan fuera. Ademas la medicion en bateria no es comparable con la de enchufado: conecta el cargador antes de medir.') }
     if($h.IsLaptop){  [void]$n.Add('Portatil: fuera MSI de audio y core parking. En chasis compacto la IRQ compartida y las termicas cuestan mas de lo que dan.') }
     if($h.IsHybrid){  [void]$n.Add('CPU hibrida P/E: core parking fuera, se pelea con Thread Director.') }
-    if($h.IsWifi){    [void]$n.Add('Wi-Fi: dentro CTCP (recupera antes tras perdida), fuera moderacion de interrupciones (es del NIC cableado). El jitter lo domina la radio: por cable bajaria mas.') }
-    else {            [void]$n.Add('Ethernet: dentro moderacion de interrupciones del adaptador.') }
+    # La nota de moderacion de interrupciones ya no se deduce del medio: se consulta el adaptador.
+    # Un Wi-Fi que expone *InterruptModeration la recibe; un Ethernet que no la expone, no.
+    $im = Test-AXENicProp '*InterruptModeration'
+    if($h.IsWifi){    [void]$n.Add('Wi-Fi: dentro CTCP (recupera antes tras perdida). El jitter lo domina la radio: por cable bajaria mas.') }
+    if($im){          [void]$n.Add("Adaptador '$($h.NicName)': expone moderacion de interrupciones, asi que entra en el plan.") }
+    else {            [void]$n.Add("Adaptador '$($h.NicName)': no expone moderacion de interrupciones, el ajuste no aplica aqui (no es que falle: no existe la palanca).") }
     if(-not $h.IsSSD){ [void]$n.Add('Disco mecanico: apagar el indexador de busqueda es aqui la mayor ganancia de frametimes, por encima de cualquier valor de registro.') }
     else {             [void]$n.Add('SSD: dentro apagar la precarga (SysMain), que sobre SSD solo genera I/O de fondo.') }
     if($h.RamGB -lt 15){ [void]$n.Add('RAM justa: se prioriza liberar memoria sobre cachear. Kernel-en-RAM y quitar compresion quedan fuera: costarian mas de lo que dan.') }

@@ -430,7 +430,36 @@
       }).catch((e) => { out.textContent = 'No se pudo medir el barrido: ' + e.message; })
         .finally(() => { b.disabled = false; b.classList.remove('busy'); });
     });
+
+    // Red en vivo: ping, jitter de RED y pérdida. Ojo con el nombre — el osciloscopio de arriba
+    // pinta jitter de TIMER (despertar del scheduler). Son cosas distintas y la tarjeta lo dice
+    // en su subtítulo: mezclarlas sería justo la métrica de vanidad que este proyecto evita.
+    const bn = $('btnNet');
+    bn.addEventListener('click', () => {
+      const out = $('netOut');
+      out.textContent = 'sondeando… (20 paquetes a tu router y a internet · ~4 s)';
+      bn.disabled = true; bn.classList.add('busy');
+      AXE.call('net.probe', {}).then((r) => {
+        out.textContent = (r.lines || []).join('\n');
+        renderNetFindings(r.findings || []);
+      }).catch((e) => { out.textContent = 'No se pudo medir la red: ' + e.message; $('netFinds').textContent = ''; })
+        .finally(() => { bn.disabled = false; bn.classList.remove('busy'); });
+    });
+
     if (scopeBuf.length) drawScope($('teleScope'));
+  }
+
+  // Hallazgos de red. textContent y no innerHTML: el texto lo compone el motor, pero interpola
+  // en él el nombre del adaptador, que sale del sistema y no es una constante nuestra.
+  function renderNetFindings(finds) {
+    const host = $('netFinds');
+    host.textContent = '';
+    for (const f of finds) {
+      const el = document.createElement('div');
+      el.className = 'netfind ' + (f.sev === 'ERR' ? 'bad' : f.sev === 'WARN' ? 'warn' : 'ok');
+      el.textContent = f.msg;
+      host.appendChild(el);
+    }
   }
 
   // Prueba y receta: A/B antes→después (baseline + report reales del motor) + FPS + diagnóstico.

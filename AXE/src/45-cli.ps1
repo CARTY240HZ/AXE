@@ -8,7 +8,9 @@ $script:HW = $null
 #     -Diag entra aqui porque Get-AXEDiagFacts reusa $script:HW.IsSSD en vez de recalcularlo.
 #     -Benchmark tambien: Get-AXESnapshot mide cobertura via Get-BlockReason, que necesita $HW.
 #     Sin el, la metrica 'score' cambiaria entre fases por el orden de carga y no por el sistema.
-if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag -or $Benchmark){
+#     -NetMon tambien: Measure-AXENetwork rotula la medicion con el adaptador y el medio
+#     (Wi-Fi/cable) desde $script:HW. Sin el, el informe no diria SOBRE QUE enlace se midio.
+if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag -or $Benchmark -or $NetMon){
     try { $script:HW = Get-AXEHardware } catch { $script:HW = $null }
 }
 
@@ -92,13 +94,28 @@ if($SelfTest){
     # Whitelist: cualquier clave desconocida (typo tipo 'MimRam') => FAIL, porque Get-BlockReason
     # la ignoraria en silencio y el tweak quedaria siempre visible (el linter no lo detecta).
     $checks++
-    $knownReq = @('MinRam','Desktop','NotLaptop','NotHybrid','AC','Wired','NotHome','Nvidia','WinVer','WinBuild','CpuArch','CpuVendor','HAGS','TamperOff','Defender','NotSMode')
+    $knownReq = @('MinRam','MaxRam','Desktop','NotLaptop','NotHybrid','AC','Wired','NotHome','Nvidia','WinVer','WinBuild','CpuArch','CpuVendor','HAGS','TamperOff','Defender','NotSMode','NicProp')
     foreach($tw in $script:CAT){
         $rq = $tw.Requires
         if($rq -isnot [hashtable]){ continue }
         foreach($k in $rq.Keys){ if($k -notin $knownReq){ [void]$fails.Add("S19: $($tw.Id) clave Requires desconocida '$k' (typo? no gatea)") } }
         if($rq.ContainsKey('HAGS') -and $tw.Cat -ne 'GPU'){ [void]$fails.Add("S19: $($tw.Id) HAGS solo aplica a Cat=GPU") }
         if($rq.ContainsKey('MinRam')){ $mr=$rq['MinRam']; if(-not ($mr -is [int]) -or $mr -le 0){ [void]$fails.Add("S19: $($tw.Id) MinRam invalido: $mr") } }
+        if($rq.ContainsKey('MaxRam')){ $xr=$rq['MaxRam']; if(-not ($xr -is [int]) -or $xr -le 0){ [void]$fails.Add("S19: $($tw.Id) MaxRam invalido: $xr") } }
+        # Ventana imposible: con MinRam >= MaxRam el tweak queda bloqueado en TODA maquina y nadie
+        # se entera, porque cada clave por separado es valida. Mismo fallo de clase que un typo en
+        # el nombre de la clave: gatea siempre y en silencio.
+        if($rq.ContainsKey('MinRam') -and $rq.ContainsKey('MaxRam') -and $rq['MinRam'] -ge $rq['MaxRam']){
+            [void]$fails.Add("S19: $($tw.Id) ventana de RAM vacia: MinRam=$($rq['MinRam']) >= MaxRam=$($rq['MaxRam'])")
+        }
+        # NicProp tiene que ser el RegistryKeyword literal de NDIS ('*InterruptModeration'): si no
+        # empieza por '*' no casa con ninguna propiedad y el gate bloquearia el tweak siempre.
+        if($rq.ContainsKey('NicProp')){
+            $np=$rq['NicProp']
+            if($np -isnot [string] -or [string]::IsNullOrWhiteSpace($np) -or -not $np.StartsWith('*')){
+                [void]$fails.Add("S19: $($tw.Id) NicProp invalido: '$np' (se espera el RegistryKeyword NDIS, p.ej. '*InterruptModeration')")
+            }
+        }
         foreach($ak in 'CpuArch','CpuVendor','WinBuild'){ if($rq.ContainsKey($ak) -and ($rq[$ak] -isnot [array])){ [void]$fails.Add("S19: $($tw.Id) $ak debe ser array") } }
     }
     # S11: masa critica actualizada (el catalogo crece con cada fusion)
@@ -754,6 +771,15 @@ if($Diag){
     $findings = Get-AXEDiagFindings -Facts (Get-AXEDiagFacts)
     foreach($line in (Format-AXEDiag -Findings $findings)){ Write-Host $line }
     exit ([int](@($findings | Where-Object Status -eq 'BAD').Count -gt 0))
+}
+if($NetMon){
+    # Monitor de red (region 9.5). Solo mide: ninguna rama de este modo escribe nada.
+    # Salida 1 si hay hallazgo ERR (perdida contra el propio router o enlace mudo), para
+    # poder encadenarlo igual que -Diag.
+    $r = Measure-AXENetwork -Target $NetMonTarget -Count $NetMonCount
+    Write-Host ''
+    Write-Host (Format-AXENetwork $r)
+    exit ([int](@($r.Findings | Where-Object Sev -eq 'ERR').Count -gt 0))
 }
 
 # --- GPU POR JUEGO (region 10c) -------------------------------------------------------
