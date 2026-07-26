@@ -558,7 +558,53 @@
         .catch((e) => { const o = $('diagOut'); o.hidden = false; o.textContent = 'No pude diagnosticar: ' + e.message; })
         .finally(() => { b.disabled = false; b.classList.remove('busy'); });
     });
+    $('btnAdvice').addEventListener('click', () => {
+      const b = $('btnAdvice'); b.disabled = true; b.classList.add('busy');
+      // Se avisa de la espera: arrastra el diagnóstico y una medición de jitter de ~1 s. Un botón
+      // que se queda mudo dos segundos parece roto, y esta pantalla no puede permitírselo.
+      $('adviceList').textContent = '';
+      $('adviceFoot').textContent = 'midiendo y cruzando datos… (un par de segundos, no aplica nada)';
+      AXE.call('advisor.get', {}).then(renderAdvice)
+        .catch((e) => { $('adviceFoot').textContent = 'No pude aconsejar: ' + e.message; })
+        .finally(() => { b.disabled = false; b.classList.remove('busy'); });
+    });
   }
+  // Consejero. Reusa el markup .finding del diagnóstico a propósito: es la misma clase de
+  // información (un hallazgo con severidad), y dos estilos distintos para lo mismo enseñarían al
+  // usuario a leerlos como si fueran cosas diferentes.
+  //   El color va por IMPACTO, no por tipo: un cuello de botella es rojo aunque AXE no lo pueda
+  // arreglar, y los ajustes del catálogo son neutros aunque sí pueda. Pintar de verde lo que
+  // vendes y de gris lo que no sería exactamente al revés de lo que le conviene a quien lee.
+  const ADV_CLS = { cuello: 'bad', revisar: 'bad', catalogo: 'unk', 'sin comprobar': 'unk' };
+
+  function renderAdvice(r) {
+    const host = $('adviceList'); host.textContent = '';
+    const foot = $('adviceFoot');
+    const plan = (r && r.plan) ? r.plan : [];
+    if (!plan.length) {
+      host.appendChild(elt('div', 'mini', 'sin datos suficientes para aconsejar. Ejecuta antes el diagnóstico.'));
+      foot.textContent = '';
+      return;
+    }
+    plan.forEach((p) => {
+      const cls = ADV_CLS[p.kind] || 'unk';
+      const card = elt('div', 'finding ' + cls);
+      const top = elt('div', 'finding-top');
+      top.appendChild(elt('span', 'finding-dot'));
+      top.appendChild(elt('div', 'finding-title', p.order + '. ' + (p.title || '')));
+      top.appendChild(elt('span', 'finding-badge ' + cls, p.kind || ''));
+      card.appendChild(top);
+      if (p.detail) card.appendChild(elt('div', 'finding-detail', p.detail));
+      card.appendChild(elt('div', 'finding-est', 'efecto: ' + p.impact + ' · base: ' + p.why + ' · acción: ' + p.action));
+      host.appendChild(card);
+    });
+    // El recuento del histórico no es decoración: dice cuánto vale lo que acabas de leer.
+    const n = r.samples || 0;
+    foot.textContent = n < 2
+      ? 'Histórico local: ' + n + ' medición. Esta lista se afina cada vez que la pides: AXE compara tu score con cada ajuste puesto y sin él, en esta máquina.'
+      : 'Histórico local: ' + n + ' mediciones en este equipo. Comparación observacional, no un experimento controlado: con menos de 3 medidas a cada lado no se afirma nada.';
+  }
+
   function renderDiag(r) {
     const host = $('diagList'); host.textContent = '';
     const finds = (r && r.findings) ? r.findings : [];
