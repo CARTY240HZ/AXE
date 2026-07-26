@@ -1,6 +1,6 @@
 # ================================================================
 # AXE 7.0.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-26 01:46:17Z
+# Build UTC: 2026-07-26 03:23:41Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 43-update.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -141,25 +141,128 @@ function Write-AXELog {
 # REGION 2 - HARDWARE DETECTION  (define que tweaks son validos)
 # =====================================================
 function Get-AXEHardware {
-    $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-    $os  = Get-CimInstance Win32_OperatingSystem
-    $enc = @((Get-CimInstance Win32_SystemEnclosure).ChassisTypes)
-    $isLaptop = ($enc | Where-Object { $_ -in 8,9,10,11,12,14,18,21,30,31,32 }).Count -gt 0
+    # Detecta el equipo entero degradando CAMPO A CAMPO, no todo o nada.
+    #
+    # El defecto que arregla: Win32_Processor y Win32_OperatingSystem se consultaban SIN
+    # -ErrorAction, asi que un unico fallo de WMI tiraba la funcion entera. Y como el puente
+    # (48-webbridge, 'hw.get') no la envuelve en try/catch, la ventana se quedaba sin panel de
+    # hardware por un fallo que a lo mejor solo afectaba a un campo. Peor: Get-AXEHardware es la
+    # base del gating -que tweaks aplican en esta maquina-, o sea que quedarse sin ella no deja a
+    # AXE sin UN dato, lo deja sin NINGUNO.
+    #   Importa mas de lo que parece por quien usa esto: el publico de AXE son equipos a los que ya
+    # les paso otro optimizador por encima, y romper WMI es de lo mas comun que dejan detras. Por eso
+    # lo esencial -version, build, edicion- tiene camino alternativo por REGISTRO, que sigue vivo
+    # cuando WMI no. Lo que aun asi no se pueda leer viaja como $null y su motivo se apunta en
+    # DetectWarnings, que la interfaz ENSENA: "no lo se" es un estado legitimo y distinto de "no lo
+    # tienes", y esta suite no va a mentir justo en el panel de hardware.
+    $warn = New-Object System.Collections.ArrayList
+    $cpu = $null; try { $cpu = Get-CimInstance Win32_Processor -EA Stop | Select-Object -First 1 }
+                  catch { [void]$warn.Add('CPU: WMI no respondio a Win32_Processor.') }
+    $os  = $null; try { $os  = Get-CimInstance Win32_OperatingSystem -EA Stop }
+                  catch { [void]$warn.Add('sistema: WMI no respondio a Win32_OperatingSystem; se tira de registro.') }
+
+    # Chasis -> portatil. Si el fabricante no rellena el chasis (pasa, y mucho, en portatiles de
+    # marca blanca) queda 1/2 = Other/Unknown y la bateria desempata. No al reves: hay sobremesas
+    # con SAI que exponen Win32_Battery, asi que la bateria SOLO decide cuando el chasis no sabe.
+    $enc = @(); try { $enc = @((Get-CimInstance Win32_SystemEnclosure -EA Stop).ChassisTypes) }
+                catch { [void]$warn.Add('chasis: no pude leer Win32_SystemEnclosure (torre/portatil se deduce por bateria).') }
+    $isLaptop = @($enc | Where-Object { $_ -in 8,9,10,11,12,14,18,21,30,31,32 }).Count -gt 0
+    $bat = $null; try { $bat = Get-CimInstance Win32_Battery -EA Stop | Select-Object -First 1 } catch {}
+    $chassisKnown = @($enc | Where-Object { $_ -notin 1,2 }).Count -gt 0
+    if(-not $isLaptop -and -not $chassisKnown -and $bat){ $isLaptop = $true }
+
     $isHybrid = $false
     try { if($cpu.Name -match '1[2-9]th Gen' -or $cpu.Name -match 'Ultra'){ $isHybrid = $true } } catch {}
-    $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch 'Virtual|Basic|Meta|Parsec|Remote' }
+
+    # GPU. Se filtran los adaptadores que no pintan un juego (RDP, escritorios virtuales, capturadoras).
+    $gpu = @(); try { $gpu = @(Get-CimInstance Win32_VideoController -EA Stop | Where-Object { $_.Name -notmatch 'Virtual|Basic|Meta|Parsec|Remote|DisplayLink|IDD' }) }
+                catch { [void]$warn.Add('GPU: no pude leer Win32_VideoController.') }
     $hasNvidia = @($gpu | Where-Object Name -match 'NVIDIA').Count -gt 0
-    $activeNic = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | Select-Object -First 1
-    $isWifi = $activeNic -and ($activeNic.PhysicalMediaType -match 'Native 802.11|Wireless' -or $activeNic.Name -match 'Wi-?Fi|Wireless')
-    $edition = $os.Caption
+    $gpuNames  = @($gpu | ForEach-Object { [string]$_.Name } | Where-Object { $_ })
+    # Vendor de la GPU que MANDA. En un portatil hibrido hay dos y la dedicada es la que juega, asi
+    # que NVIDIA/AMD ganan a la integrada de Intel en el rotulo. Antes solo existia HasNvidia: quien
+    # tuviera Radeon o Arc no veia GPU ninguna en el panel, como si AXE no supiera que existe.
+    $gpuVendor = $null
+    if($gpuNames -match 'NVIDIA'){ $gpuVendor = 'NVIDIA' }
+    elseif($gpuNames -match 'AMD|Radeon'){ $gpuVendor = 'AMD' }
+    elseif($gpuNames -match 'Intel'){ $gpuVendor = 'Intel' }
+    $gpuPrimary = $null
+    if($gpuVendor){ $gpuPrimary = [string](@($gpuNames | Where-Object { $_ -match $gpuVendor }) | Select-Object -First 1) }
+    if(-not $gpuPrimary -and $gpuNames.Count){ $gpuPrimary = [string]$gpuNames[0] }
+
+    # Hz y resolucion del modo ACTIVO. En hibridos la dedicada suele no tener modo (la pantalla la
+    # pinta la integrada) y devuelve $null, asi que se coge el maximo de los que si reportan.
+    # Es el dato mas relevante que faltaba en un afinador de juegos: sin saber que el panel va a
+    # 180 Hz no se puede opinar sobre un limitador de FPS ni sobre VSync.
+    $refresh = $null; $scrW = $null; $scrH = $null
+    try {
+        $mode = @($gpu | Where-Object { $_.CurrentRefreshRate -and [int]$_.CurrentRefreshRate -gt 0 } |
+                  Sort-Object { [int]$_.CurrentRefreshRate } -Descending | Select-Object -First 1)
+        if($mode.Count){
+            $refresh = [int]$mode[0].CurrentRefreshRate
+            if($mode[0].CurrentHorizontalResolution){ $scrW = [int]$mode[0].CurrentHorizontalResolution }
+            if($mode[0].CurrentVerticalResolution){   $scrH = [int]$mode[0].CurrentVerticalResolution }
+        }
+    } catch {}
+    if($null -eq $refresh){ [void]$warn.Add('frecuencia del monitor: ningun adaptador reporto modo activo.') }
+
+    # Maquina virtual: cambia como hay que leer TODO lo demas (timer, jitter, energia), asi que se
+    # declara en vez de medir como si fuera hierro real.
+    $isVM = $false; $csModel = $null; $csVendor = $null
+    try {
+        $cs = Get-CimInstance Win32_ComputerSystem -EA Stop
+        $csModel = [string]$cs.Model; $csVendor = [string]$cs.Manufacturer
+        $isVM = [bool](("$csModel $csVendor") -match 'VMware|VirtualBox|VBOX|QEMU|KVM|Xen|Hyper-V|Virtual Machine|Parallels|innotek|Bochs')
+    } catch { [void]$warn.Add('modelo del equipo: no pude leer Win32_ComputerSystem.') }
+
+    $activeNic = $null
+    try { $activeNic = Get-NetAdapter -Physical -EA Stop | Where-Object Status -eq 'Up' | Select-Object -First 1 }
+    catch { [void]$warn.Add('red: no pude enumerar adaptadores fisicos.') }
+    if(-not $activeNic){ [void]$warn.Add('red: ningun adaptador fisico conectado.') }
+    $isWifi = [bool]($activeNic -and ($activeNic.PhysicalMediaType -match 'Native 802.11|Wireless' -or $activeNic.Name -match 'Wi-?Fi|Wireless'))
+
     $onBattery = $false
-    try { $b = Get-CimInstance Win32_Battery -ErrorAction Stop; if($b -and $b.BatteryStatus -ne 2){ $onBattery = $true } } catch {}
-    # WinVer: Win11 = build >= 22000 (corte oficial Microsoft), Win10 = resto de 10.0.x
-    $build = $os.BuildNumber
-    $isWin11 = [int]$build -ge 22000
+    try { if($bat -and $bat.BatteryStatus -ne 2){ $onBattery = $true } } catch {}
+
+    # --- Version de Windows. Camino WMI con RESPALDO por registro y por Environment. -------------
+    # OJO con ProductName del registro: en Win11 sigue diciendo "Windows 10 Pro". Es un fallo
+    # conocido de Microsoft, y por eso Win11 se decide SIEMPRE por numero de build (>= 22000, el
+    # corte oficial), nunca por el nombre.
+    $reg = $null
+    try { $reg = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -EA Stop } catch {}
+    $build = $null
+    if($os -and $os.BuildNumber){ $build = [string]$os.BuildNumber }
+    elseif($reg -and $reg.CurrentBuildNumber){ $build = [string]$reg.CurrentBuildNumber }
+    else { try { $build = [string][System.Environment]::OSVersion.Version.Build } catch {} }
+    $isWin11 = $false
+    try { $isWin11 = ([int]$build -ge 22000) } catch {}
+    $edition = $null
+    if($os -and $os.Caption){ $edition = [string]$os.Caption }
+    elseif($reg -and $reg.ProductName){ $edition = [string]$reg.ProductName }
+    if($edition -and $isWin11){ $edition = $edition -replace 'Windows 10','Windows 11' }   # ver nota de arriba
+    if(-not $edition){ [void]$warn.Add('edicion de Windows: ilegible por WMI y por registro.') }
+    # 24H2, 23H2... Decide mas que 10 vs 11 sobre que hay disponible en la maquina.
+    $displayVer = $null
+    if($reg){ $displayVer = [string]$(if($reg.DisplayVersion){ $reg.DisplayVersion } else { $reg.ReleaseId }) }
+    $ubr = $null; if($reg -and $null -ne $reg.UBR){ try { $ubr = [int]$reg.UBR } catch {} }
     # --- ecosistema (§3.1): arquitectura, vendor, seguridad. Todo self-contained (corre en runspace) ---
     $cpuArch   = $env:PROCESSOR_ARCHITECTURE                 # AMD64 / ARM64 / x86
-    $cpuVendor = $cpu.Manufacturer                            # GenuineIntel / AuthenticAMD / Qualcomm...
+    # Con WMI caido $cpu es $null. El registro guarda el mismo dato y no depende del servicio.
+    $cpuVendor = $null; $cpuName = $null; $cpuCores = $null; $cpuThreads = $null
+    if($cpu){
+        $cpuVendor = [string]$cpu.Manufacturer                # GenuineIntel / AuthenticAMD / Qualcomm...
+        $cpuName   = [string]$cpu.Name
+        $cpuCores  = $cpu.NumberOfCores; $cpuThreads = $cpu.NumberOfLogicalProcessors
+    } else {
+        try {
+            $c0 = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -EA Stop
+            $cpuName   = [string]$c0.ProcessorNameString
+            $cpuVendor = [string]$c0.VendorIdentifier
+        } catch {}
+        # Hilos siempre disponibles sin WMI; nucleos fisicos no, y no se inventan.
+        try { $cpuThreads = [int][System.Environment]::ProcessorCount } catch {}
+        [void]$warn.Add('CPU: nucleos fisicos desconocidos (solo hilos logicos) porque WMI no respondio.')
+    }
     # Defender + Tamper: una sola llamada (lenta), ambos derivados. AV de terceros -> el cmdlet falla o AMServiceEnabled=false.
     $mp = $null; try { $mp = Get-MpComputerStatus -ErrorAction Stop } catch {}
     $hasDefender = [bool]($mp -and $mp.AMServiceEnabled)
@@ -178,16 +281,35 @@ function Get-AXEHardware {
         $osPhys = Get-PhysicalDisk -ErrorAction Stop | Where-Object { $_.DeviceId -eq "$osDiskNum" }
         if($osPhys){ $isSSD = ($osPhys.MediaType -eq 'SSD') -or ($osPhys.BusType -eq 'NVMe') }
     } catch {}
+    # RAM. Sin WMI el respaldo es el contador de rendimiento, que no depende del servicio de WMI.
+    # A diferencia del resto NO se deja en $null: RamGB alimenta el gating (MinRam/MaxRam) y un
+    # nulo ahi se compara como 0, o sea que bloquearia tweaks callando el motivo. 0 con aviso
+    # declarado bloquea igual, pero diciendo por que.
+    $ramGB = 0
+    if($os -and $os.TotalVisibleMemorySize){ $ramGB = [math]::Round($os.TotalVisibleMemorySize/1MB,1) }
+    else {
+        try { $ramGB = [math]::Round((Get-CimInstance Win32_PhysicalMemory -EA Stop | Measure-Object Capacity -Sum).Sum/1GB,1) } catch {}
+        if($ramGB -le 0){ [void]$warn.Add('RAM: ilegible; los ajustes que dependen de la memoria quedaran bloqueados.') }
+    }
+
     [pscustomobject]@{
-        CpuName=$cpu.Name; Cores=$cpu.NumberOfCores; Threads=$cpu.NumberOfLogicalProcessors
+        CpuName=$cpuName; Cores=$cpuCores; Threads=$cpuThreads
         IsLaptop=$isLaptop; IsHybrid=$isHybrid; HasNvidia=$hasNvidia
         IsWifi=[bool]$isWifi; NicName=$activeNic.Name; Edition=$edition
         IsHome=($edition -match 'Home'); OnBattery=$onBattery
         IsWin11=$isWin11; BuildNumber=$build
-        RamGB=[math]::Round($os.TotalVisibleMemorySize/1MB,1)
+        RamGB=$ramGB
         CpuArch=$cpuArch; CpuVendor=$cpuVendor
         HasDefender=$hasDefender; IsTamperProtected=$isTamper
         IsSMode=$isSMode; SupportsHAGS=$supportsHAGS; IsSSD=$isSSD
+        # --- Campos nuevos. Ninguno de los de arriba cambia de nombre ni de tipo: el gating
+        # (20-tweaks), el banner y los tests siguen leyendo exactamente lo mismo que antes. ---
+        GpuNames=$gpuNames; GpuPrimary=$gpuPrimary; GpuVendor=$gpuVendor
+        RefreshHz=$refresh; ScreenW=$scrW; ScreenH=$scrH
+        IsVM=$isVM; Model=$csModel; Vendor=$csVendor
+        DisplayVersion=$displayVer; Ubr=$ubr
+        # Lo que NO se pudo leer, con su motivo. La interfaz lo ensena en vez de fingir certeza.
+        DetectWarnings=@($warn)
     }
 }
 
@@ -3237,6 +3359,113 @@ function Get-AXEWebView2SdkPath {
     return $null
 }
 
+function Get-AXEWindowFit {
+    # PURA. (area util del escritorio, tamano deseado) -> tamano que CABE de verdad.
+    #
+    # El bug que arregla: la ventana venia fijada a 1200x840 con MinHeight=720. Width/Height de WPF
+    # van en DIP (1/96") y el area util TAMBIEN (SystemParameters.WorkArea), asi que a mas escalado
+    # de Windows hay MENOS DIP disponibles, no los mismos. Con la pantalla de referencia -1920x1080
+    # al 125%- el area util son 1536x816 DIP: la ventana nacia 24 DIP mas alta que el escritorio.
+    # Al 150% son 1280x680 DIP y ni el MINIMO cabia, o sea que no habia forma de encogerla hasta
+    # que entrase: el borde inferior se quedaba debajo de la barra de tareas para siempre.
+    #   La correccion no toca DPI ni manifiestos: basta con recortar en la MISMA unidad en la que
+    # WPF coloca la ventana. Comparar DIP con DIP hace que el escalado deje de importar.
+    param(
+        [double]$WorkWidth,  [double]$WorkHeight,
+        [double]$WantWidth  = 1200, [double]$WantHeight = 840,
+        [double]$FloorWidth = 820,  [double]$FloorHeight = 520,
+        [double]$Slack      = 24
+    )
+    # Area util ilegible (0, negativa o NaN): se devuelve lo deseado tal cual. Inventar un tamano a
+    # partir de un dato que no tenemos seria peor que dejar el de siempre.
+    $bad = [double]::IsNaN($WorkWidth) -or [double]::IsNaN($WorkHeight) -or $WorkWidth -le 0 -or $WorkHeight -le 0
+    if($bad){
+        return [pscustomobject]@{
+            Width=$WantWidth; Height=$WantHeight; MinWidth=$FloorWidth; MinHeight=$FloorHeight
+            Clamped=$false; Reason='no pude leer el area util del escritorio; se usa el tamano por defecto.'
+        }
+    }
+    # El hueco (Slack) evita que la ventana nazca pegada a los bordes. En pantallas diminutas se
+    # cede antes que dejar la ventana sin area: el suelo duro es 320x240.
+    $availW = [math]::Max(320, $WorkWidth  - $Slack)
+    $availH = [math]::Max(240, $WorkHeight - $Slack)
+    $w = [math]::Min($WantWidth,  $availW)
+    $h = [math]::Min($WantHeight, $availH)
+    # El MINIMO se recorta al tamano real, nunca al reves. Un MinHeight mayor que la pantalla es
+    # justo el defecto que hacia imposible encoger la ventana; asi no puede volver por construccion.
+    $minW = [math]::Min($FloorWidth,  $w)
+    $minH = [math]::Min($FloorHeight, $h)
+    $clamped = ($w -lt $WantWidth) -or ($h -lt $WantHeight)
+    [pscustomobject]@{
+        Width=$w; Height=$h; MinWidth=$minW; MinHeight=$minH; Clamped=$clamped
+        Reason=$(if($clamped){
+            'ventana ajustada a {0}x{1} DIP: el escritorio util son {2}x{3} DIP (escalado de Windows ya incluido).' -f [int]$w,[int]$h,[int]$WorkWidth,[int]$WorkHeight
+        } else { $null })
+    }
+}
+
+# --- Zoom de la interfaz, persistente -------------------------------------------------------
+# Ctrl+rueda y Ctrl+/- ya funcionan (WebView2 los trae de serie), pero el nivel se perdia al
+# cerrar. Es la otra mitad de "que la escala se ajuste": el recorte de ventana hace que la
+# interfaz QUEPA, el zoom decide CUANTA interfaz cabe dentro. Vive aqui y no en 47-webhost
+# porque 47 no se puede dot-sourcear en tests (abre ventana) y estas dos si tienen que estarlo.
+$script:AXEUIZoomMin = 0.6
+$script:AXEUIZoomMax = 2.0
+
+function Get-AXEUIPrefsPath {
+    # Sin $script:AXEData (motor cargado suelto) devuelve $null: el llamante degrada a 1.0.
+    if([string]::IsNullOrWhiteSpace($script:AXEData)){ return $null }
+    Join-Path $script:AXEData 'ui.json'
+}
+
+function Test-AXEUIZoom {
+    # PURA. Un zoom vale si es un numero real dentro del rango util. Fuera de el la interfaz o no
+    # se lee o no cabe, asi que se rechaza en vez de guardarse y estropear el proximo arranque.
+    param($Zoom)
+    if($null -eq $Zoom){ return $false }
+    $d = 0.0
+    if($Zoom -is [double] -or $Zoom -is [single] -or $Zoom -is [int] -or $Zoom -is [long] -or $Zoom -is [decimal]){
+        $d = [double]$Zoom
+    } else {
+        # TryParse con la CULTURA DEL SISTEMA es una trampa, y se comio este proyecto en la primera
+        # ejecucion: en es-ES (y de-DE, fr-FR...) el punto es separador de MILES, asi que '1.5'
+        # parseaba como 15, quedaba fuera de rango y el zoom se rechazaba en silencio. En un Windows
+        # en ingles habria pasado inadvertido hasta que lo usara alguien fuera de EEUU.
+        #   JSON es invariante por definicion, y el valor viaja por JSON: se parsea invariante.
+        if(-not [double]::TryParse([string]$Zoom, [System.Globalization.NumberStyles]::Float,
+                                   [System.Globalization.CultureInfo]::InvariantCulture, [ref]$d)){ return $false }
+    }
+    if([double]::IsNaN($d) -or [double]::IsInfinity($d)){ return $false }
+    ($d -ge $script:AXEUIZoomMin) -and ($d -le $script:AXEUIZoomMax)
+}
+
+function Get-AXEUIZoom {
+    # Zoom guardado o 1.0. Ausente, ilegible, corrupto o fuera de rango -> 1.0. NUNCA lanza: un
+    # fichero de preferencias roto no puede ser el motivo de que la ventana no abra.
+    $p = Get-AXEUIPrefsPath
+    if(-not $p -or -not (Test-Path $p)){ return 1.0 }
+    try {
+        $doc = (Get-Content $p -Raw -Encoding UTF8 -EA Stop) | ConvertFrom-Json -EA Stop
+        $z = $doc.zoom
+        if(Test-AXEUIZoom $z){ return [double]$z }
+    } catch {}
+    1.0
+}
+
+function Set-AXEUIZoom {
+    # Guarda el zoom. Devuelve $true solo si quedo escrito: el llamante no tiene que adivinarlo.
+    param($Zoom)
+    if(-not (Test-AXEUIZoom $Zoom)){ return $false }
+    $p = Get-AXEUIPrefsPath
+    if(-not $p){ return $false }
+    try {
+        $dir = Split-Path $p -Parent
+        if($dir -and -not (Test-Path $dir)){ New-Item -ItemType Directory -Path $dir -Force -EA Stop | Out-Null }
+        Set-Content -Path $p -Value (ConvertTo-Json -InputObject ([pscustomobject]@{ zoom=[double]$Zoom }) -Depth 2) -Encoding UTF8 -EA Stop
+        return $true
+    } catch { return $false }
+}
+
 function Get-AXEWebView2Runtime {
     # El runtime Evergreen registra su version en EdgeUpdate\Clients\{GUID}. Presente por defecto
     # en Win11; en Win10 puede faltar => Available=$false y la carcasa mostrara un mensaje con enlace.
@@ -3286,17 +3515,214 @@ $script:AXESessionFamilies = @{
 
 function Get-AXESessionProcesses {
     # Impura: lee procesos. NO juzga. Alimenta a Get-AXESessionPlan con hechos planos.
+    # Ventana, titulo y memoria viajan para el detector de juego (Get-AXEGameCandidates); el
+    # planificador los ignora. Se leen AQUI y no alli para que el detector siga siendo puro.
+    #   Nada de esto abre un handle al proceso: Path, MainWindowHandle y WorkingSet64 salen del
+    # snapshot que ya trae Get-Process. Es deliberado - abrir handles contra un juego protegido es
+    # justo lo que un anti-cheat interpreta mal, y AXE promete por escrito no hacerlo.
     $out = New-Object System.Collections.ArrayList
     foreach($p in (Get-Process -EA SilentlyContinue)){
         $path = $null; try { $path = $p.Path } catch {}
+        $hwnd = [IntPtr]::Zero; try { $hwnd = $p.MainWindowHandle } catch {}
+        $title = ''; try { $title = [string]$p.MainWindowTitle } catch {}
+        $ws = 0.0; try { $ws = [math]::Round($p.WorkingSet64 / 1MB, 0) } catch {}
         [void]$out.Add([pscustomobject]@{
-            Pid       = [int]$p.Id
-            Name      = [string]$p.ProcessName
-            SessionId = [int]$p.SessionId
-            Path      = $path
+            Pid          = [int]$p.Id
+            Name         = [string]$p.ProcessName
+            SessionId    = [int]$p.SessionId
+            Path         = $path
+            HasWindow    = ($hwnd -ne [IntPtr]::Zero)
+            Title        = $title
+            WorkingSetMB = [double]$ws
         })
     }
     @($out)
+}
+
+# --- Smart detect: que proceso es el juego ---------------------------------------------------
+# El defecto que arregla: la seccion de sesion pedia ESCRIBIR el nombre del proceso. Quien no sabe
+# que Valorant corre como 'VALORANT-Win64-Shipping' no podia usarla, y ese es justo el usuario al
+# que sirve congelar el fondo. La funcion existia; la puerta de entrada no.
+#
+# Como NO se resuelve: con una lista de juegos conocidos. Es lo que hacen las suites de pago y
+# envejece sola - cada lanzamiento es una actualizacion, y el juego que no esta en la lista no
+# existe para el programa. Un indie de itch.io no entra en esa lista jamas.
+#
+# Como si: puntuando senales que valen para un juego que salio ayer.
+#   - La CARPETA de la tienda es el indicio fuerte y estable. Cambian los juegos, no las rutas:
+#     'steamapps\common' lleva ahi desde 2003.
+#   - El SUFIJO DEL MOTOR es el segundo. Unreal compila a '<Juego>-Win64-Shipping.exe'; eso
+#     identifica al MOTOR, no al titulo, asi que cubre juegos que todavia no existen.
+#   - Ventana propia y memoria desempatan.
+# Y no se arranca solo: se PROPONE con el motivo a la vista. Congelar el fondo es lo mas agresivo
+# que hace AXE; elegir por el usuario sobre que proceso se hace seria pasarse de la raya.
+
+# Fragmentos de ruta (minusculas) -> tienda. Es el indicio de mas peso.
+$script:AXEGameStorePaths = [ordered]@{
+    'steamapps\common'              = 'Steam'
+    'epic games\'                   = 'Epic Games'
+    'riot games\'                   = 'Riot Games'
+    'gog galaxy\games'              = 'GOG'
+    'ubisoft game launcher\games'   = 'Ubisoft'
+    'ea games\'                     = 'EA'
+    'origin games\'                 = 'EA (Origin)'
+    'rockstar games\'               = 'Rockstar'
+    'battle.net\games'              = 'Battle.net'
+    '\xboxgames\'                   = 'Xbox'
+    '\.minecraft'                   = 'Minecraft'
+}
+# Marcador RECHAZADO a proposito: '\windowsapps\'. Parecia cubrir los juegos de Microsoft Store,
+# pero ahi vive TODA app empaquetada MSIX. En la maquina de referencia hacia que Claude Desktop y
+# la utilidad NitroSense puntuasen 70 y se colasen por delante de cualquier juego real. Un indicio
+# que marca a todo el mundo no es un indicio. Los juegos de Xbox si tienen carpeta propia
+# (\XboxGames\) y esa si discrimina, asi que se queda solo esa.
+
+# Lanzaderas y utilidades: NUNCA son "el juego", aunque cumplan el resto de senales (viven en la
+# carpeta de la tienda, tienen ventana y comen memoria). Excluirlas evita el falso positivo mas
+# probable de todos: proponer Steam como juego porque Steam esta dentro de steamapps.
+$script:AXEGameNotGame = @(
+    'steam','steamwebhelper','steamservice','epicgameslauncher','epicwebhelper','unrealcefsubprocess'
+    'battle.net','battle.net helper','blizzarderror','agent','riotclientservices','riotclientux'
+    'riotclientuxrender','riotclientcrashhandler','galaxyclient','galaxyclienthelper','galaxycommunication'
+    'upc','uplay','ubisoftconnect','ubisoftgamelauncher','eadesktop','eabackgroundservice','ealauncher'
+    'origin','originwebhelperservice','originclientservice','rockstarservice','rockstarerrorhandler'
+    'launcher','gamelaunchhelper','xboxapp','xboxpcapp','gamingservices','gameoverlayui','gamebar'
+    'gamebarpresencewriter','obs64','obs32','streamlabs obs','streamlabs','xsplit.core'
+    'nvcontainer','nvidia share','nvidia web helper','nvidiaoverlay','msiafterburner','rtss'
+    'rivatuner','code','devenv','idea64','pycharm64','rider64','pwsh','powershell','cmd'
+    'windowsterminal','taskmgr','notepad','notepad++','msiexec','setup','install','unins000'
+)
+
+function Test-AXEGameExcluded {
+    # PURA. Un proceso que NO puede ser el juego, con el motivo. Devuelve $null si si puede serlo.
+    # Se separa del puntuador porque "descartado" y "puntua bajo" son cosas distintas: lo primero
+    # no se ensena, lo segundo se ensena al final de la lista.
+    param($Proc,[int]$SelfPid)
+    if(-not $Proc){ return 'proceso vacio' }
+    $name = Get-AXESessionAppName $Proc.Name
+    if([int]$Proc.Pid -eq $SelfPid){ return 'es AXE' }
+    if([int]$Proc.Pid -le 4){ return 'proceso del sistema' }
+    if(Test-AXESessionHardApp $name){ return 'shell o anticheat: AXE nunca lo toca' }
+    # Familias conocidas que no son juegos. La voz, el navegador y la musica ya tienen su reparto.
+    foreach($fam in 'voz','navegador','musica','mensajeria'){
+        if($script:AXESessionFamilies[$fam] -contains $name){ return "es $fam, no un juego" }
+    }
+    if($script:AXEGameNotGame -contains $name){ return 'es una lanzadera o utilidad, no el juego' }
+    # Infraestructura por como SE LLAMA, no por estar en una lista. Cazado en la maquina de
+    # referencia: 'epiconlineservicesuserhelper' vive en la carpeta de Epic Games, o sea que se
+    # llevaba los 50 puntos de tienda y salia PRIMERO, por delante de cualquier juego real.
+    # Ampliar la lista nombre a nombre es perder la carrera: cada tienda trae los suyos y cambian
+    # con cada version. La regla no: ningun juego se llama '<algo>service' ni '<algo>helper'.
+    #   Se ancla al FINAL del nombre a proposito. Como subcadena suelta, 'agent' descartaria un
+    # juego llamado 'Agents of Mayhem' y 'launcher' uno que la lleve en el titulo.
+    if($name -match '(service|services|helper|crashhandler|crashreporter|errorreporter|overlay|updater|broker|daemon|launcher|agent|installer)$'){
+        return 'es un proceso de servicio o ayudante, no el juego'
+    }
+    $path = [string]$Proc.Path
+    if($path){
+        # %WINDIR% queda fuera entero: ahi no se instala ningun juego, y lo que hay dentro es justo
+        # lo que no conviene proponerle a nadie como centro de una sesion.
+        $win = ([string]$env:SystemRoot).ToLowerInvariant()
+        if($win -and $path.ToLowerInvariant().StartsWith($win)){ return 'vive en la carpeta de Windows' }
+    }
+    $null
+}
+
+function Get-AXEGameCandidates {
+    # PURA sobre los hechos que recibe (por eso es testeable sin un solo juego instalado). Devuelve
+    # los candidatos ORDENADOS por puntuacion, cada uno con sus razones en texto. No decide: propone.
+    param(
+        [object[]]$Processes,
+        [int]$SelfPid,
+        [int]$SessionId,
+        [int]$Top = 8
+    )
+    # Cuantos procesos hay con cada nombre en esta sesion. Se cuenta sobre TODOS, no solo sobre los
+    # que puntuan: la interfaz dira "x9 procesos" y eso tiene que cuadrar con el Administrador de
+    # tareas, no ser un recuento interno de candidatos. De los 9 procesos de una app de Electron
+    # solo uno tiene ventana, asi que contar los puntuados habria dicho "x1" teniendo 9 delante.
+    $byName = @{}
+    foreach($p in @($Processes)){
+        if($null -eq $p){ continue }
+        if([int]$p.SessionId -ne $SessionId){ continue }
+        $k = Get-AXESessionAppName $p.Name
+        if($byName.ContainsKey($k)){ $byName[$k]++ } else { $byName[$k] = 1 }
+    }
+
+    $out = New-Object System.Collections.ArrayList
+    foreach($p in @($Processes)){
+        if($null -eq $p){ continue }
+        if([int]$p.SessionId -ne $SessionId){ continue }   # solo la sesion interactiva, igual que el plan
+        if(Test-AXEGameExcluded -Proc $p -SelfPid $SelfPid){ continue }
+
+        $score   = 0
+        $reasons = New-Object System.Collections.ArrayList
+        $name    = Get-AXESessionAppName $p.Name
+        $path    = [string]$p.Path
+        $lp      = $path.ToLowerInvariant()
+
+        # 1. Carpeta de tienda: el indicio de mas peso y el que no envejece.
+        $store = $null
+        if($lp){
+            foreach($frag in $script:AXEGameStorePaths.Keys){
+                if($lp.Contains($frag)){ $store = $script:AXEGameStorePaths[$frag]; break }
+            }
+        }
+        if($store){ $score += 50; [void]$reasons.Add("instalado en la carpeta de $store") }
+
+        # 2. Firma del MOTOR, no del titulo: cubre juegos que todavia no existen.
+        if($name -match '\-win(64|32|gdk)\-shipping$'){
+            $score += 30; [void]$reasons.Add('ejecutable de Unreal Engine (build shipping)')
+        } elseif($name -match 'win64|win32'){
+            $score += 8;  [void]$reasons.Add('nombre de ejecutable tipico de juego')
+        }
+
+        # 3. Ventana propia. Un juego siempre tiene una; un servicio de fondo no.
+        if($p.PSObject.Properties['HasWindow'] -and $p.HasWindow){
+            $score += 20; [void]$reasons.Add('tiene ventana propia')
+        }
+
+        # 4. Memoria. Escalonada y sin llevarse el protagonismo: la RAM sola no prueba nada -un
+        #    navegador gasta mas que un indie- pero acompanada de lo de arriba desempata bien.
+        $ws = 0.0
+        if($p.PSObject.Properties['WorkingSetMB']){ $ws = [double]$p.WorkingSetMB }
+        if($ws -ge 1500){ $score += 20; [void]$reasons.Add("usa $([int]$ws) MB de memoria") }
+        elseif($ws -ge 600){ $score += 12; [void]$reasons.Add("usa $([int]$ws) MB de memoria") }
+        elseif($ws -ge 250){ $score += 6 }
+
+        # Sin una sola senal positiva no se propone: seria ruido, no un candidato.
+        if($score -le 0){ continue }
+
+        [void]$out.Add([pscustomobject]@{
+            Name    = $name
+            Pid     = [int]$p.Pid
+            Score   = [int]$score
+            Store   = $store
+            Title   = $(if($p.PSObject.Properties['Title']){ [string]$p.Title } else { '' })
+            Path    = $path
+            # "Probable" = tienda, o motor + ventana. Una sola senal debil no basta para que la
+            # interfaz lo preseleccione: proponerlo si, elegirlo por el usuario no.
+            Likely  = [bool]($score -ge 50)
+            Reasons = @($reasons)
+        })
+    }
+
+    # UNA fila por APP, no por pid. Mismo principio que ya aplica session.preview con Chrome: doce
+    # procesos son UNA decision, no doce. Sin esto una app de Electron -que abre un proceso por
+    # pestana o por servicio- llenaba la lista entera con su propio nombre repetido y empujaba al
+    # juego de verdad fuera del top. Representa al grupo la instancia de MAYOR puntuacion, que es
+    # la que tiene la ventana; el numero de procesos viaja para que la interfaz pueda decirlo.
+    $best = [ordered]@{}
+    foreach($c in $out){
+        $k = $c.Name
+        if(-not $best.Contains($k) -or $c.Score -gt $best[$k].Score){ $best[$k] = $c }
+    }
+    foreach($k in @($best.Keys)){
+        $best[$k] | Add-Member -NotePropertyName Instances -NotePropertyValue ([int]$byName[$k]) -Force
+    }
+    # Empate por puntuacion -> orden estable por nombre, para que dos lecturas seguidas no bailen.
+    @(@($best.Values) | Sort-Object -Property @{Expression='Score';Descending=$true},@{Expression='Name';Descending=$false} |
+        Select-Object -First ([math]::Max(1,$Top)))
 }
 
 function Get-AXESessionLevel {
@@ -5595,8 +6021,19 @@ function Show-AXEWebHost {
     $rt  = Get-AXEWebView2Runtime
     $bc  = New-Object System.Windows.Media.BrushConverter
     $win = New-Object System.Windows.Window
-    $win.Title='AXE'; $win.Width=1200; $win.Height=840; $win.MinWidth=1040; $win.MinHeight=720
+
+    # Tamano CALCULADO, no fijado. SystemParameters.WorkArea da el escritorio util en DIP -las
+    # mismas unidades que Window.Width/Height-, asi que recortar contra el resuelve el escalado de
+    # Windows sin tocar DPI ni manifiestos: a 125% o 150% hay menos DIP y la ventana se encoge sola.
+    # WorkArea ya descuenta la barra de tareas. La decision vive en Get-AXEWindowFit (39-webdetect,
+    # pura y testeada); aqui solo se lee el escritorio y se aplica.
+    $wa  = [System.Windows.SystemParameters]::WorkArea
+    $fit = Get-AXEWindowFit -WorkWidth $wa.Width -WorkHeight $wa.Height
+    $win.Title='AXE'
+    $win.Width=$fit.Width; $win.Height=$fit.Height
+    $win.MinWidth=$fit.MinWidth; $win.MinHeight=$fit.MinHeight
     $win.WindowStartupLocation='CenterScreen'
+    if($fit.Reason){ Write-AXELog $fit.Reason }
     $win.Background=$bc.ConvertFrom('#0E1013')
     $script:WebWin = $win
 
@@ -5633,6 +6070,11 @@ function Show-AXEWebHost {
             $core.Settings.AreDevToolsEnabled = $false
         }
         $core.Settings.IsStatusBarEnabled = $false
+        # Zoom: se restaura el elegido la vez anterior y se guarda cada vez que cambia. Sin esto
+        # Ctrl+rueda funcionaba pero se olvidaba al cerrar, que para quien necesita la interfaz mas
+        # grande equivale a no tenerlo. Guardar es best-effort (Set-AXEUIZoom no lanza).
+        try { $s.ZoomFactor = (Get-AXEUIZoom) } catch {}
+        $s.Add_ZoomFactorChanged({ param($zs,$ze) try { [void](Set-AXEUIZoom $zs.ZoomFactor) } catch {} })
         Register-AXEBridge $core   # Fase 2: define el despacho JS->PS (48-webbridge).
         $s.Source = [uri]'https://axe.local/index.html'
     })
@@ -5688,7 +6130,17 @@ function Show-AXEWebHost {
 # decide como pintar). La honestidad del motor se preserva: si algo no se midio, viaja null.
 $script:AXEBridgeMap = @{
     'hw.get' = { param($a)
-        if(-not $script:HW){ $script:HW = Get-AXEHardware }
+        # Get-AXEHardware ya degrada campo a campo y no deberia lanzar. El try es defensa en
+        # profundidad: si una regresion futura la hace lanzar, el panel de hardware entero
+        # desaparecia de la ventana por un solo campo roto. Mejor devolver lo que haya con el
+        # fallo declarado en DetectWarnings, que es donde la interfaz ya sabe mirar.
+        if(-not $script:HW){
+            try { $script:HW = Get-AXEHardware }
+            catch {
+                Write-AXELog ("hw.get: la deteccion de hardware fallo entera: {0}" -f $_.Exception.Message) 'ERR'
+                return [pscustomobject]@{ DetectWarnings=@("la deteccion de hardware fallo entera: $($_.Exception.Message)") }
+            }
+        }
         $script:HW
     }
 
@@ -5998,6 +6450,32 @@ $script:AXEBridgeMap = @{
     # MODIFICA el sistema: crea el job, asigna y congela. Sin admin no se niega (degrada a lo que el
     # usuario posee) pero los assign fallidos viajan en 'failed'. No exige admin a proposito: negarse
     # dejaria sin funcion a quien abre AXE sin elevar, cuando lo suyo si se puede congelar.
+    # Smart detect. READ-ONLY y sin efectos: solo lee la tabla de procesos y puntua. Es la puerta
+    # de entrada que faltaba - la seccion pedia ESCRIBIR el nombre del proceso, cosa que solo sabe
+    # hacer quien ya sabe que Valorant corre como 'VALORANT-Win64-Shipping'. Devuelve las RAZONES
+    # de cada candidato, no solo el nombre: el usuario tiene que poder desmentir a la maquina.
+    'session.detect' = { param($a)
+        $n = 8; if($a.top){ $n = [int]$a.top }
+        if($n -lt 1){ $n = 1 }; if($n -gt 20){ $n = 20 }
+        $sid = [int](Get-Process -Id $PID).SessionId
+        $cands = Get-AXEGameCandidates -Processes (Get-AXESessionProcesses) -SelfPid $PID -SessionId $sid -Top $n
+        [pscustomobject]@{
+            candidates = @($cands | ForEach-Object {
+                [pscustomobject]@{
+                    name      = [string]$_.Name
+                    pid       = [int]$_.Pid
+                    score     = [int]$_.Score
+                    store     = $(if($_.Store){ [string]$_.Store } else { $null })
+                    title     = [string]$_.Title
+                    path      = $(if($_.Path){ [string]$_.Path } else { $null })
+                    likely    = [bool]$_.Likely
+                    instances = [int]$_.Instances
+                    reasons   = @($_.Reasons | ForEach-Object { [string]$_ })
+                }
+            })
+        }
+    }
+
     'session.start' = { param($a)
         if([string]::IsNullOrWhiteSpace([string]$a.game)){ throw 'falta el nombre del proceso del juego (ej: cs2)' }
         $s = Start-AXESessionTracked -GameName ([string]$a.game)

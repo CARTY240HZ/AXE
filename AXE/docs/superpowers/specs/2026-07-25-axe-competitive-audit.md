@@ -329,3 +329,84 @@ La whitelist de claves `Requires` está **duplicada**: `45-cli.ps1:95` (check S1
 `45-cli.ps1` no se puede dot-sourcear (trae dispatch y `exit`), y duplicar 18 cadenas cuesta menos
 que extraer el bloque `-SelfTest` a una función solo para compartirlas. El olvido no es silencioso:
 el test se pone rojo. Ambos sitios llevan el comentario que apunta al otro.
+
+---
+
+## 9. Bloqueadores de lanzamiento — 2026-07-26 (segunda sesión)
+
+Tres defectos reportados por el autor al preguntarse si el proyecto era lanzable. Los tres eran
+reales y los tres estaban **fuera** del alcance de esta auditoría, que miró catálogo y motor y no
+miró la ventana.
+
+### 9.1 La ventana no cabía en la pantalla
+
+`47-webhost.ps1` fijaba `1200x840` con `MinHeight=720`. `Window.Width/Height` de WPF van en **DIP**,
+y el escritorio útil también: a más escalado de Windows hay *menos* DIP, no los mismos.
+
+| Pantalla | Escritorio útil | Ventana pedida | Resultado |
+|---|---|---|---|
+| 1920×1080 @125 % (la de referencia) | 1536×816 DIP | 840 de alto | nacía 24 DIP por debajo del escritorio |
+| 1920×1080 @150 % | 1280×680 DIP | mínimo 720 | **no se podía encoger hasta que cupiera, nunca** |
+
+Arreglado con `Get-AXEWindowFit` (39-webdetect, pura): recorta contra `SystemParameters.WorkArea`
+**en la misma unidad**, con lo que el escalado deja de importar. El mínimo se recorta al tamaño
+real, así que un `MinHeight` mayor que la pantalla no puede volver por construcción.
+
+Complemento: CSS con cortes por ancho **y por alto** (el alto es el que escasea al escalar), y zoom
+persistente (`Ctrl`+rueda) en `AXE/ui.json`.
+
+### 9.2 «Sesión de juego no hace smart detect»
+
+Cierto: había que **escribir** el nombre del proceso. Quien no sabe que Valorant corre como
+`VALORANT-Win64-Shipping` no podía usar la función — justo el usuario al que sirve.
+
+Resuelto con `Get-AXEGameCandidates` (40-session, pura). **Rechazada** la lista de títulos
+conocidos: es lo que hacen las suites de pago y envejece sola. Se puntúan señales que valen para un
+juego que salió ayer (carpeta de tienda, firma del motor Unreal, ventana, memoria) y se devuelven
+las **razones**, para que el usuario pueda desmentir a la máquina. No arranca solo.
+
+Dos falsos positivos cazados ejecutándolo contra la máquina real, no razonando:
+- `\windowsapps\` marcaba **toda** app MSIX (Claude Desktop y NitroSense puntuaban 70). Marcador
+  retirado: un indicio que señala a todo el mundo no es un indicio.
+- `epiconlineservicesuserhelper` salía **primero** por vivir en `Epic Games\`. Resuelto con una
+  regla anclada al final del nombre (`*service`, `*helper`, `*launcher`…), no ampliando una lista.
+
+### 9.3 «¿Lee todo el equipo, sea torre o portátil, W10 o W11?»
+
+`Get-AXEHardware` consultaba `Win32_Processor` y `Win32_OperatingSystem` **sin `-ErrorAction`**: un
+fallo de WMI tumbaba la función entera, y `hw.get` (48-webbridge) no la envolvía, así que la ventana
+perdía el panel de hardware completo. Como es la base del gating, eso no dejaba a AXE sin *un* dato
+sino sin *ninguno*. Importa por el público: son equipos a los que ya les pasó otro optimizador, y
+romper WMI es de lo más común que dejan detrás.
+
+Ahora cada hecho va en su `try`, lo esencial tiene camino alternativo por **registro**, y lo
+ilegible viaja en `DetectWarnings`, que la interfaz enseña. Añadidos: `GpuNames`/`GpuPrimary`/
+`GpuVendor` (antes sólo existía `HasNvidia`: quien tuviera Radeon o Arc no veía GPU ninguna),
+`RefreshHz`, `ScreenW/H`, `IsVM`, `Model`, `Vendor`, `DisplayVersion`, `Ubr`. Ningún campo previo
+cambia de nombre ni de tipo — hay un test-trinquete por cada uno.
+
+### Lo que encontró el verificar de verdad
+
+- **`es-ES` rompía el zoom.** `[double]::TryParse('1.5')` con la cultura del sistema devuelve **15**
+  (el punto es separador de miles), así que se rechazaba en silencio. En un Windows en inglés habría
+  pasado inadvertido hasta el primer usuario fuera de EEUU. Lo cazó un test, no una revisión.
+- **Tres hipótesis mías sobre el marcador, dos falsas.** La tarjeta del score colapsaba a 38 px y
+  el gauge se salía encima de las demás. `min-height:min-content` **no** arregla la fila;
+  `overflow:visible` **tampoco**. Sólo una longitud definida participa en el cálculo de la pista.
+  Medido en el navegador, con las barras rellenas para probar el caso alto.
+
+### Verificado
+
+`SelfTest` **82 tweaks / 112 checks / 0 fallos** · Pester **798 passed, 0 failed, 49 skipped**
+(+91 tests nuevos en `tests/Detect.Tests.ps1`) · web host harness verde · interfaz comprobada en
+navegador a 1280 / 940 / 840 / 700 px: sin solapes, sin recortes y sin desborde horizontal en
+ninguna de las siete vistas.
+
+### Sin cubrir (declarado)
+
+- El detector se ha probado contra procesos **sintéticos** y contra la máquina de referencia **sin
+  ningún juego abierto**. Falta ejecutarlo con un juego real delante.
+- Arrastrar la ventana a un segundo monitor con distinto DPI: WPF sin PerMonitorV2 la reescala como
+  mapa de bits. Aceptado, no resuelto.
+- `Start-AXESession` resuelve el juego por nombre (`Get-Process -Name X | Select -First 1`). Con
+  varios procesos del mismo nombre elige arbitrariamente. Preexistente, no tocado en esta sesión.

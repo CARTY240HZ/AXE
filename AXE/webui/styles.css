@@ -375,3 +375,107 @@ body{
 .slevel:focus{border-color:var(--accent);outline:none}
 
 @media (max-width:900px){ .ab{grid-template-columns:1fr} .sgrid{grid-template-columns:1fr} }
+
+/* ================================================================================
+   ESCALADO: la interfaz cabe en la ventana que HAY, no en una ideal de 1200x840.
+   ================================================================================
+   La ventana ya se recorta al escritorio util (Get-AXEWindowFit, 39-webdetect), asi que en un
+   portatil escalado llega bastante mas pequena que el tamano de diseno: 1920x1080 al 125% son
+   1536x816 DIP y al 150% son 1280x680. Sin estos cortes el rail seguia pidiendo 236px y el panel
+   4 columnas pasara lo que pasara, y el contenido se apretaba hasta romperse.
+     Se corta por ANCHO y tambien por ALTO. El alto es el que escasea de verdad al escalar -de 1080
+   a 680 DIP hay un tercio menos- y es justo la dimension que nadie suele contemplar: un
+   osciloscopio de 210px fijos en una ventana de 640 se come el hueco de todo lo demas.
+     Los cortes son de ANCHO DE VENTANA, no de dispositivo: aqui no hay moviles. Coinciden con los
+   puntos donde una columna concreta deja de tener sitio, no con numeros redondos de catalogo. */
+
+/* -- 1180: el panel pasa de 4 columnas a 2. Por debajo de esto una tarjeta baja de ~230px util. -- */
+@media (max-width:1180px){
+  .panel{grid-template-columns:1fr 1fr}
+  .phead,.scope,.status,.actions{grid-column:span 2}
+  /* El marcador ocupaba 2x2. En una rejilla de 2 columnas eso es la parrilla entera: se le quita
+     el alto doble o empuja todo lo demas fuera de la primera pantalla. */
+  /* El min-height NO es decorativo: sin el, la fila del marcador se queda en 38px y el gauge
+     -220px de lienzo- se sale por encima de las tarjetas de abajo, solapandolas.
+       El motivo: '.gauge{flex:1}' es flex-basis:0, asi que el marcador -contenedor flex en
+     columna- declara una altura intrinseca de 38px (solo su cabecera). Con grid-row:span 2 no se
+     notaba nunca, porque la fila doble le imponia la altura; en cuanto la fila pasa a 'auto' la
+     rejilla le cree esos 38px.
+       Medido en el navegador, tres candidatos, y solo uno funciona: min-height:min-content NO
+     agranda la fila (sigue en 38 y solapa), overflow:visible TAMPOCO (misma fila de 38), y un
+     min-height DEFINIDO en px si (la fila pasa a valer eso y el solape desaparece). Solo una
+     longitud definida participa en el calculo de la pista.
+       El numero sale de sumar el contenido real, no a ojo: lienzo 220 + cabecera ~54 + barras del
+     score ~46 + relleno 36 = ~356, y se deja margen hasta 390. Verificado con las barras
+     rellenas, que es el caso alto. */
+  .score{grid-column:span 2;grid-row:auto;min-height:390px}
+}
+
+/* -- 860: el rail se queda en iconos. Devuelve 172px al contenido, que a esta anchura es una
+      columna entera. Los rotulos se van; los iconos, el orden y el nombre accesible se quedan.
+        Se colapsa AQUI y no antes por lo que se vio al mirarlo de verdad a 940px: con 704px de
+      contenido las dos columnas caben de sobra, o sea que quitar los rotulos ahi era pagar un
+      precio de usabilidad sin cobrar nada a cambio.
+        La etiqueta se oculta por '.nav-t', que existe justo para esto. Antes era un nodo de texto
+      suelto dentro de .nav-item -sin elemento propio, o sea sin selector- y al estrechar el rail
+      no habia forma de esconderla: se salia por encima del contenido. Como el texto desaparece,
+      cada .nav-item lleva aria-label y title en el HTML: en modo icono el boton sigue teniendo
+      nombre para un lector de pantalla y tooltip para todos los demas. -- */
+@media (max-width:860px){
+  .app{grid-template-columns:64px 1fr}
+  .rail{padding:14px 8px;align-items:center}
+  .brand{padding:2px}
+  .brandmark{width:38px}
+  .ver,.nav-label,.rail-foot,.nav-item .kbd,.nav-t{display:none}
+  .nav-item{justify-content:center;padding:11px 0;gap:0}
+  .nav-item svg{width:19px;height:19px}
+  .nav-item.on::before{left:-8px}
+  .topbar{padding:12px 16px}
+  .panel,.opt,.scr{padding:16px 16px 22px}
+}
+
+/* -- 760: una sola columna. Es el suelo real: la ventana no baja de 820 DIP de ancho salvo en
+      pantallas muy pequenas, donde Get-AXEWindowFit si la deja encoger mas. -- */
+@media (max-width:760px){
+  .panel{grid-template-columns:1fr}
+  .phead,.scope,.score,.status,.actions{grid-column:span 1}
+  .actions{grid-template-columns:1fr}
+  .btn.wide{grid-column:span 1}
+  /* Las barras del score se quedan en DOS columnas. Apilarlas era la idea inicial y esta medida y
+     descartada: anadian ~46px al marcador, justo lo que hacia que su contenido (406px) pasara del
+     minimo de la fila y se recortara. A esta anchura hay ~600px de contenido y una barra necesita
+     ~290, asi que dos columnas caben y el alto del marcador no se mueve. */
+  .phead{flex-wrap:wrap;gap:8px}
+  .phead .clock{text-align:left}
+  .tier-row{flex-wrap:wrap}
+  .ohead{flex-wrap:wrap}
+  /* El gauge se queda en FILA a proposito. Apilarlo aqui era la idea inicial y esta descartada:
+     el marcador depende de un min-height definido (ver el corte de 1180) y apilar dispara su alto
+     a ~500px, o sea que ese minimo dejaria de cubrirlo y el contenido se recortaria. En fila
+     necesita ~420px y aqui hay ~700 de contenido, asi que cabe de sobra y el alto sigue acotado. */
+}
+
+/* -- Alto escaso. Los lienzos y los volcados de texto son lo unico con altura fija, o sea que son
+      lo unico que hay que ceder: encogerlos mantiene legible TODO lo demas. -- */
+@media (max-height:820px){
+  .scope canvas{height:104px}
+  .scr-live canvas{height:150px}
+  .mono-out{max-height:230px}
+  .panel{gap:13px}
+}
+@media (max-height:660px){
+  .scope canvas{height:80px}
+  .scr-live canvas{height:118px}
+  .mono-out{max-height:165px}
+  .mono-out.sm{max-height:96px}
+  /* La tarjeta de constantes NO baja de sus 120px base: se probo con 96 y con 112 y en las dos la
+     fila queda por debajo del contenido (fila 38 + lienzo + subtitulo + relleno) y lo recorta,
+     porque el min-height definido manda sobre el alto real igual que en el marcador. Lo unico que
+     puede ceder aqui sin perder informacion es el lienzo del sparkline. */
+  .vital canvas{height:26px}
+  .gauge-val{font-size:40px}
+  .sheet-card pre{max-height:40vh}
+  /* Con la cifra del marcador mas pequena el contenido baja de ~356 a ~344, asi que el minimo
+     acompana. Se recorta el minimo, no el contenido: sigue por encima de lo que ocupa. */
+  .score{min-height:360px}
+}

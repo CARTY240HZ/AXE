@@ -21,35 +21,35 @@
     <div class="ver">v<span id="ver">…</span> · afinador de rendimiento</div>
 
     <div class="nav-label">Instrumento</div>
-    <div class="nav-item on" data-view="panel" tabindex="0" role="button">
+    <div class="nav-item on" data-view="panel" tabindex="0" role="button" aria-label="Panel" title="Panel">
       <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-      Panel <span class="kbd">1</span>
+      <span class="nav-t">Panel</span> <span class="kbd">1</span>
     </div>
-    <div class="nav-item" data-view="telemetria" tabindex="0" role="button">
+    <div class="nav-item" data-view="telemetria" tabindex="0" role="button" aria-label="Telemetría" title="Telemetría">
       <svg viewBox="0 0 24 24"><path d="M4 12h4l2 5 4-12 2 7h4"/></svg>
-      Telemetría <span class="kbd">2</span>
+      <span class="nav-t">Telemetría</span> <span class="kbd">2</span>
     </div>
-    <div class="nav-item" data-view="optimizar" tabindex="0" role="button">
+    <div class="nav-item" data-view="optimizar" tabindex="0" role="button" aria-label="Optimizar" title="Optimizar">
       <svg viewBox="0 0 24 24"><path d="M12 3v3m0 12v3m9-9h-3M6 12H3m14.5-6.5-2 2m-9 9-2 2m0-13 2 2m9 9 2 2"/><circle cx="12" cy="12" r="3.2"/></svg>
-      Optimizar <span class="kbd">3</span>
+      <span class="nav-t">Optimizar</span> <span class="kbd">3</span>
     </div>
-    <div class="nav-item" data-view="sesion" tabindex="0" role="button">
+    <div class="nav-item" data-view="sesion" tabindex="0" role="button" aria-label="Sesión de juego" title="Sesión de juego">
       <svg viewBox="0 0 24 24"><path d="M6 9h12l1 9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/><path d="M9 9V6a3 3 0 0 1 6 0v3"/></svg>
-      Sesión de juego <span class="kbd">4</span>
+      <span class="nav-t">Sesión de juego</span> <span class="kbd">4</span>
     </div>
-    <div class="nav-item" data-view="prueba" tabindex="0" role="button">
+    <div class="nav-item" data-view="prueba" tabindex="0" role="button" aria-label="Prueba y receta" title="Prueba y receta">
       <svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7z"/><path d="M9 12l2 2 4-4"/></svg>
-      Prueba y receta <span class="kbd">5</span>
+      <span class="nav-t">Prueba y receta</span> <span class="kbd">5</span>
     </div>
 
     <div class="nav-label">Sistema</div>
-    <div class="nav-item" data-view="seguridad" tabindex="0" role="button">
+    <div class="nav-item" data-view="seguridad" tabindex="0" role="button" aria-label="Seguridad" title="Seguridad">
       <svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7z"/></svg>
-      Seguridad <span class="kbd">6</span>
+      <span class="nav-t">Seguridad</span> <span class="kbd">6</span>
     </div>
-    <div class="nav-item" data-view="ajustes" tabindex="0" role="button">
+    <div class="nav-item" data-view="ajustes" tabindex="0" role="button" aria-label="Ajustes" title="Ajustes">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.3 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.4 2.5a7 7 0 0 0-1.7 1l-2.3-1-2 3.4 2 1.6a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.4h5l.4-2.4a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.6c.1-.3.1-.7.1-1z"/></svg>
-      Ajustes <span class="kbd">7</span>
+      <span class="nav-t">Ajustes</span> <span class="kbd">7</span>
     </div>
 
     <div class="rail-foot" id="railFoot">
@@ -244,12 +244,14 @@
 
       <div class="card">
         <h3>Arranque</h3>
-        <div class="mini">entrada manual a propósito: tú eliges el proceso, AXE no mantiene una base de datos de títulos. La sesión termina al cerrar el juego, al pulsar OFF, o si AXE muere.</div>
+        <div class="mini"><b>Detectar</b> busca el juego solo y te enseña <b>por qué</b> cree que lo es: carpeta de la tienda (Steam, Epic, Riot, GOG, Xbox…), firma del motor, ventana propia, memoria. No hay una base de datos de títulos que se quede vieja — son señales que también valen para un juego que salió ayer. Propone; eliges tú. La sesión termina al cerrar el juego, al pulsar OFF, o si AXE muere.</div>
         <div class="fps-row">
           <input id="sessGame" class="in" type="text" placeholder="proceso del juego (ej: cs2, valorant)" spellcheck="false" autocomplete="off">
+          <button class="btn" id="btnSessDetect"><b>Detectar</b><span>buscar el juego</span></button>
           <button class="btn" id="btnSessPreview"><b>Previsualizar</b><span>no toca nada</span></button>
           <button class="btn primary" id="btnSessStart" disabled><b>ON</b><span>congelar el fondo</span></button>
         </div>
+        <div class="sgrid" id="sessCands"></div>
         <div class="kv"><span>freeze del kernel</span><b class="mono" id="sessFreeze">sin comprobar</b></div>
         <div class="kv"><span>estado</span><b class="mono" id="sessState">OFF</b></div>
         <div class="kv" id="sessElapsedRow" hidden><span>activa desde</span><b class="mono" id="sessElapsed">—</b></div>

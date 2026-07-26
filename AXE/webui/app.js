@@ -32,18 +32,41 @@
     if (!name) return '—';
     return String(name).replace(/\(R\)|\(TM\)|CPU|Processor|@.*$/g, '').replace(/\s+/g, ' ').trim();
   }
+  // «NVIDIA GeForce RTX 5050 Laptop GPU» -> «GeForce RTX 5050». Se quitan marca y coletillas, no
+  // el modelo: el modelo es lo único que el usuario necesita reconocer como suyo.
+  function shortGpu(name) {
+    if (!name) return '—';
+    return String(name).replace(/\(R\)|\(TM\)|NVIDIA|Advanced Micro Devices, Inc\.|AMD|Corporation|Graphics Adapter|Laptop GPU/gi, '')
+      .replace(/\s+/g, ' ').trim() || String(name);
+  }
   AXE.call('hw.get', {}).then((hw) => {
     const eco = $('eco'); eco.innerHTML = '';
     eco.appendChild(chip('CPU', shortCpu(hw.CpuName)));
     if (hw.Cores) eco.appendChild(chip('', hw.Cores + 'C · ' + hw.Threads + 'T'));
-    eco.appendChild(chip('', (hw.RamGB != null ? hw.RamGB : '—') + ' GB'));
-    if (hw.HasNvidia) eco.appendChild(chip('GPU', 'NVIDIA'));
+    eco.appendChild(chip('', (hw.RamGB ? hw.RamGB : '—') + ' GB'));
+    // GPU por NOMBRE, no sólo «NVIDIA si la hay». Antes quien tuviera Radeon o Arc no veía ningún
+    // chip de GPU: la interfaz daba a entender que AXE no sabía que existía.
+    if (hw.GpuPrimary) eco.appendChild(chip('GPU', shortGpu(hw.GpuPrimary)));
+    // Hz del panel: el dato que más manda al hablar de FPS, y no estaba.
+    if (hw.RefreshHz) eco.appendChild(chip('', hw.RefreshHz + ' Hz' + (hw.ScreenW ? ' · ' + hw.ScreenW + '×' + hw.ScreenH : '')));
     eco.appendChild(chip('', hw.IsSSD ? 'SSD/NVMe' : 'HDD'));
-    eco.appendChild(chip('', 'Win ' + (hw.IsWin11 ? '11' : '10') + (hw.IsHome ? ' · Home' : '')));
-    eco.appendChild(chip('', hw.IsWifi ? 'Wi-Fi' : 'Ethernet'));
+    eco.appendChild(chip('', 'Win ' + (hw.IsWin11 ? '11' : '10') + (hw.DisplayVersion ? ' ' + hw.DisplayVersion : '') + (hw.IsHome ? ' · Home' : '')));
+    eco.appendChild(chip('', hw.IsLaptop ? 'Portátil' : 'Torre'));
+    // Sin adaptador conectado NO se dice «Ethernet»: se dice que no hay red. Afirmar cable porque
+    // no hay Wi-Fi era inventarse un hecho a partir de la ausencia de otro.
+    eco.appendChild(chip('', hw.NicName ? (hw.IsWifi ? 'Wi-Fi' : 'Ethernet') : 'sin red', hw.NicName ? '' : 'off'));
+    if (hw.IsVM) eco.appendChild(chip('', 'máquina virtual', 'off'));
     if (hw.HasDefender) {
       const tamper = hw.IsTamperProtected;
       eco.appendChild(chip('Defender', tamper ? 'Tamper ON' : 'Tamper OFF', tamper ? 'on' : 'off'));
+    }
+    // Lo que el motor NO pudo leer se ENSEÑA. Un panel que calla un fallo de detección deja al
+    // usuario creyendo que AXE vio algo que no vio, y el gating depende justo de eso.
+    const warns = hw.DetectWarnings || [];
+    if (warns.length) {
+      const c = chip('⚠', warns.length + (warns.length === 1 ? ' dato no legible' : ' datos no legibles'), 'off');
+      c.title = warns.join('\n');
+      eco.appendChild(c);
     }
   }).catch((e) => {
     $('eco').innerHTML = '';
@@ -603,7 +626,52 @@
     return (h ? h + ' h ' : '') + (h || m ? m + ' min ' : '') + x + ' s';
   }
 
+  // Smart detect. El motor puntúa y devuelve las RAZONES; aquí sólo se pintan. Deliberadamente no
+  // se arranca nada solo: rellenar el campo es ayudar, congelar 20 procesos por tu cuenta es otra
+  // cosa. Todo el texto entra por textContent (elt) porque nombres, títulos y rutas los pone el
+  // sistema, no nosotros.
+  function sessDetect() {
+    const b = $('btnSessDetect'); b.disabled = true; b.classList.add('busy');
+    setSessBar('buscando el juego entre los procesos abiertos… (sólo lectura, no toca nada)');
+    AXE.call('session.detect', { top: 8 }).then(renderSessCands)
+      .catch((e) => setSessBar('No pude detectar: ' + e.message, 'err'))
+      .finally(() => { b.disabled = false; b.classList.remove('busy'); });
+  }
+
+  function renderSessCands(r) {
+    const host = $('sessCands'); host.textContent = '';
+    const list = (r && r.candidates) || [];
+    if (!list.length) {
+      host.appendChild(elt('div', 'mini', 'ningún proceso abierto parece un juego. Ábrelo y vuelve a pulsar Detectar, o escribe el nombre a mano.'));
+      setSessBar('no encontré ningún candidato. ¿Está el juego abierto?', 'warn');
+      return;
+    }
+    list.forEach((c) => {
+      // Verde sólo para lo probable. Un candidato flojo pintado igual que uno fuerte sería decirle
+      // al usuario que confíe lo mismo en los dos, y no es verdad.
+      const row = elt('div', 'sapp ' + (c.likely ? 't0' : 't1'));
+      const left = elt('div', 'sapp-name');
+      left.appendChild(elt('b', '', c.name));
+      if (c.instances > 1) left.appendChild(elt('span', 'sapp-n', '×' + c.instances + ' procesos'));
+      left.appendChild(elt('span', 'sapp-n', (c.likely ? 'probable' : 'poco probable') + ' · ' + (c.reasons || []).join(' · ')));
+      row.appendChild(left);
+      const pick = elt('button', 'slevel', 'usar');
+      pick.addEventListener('click', () => { $('sessGame').value = c.name; sessPreview(false); });
+      row.appendChild(pick);
+      if (c.path) row.title = c.path;   // la ruta completa, para que puedas desmentir al detector
+      host.appendChild(row);
+    });
+    const top = list[0];
+    if (top.likely) {
+      $('sessGame').value = top.name;
+      setSessBar('candidato más probable: «' + top.name + '» — ' + (top.reasons || []).join(' · ') + '. Pulsa Previsualizar para ver qué se congelaría.', 'ok');
+    } else {
+      setSessBar(list.length + ' candidato(s), ninguno claro: sólo tienen ventana propia, que lo cumple casi cualquier programa. Elige uno o escribe el nombre.', 'warn');
+    }
+  }
+
   function initSesion() {
+    $('btnSessDetect').addEventListener('click', sessDetect);
     $('btnSessPreview').addEventListener('click', () => sessPreview(false));
     $('btnSessStart').addEventListener('click', sessStart);
     $('btnSessStop').addEventListener('click', sessStop);
