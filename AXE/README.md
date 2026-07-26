@@ -29,6 +29,7 @@ cada cambio es reversible con fidelidad y cada tweak declara si su efecto es pro
 | **Prueba** | Medición nativa real: timer resolution, jitter (P99.9, stalls), standby purge — antes/después | Barras de "% mejorado" ficticias |
 | **Reversión** | Snapshot real por tweak; si no hay snapshot, **se niega a inventar un default** | Muchas veces sin undo limpio |
 | **Auditable** | PowerShell abierto, fuentes citadas (learn.microsoft.com, valleyofdoom) | Binario cerrado + driver que confías a ciegas |
+| **Detección** | Lee tu equipo campo a campo y **enseña lo que no pudo leer**; el juego se detecta por señales (carpeta de la tienda, firma del motor), no por una lista de títulos que envejece | Lista de juegos que hay que actualizar con cada lanzamiento |
 | **Tests** | Suite Pester en CI, reproducible en tu máquina (ver abajo) | Ninguno público |
 | **Precio / cuenta / telemetría** | Gratis, sin cuenta, sin telemetría | Suscripción |
 
@@ -40,6 +41,28 @@ cada cambio es reversible con fidelidad y cada tweak declara si su efecto es pro
 
 1. Descarga o clona el repo.
 2. Ejecuta **`AXE.bat`** — se auto-eleva a administrador y abre la interfaz (WebView2).
+
+### Se adapta al equipo que tengas
+
+AXE lee tu máquina campo a campo: torre o portátil (por chasis, y por batería si el fabricante
+no rellenó el chasis), Windows 10 u 11 —siempre por número de build, nunca por el nombre del
+producto, que en Win11 **sigue diciendo "Windows 10"**—, GPU por nombre y fabricante (NVIDIA, AMD
+o Intel, no sólo una de las tres), Hz y resolución del panel, RAM, SSD/NVMe, red, y si estás en
+una máquina virtual. Lo esencial tiene camino alternativo por registro, porque en un equipo al que
+ya le pasó otro optimizador por encima WMI puede estar roto — y ahí es donde AXE hace falta.
+
+**Lo que no consigue leer lo dice**, con un aviso en el panel. "No lo sé" es un estado distinto de
+"no lo tienes", y de esa diferencia depende qué ajustes se te ofrecen.
+
+En **Sesión de juego**, el botón *Detectar* encuentra el juego solo y enseña **por qué** cree que
+lo es: carpeta de la tienda (Steam, Epic, Riot, GOG, Xbox…), firma del motor (`-Win64-Shipping` de
+Unreal), ventana propia, memoria. No hay una base de datos de títulos —esas envejecen solas y un
+indie nunca entra en ellas—, así que también acierta con un juego que salió ayer. Propone con el
+motivo a la vista; **eliges tú**. Y la detección no abre ningún handle al proceso del juego: lee
+sólo el listado que ya da el sistema.
+
+La ventana se ajusta al escritorio que tengas, con el escalado de Windows incluido (125 %, 150 %…),
+y la interfaz se reorganiza al encogerla. `Ctrl` + rueda cambia el zoom y se recuerda.
 
 ### Modos por línea de comandos (headless)
 

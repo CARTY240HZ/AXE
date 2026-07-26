@@ -29,17 +29,214 @@ $script:AXESessionFamilies = @{
 
 function Get-AXESessionProcesses {
     # Impura: lee procesos. NO juzga. Alimenta a Get-AXESessionPlan con hechos planos.
+    # Ventana, titulo y memoria viajan para el detector de juego (Get-AXEGameCandidates); el
+    # planificador los ignora. Se leen AQUI y no alli para que el detector siga siendo puro.
+    #   Nada de esto abre un handle al proceso: Path, MainWindowHandle y WorkingSet64 salen del
+    # snapshot que ya trae Get-Process. Es deliberado - abrir handles contra un juego protegido es
+    # justo lo que un anti-cheat interpreta mal, y AXE promete por escrito no hacerlo.
     $out = New-Object System.Collections.ArrayList
     foreach($p in (Get-Process -EA SilentlyContinue)){
         $path = $null; try { $path = $p.Path } catch {}
+        $hwnd = [IntPtr]::Zero; try { $hwnd = $p.MainWindowHandle } catch {}
+        $title = ''; try { $title = [string]$p.MainWindowTitle } catch {}
+        $ws = 0.0; try { $ws = [math]::Round($p.WorkingSet64 / 1MB, 0) } catch {}
         [void]$out.Add([pscustomobject]@{
-            Pid       = [int]$p.Id
-            Name      = [string]$p.ProcessName
-            SessionId = [int]$p.SessionId
-            Path      = $path
+            Pid          = [int]$p.Id
+            Name         = [string]$p.ProcessName
+            SessionId    = [int]$p.SessionId
+            Path         = $path
+            HasWindow    = ($hwnd -ne [IntPtr]::Zero)
+            Title        = $title
+            WorkingSetMB = [double]$ws
         })
     }
     @($out)
+}
+
+# --- Smart detect: que proceso es el juego ---------------------------------------------------
+# El defecto que arregla: la seccion de sesion pedia ESCRIBIR el nombre del proceso. Quien no sabe
+# que Valorant corre como 'VALORANT-Win64-Shipping' no podia usarla, y ese es justo el usuario al
+# que sirve congelar el fondo. La funcion existia; la puerta de entrada no.
+#
+# Como NO se resuelve: con una lista de juegos conocidos. Es lo que hacen las suites de pago y
+# envejece sola - cada lanzamiento es una actualizacion, y el juego que no esta en la lista no
+# existe para el programa. Un indie de itch.io no entra en esa lista jamas.
+#
+# Como si: puntuando senales que valen para un juego que salio ayer.
+#   - La CARPETA de la tienda es el indicio fuerte y estable. Cambian los juegos, no las rutas:
+#     'steamapps\common' lleva ahi desde 2003.
+#   - El SUFIJO DEL MOTOR es el segundo. Unreal compila a '<Juego>-Win64-Shipping.exe'; eso
+#     identifica al MOTOR, no al titulo, asi que cubre juegos que todavia no existen.
+#   - Ventana propia y memoria desempatan.
+# Y no se arranca solo: se PROPONE con el motivo a la vista. Congelar el fondo es lo mas agresivo
+# que hace AXE; elegir por el usuario sobre que proceso se hace seria pasarse de la raya.
+
+# Fragmentos de ruta (minusculas) -> tienda. Es el indicio de mas peso.
+$script:AXEGameStorePaths = [ordered]@{
+    'steamapps\common'              = 'Steam'
+    'epic games\'                   = 'Epic Games'
+    'riot games\'                   = 'Riot Games'
+    'gog galaxy\games'              = 'GOG'
+    'ubisoft game launcher\games'   = 'Ubisoft'
+    'ea games\'                     = 'EA'
+    'origin games\'                 = 'EA (Origin)'
+    'rockstar games\'               = 'Rockstar'
+    'battle.net\games'              = 'Battle.net'
+    '\xboxgames\'                   = 'Xbox'
+    '\.minecraft'                   = 'Minecraft'
+}
+# Marcador RECHAZADO a proposito: '\windowsapps\'. Parecia cubrir los juegos de Microsoft Store,
+# pero ahi vive TODA app empaquetada MSIX. En la maquina de referencia hacia que Claude Desktop y
+# la utilidad NitroSense puntuasen 70 y se colasen por delante de cualquier juego real. Un indicio
+# que marca a todo el mundo no es un indicio. Los juegos de Xbox si tienen carpeta propia
+# (\XboxGames\) y esa si discrimina, asi que se queda solo esa.
+
+# Lanzaderas y utilidades: NUNCA son "el juego", aunque cumplan el resto de senales (viven en la
+# carpeta de la tienda, tienen ventana y comen memoria). Excluirlas evita el falso positivo mas
+# probable de todos: proponer Steam como juego porque Steam esta dentro de steamapps.
+$script:AXEGameNotGame = @(
+    'steam','steamwebhelper','steamservice','epicgameslauncher','epicwebhelper','unrealcefsubprocess'
+    'battle.net','battle.net helper','blizzarderror','agent','riotclientservices','riotclientux'
+    'riotclientuxrender','riotclientcrashhandler','galaxyclient','galaxyclienthelper','galaxycommunication'
+    'upc','uplay','ubisoftconnect','ubisoftgamelauncher','eadesktop','eabackgroundservice','ealauncher'
+    'origin','originwebhelperservice','originclientservice','rockstarservice','rockstarerrorhandler'
+    'launcher','gamelaunchhelper','xboxapp','xboxpcapp','gamingservices','gameoverlayui','gamebar'
+    'gamebarpresencewriter','obs64','obs32','streamlabs obs','streamlabs','xsplit.core'
+    'nvcontainer','nvidia share','nvidia web helper','nvidiaoverlay','msiafterburner','rtss'
+    'rivatuner','code','devenv','idea64','pycharm64','rider64','pwsh','powershell','cmd'
+    'windowsterminal','taskmgr','notepad','notepad++','msiexec','setup','install','unins000'
+)
+
+function Test-AXEGameExcluded {
+    # PURA. Un proceso que NO puede ser el juego, con el motivo. Devuelve $null si si puede serlo.
+    # Se separa del puntuador porque "descartado" y "puntua bajo" son cosas distintas: lo primero
+    # no se ensena, lo segundo se ensena al final de la lista.
+    param($Proc,[int]$SelfPid)
+    if(-not $Proc){ return 'proceso vacio' }
+    $name = Get-AXESessionAppName $Proc.Name
+    if([int]$Proc.Pid -eq $SelfPid){ return 'es AXE' }
+    if([int]$Proc.Pid -le 4){ return 'proceso del sistema' }
+    if(Test-AXESessionHardApp $name){ return 'shell o anticheat: AXE nunca lo toca' }
+    # Familias conocidas que no son juegos. La voz, el navegador y la musica ya tienen su reparto.
+    foreach($fam in 'voz','navegador','musica','mensajeria'){
+        if($script:AXESessionFamilies[$fam] -contains $name){ return "es $fam, no un juego" }
+    }
+    if($script:AXEGameNotGame -contains $name){ return 'es una lanzadera o utilidad, no el juego' }
+    # Infraestructura por como SE LLAMA, no por estar en una lista. Cazado en la maquina de
+    # referencia: 'epiconlineservicesuserhelper' vive en la carpeta de Epic Games, o sea que se
+    # llevaba los 50 puntos de tienda y salia PRIMERO, por delante de cualquier juego real.
+    # Ampliar la lista nombre a nombre es perder la carrera: cada tienda trae los suyos y cambian
+    # con cada version. La regla no: ningun juego se llama '<algo>service' ni '<algo>helper'.
+    #   Se ancla al FINAL del nombre a proposito. Como subcadena suelta, 'agent' descartaria un
+    # juego llamado 'Agents of Mayhem' y 'launcher' uno que la lleve en el titulo.
+    if($name -match '(service|services|helper|crashhandler|crashreporter|errorreporter|overlay|updater|broker|daemon|launcher|agent|installer)$'){
+        return 'es un proceso de servicio o ayudante, no el juego'
+    }
+    $path = [string]$Proc.Path
+    if($path){
+        # %WINDIR% queda fuera entero: ahi no se instala ningun juego, y lo que hay dentro es justo
+        # lo que no conviene proponerle a nadie como centro de una sesion.
+        $win = ([string]$env:SystemRoot).ToLowerInvariant()
+        if($win -and $path.ToLowerInvariant().StartsWith($win)){ return 'vive en la carpeta de Windows' }
+    }
+    $null
+}
+
+function Get-AXEGameCandidates {
+    # PURA sobre los hechos que recibe (por eso es testeable sin un solo juego instalado). Devuelve
+    # los candidatos ORDENADOS por puntuacion, cada uno con sus razones en texto. No decide: propone.
+    param(
+        [object[]]$Processes,
+        [int]$SelfPid,
+        [int]$SessionId,
+        [int]$Top = 8
+    )
+    # Cuantos procesos hay con cada nombre en esta sesion. Se cuenta sobre TODOS, no solo sobre los
+    # que puntuan: la interfaz dira "x9 procesos" y eso tiene que cuadrar con el Administrador de
+    # tareas, no ser un recuento interno de candidatos. De los 9 procesos de una app de Electron
+    # solo uno tiene ventana, asi que contar los puntuados habria dicho "x1" teniendo 9 delante.
+    $byName = @{}
+    foreach($p in @($Processes)){
+        if($null -eq $p){ continue }
+        if([int]$p.SessionId -ne $SessionId){ continue }
+        $k = Get-AXESessionAppName $p.Name
+        if($byName.ContainsKey($k)){ $byName[$k]++ } else { $byName[$k] = 1 }
+    }
+
+    $out = New-Object System.Collections.ArrayList
+    foreach($p in @($Processes)){
+        if($null -eq $p){ continue }
+        if([int]$p.SessionId -ne $SessionId){ continue }   # solo la sesion interactiva, igual que el plan
+        if(Test-AXEGameExcluded -Proc $p -SelfPid $SelfPid){ continue }
+
+        $score   = 0
+        $reasons = New-Object System.Collections.ArrayList
+        $name    = Get-AXESessionAppName $p.Name
+        $path    = [string]$p.Path
+        $lp      = $path.ToLowerInvariant()
+
+        # 1. Carpeta de tienda: el indicio de mas peso y el que no envejece.
+        $store = $null
+        if($lp){
+            foreach($frag in $script:AXEGameStorePaths.Keys){
+                if($lp.Contains($frag)){ $store = $script:AXEGameStorePaths[$frag]; break }
+            }
+        }
+        if($store){ $score += 50; [void]$reasons.Add("instalado en la carpeta de $store") }
+
+        # 2. Firma del MOTOR, no del titulo: cubre juegos que todavia no existen.
+        if($name -match '\-win(64|32|gdk)\-shipping$'){
+            $score += 30; [void]$reasons.Add('ejecutable de Unreal Engine (build shipping)')
+        } elseif($name -match 'win64|win32'){
+            $score += 8;  [void]$reasons.Add('nombre de ejecutable tipico de juego')
+        }
+
+        # 3. Ventana propia. Un juego siempre tiene una; un servicio de fondo no.
+        if($p.PSObject.Properties['HasWindow'] -and $p.HasWindow){
+            $score += 20; [void]$reasons.Add('tiene ventana propia')
+        }
+
+        # 4. Memoria. Escalonada y sin llevarse el protagonismo: la RAM sola no prueba nada -un
+        #    navegador gasta mas que un indie- pero acompanada de lo de arriba desempata bien.
+        $ws = 0.0
+        if($p.PSObject.Properties['WorkingSetMB']){ $ws = [double]$p.WorkingSetMB }
+        if($ws -ge 1500){ $score += 20; [void]$reasons.Add("usa $([int]$ws) MB de memoria") }
+        elseif($ws -ge 600){ $score += 12; [void]$reasons.Add("usa $([int]$ws) MB de memoria") }
+        elseif($ws -ge 250){ $score += 6 }
+
+        # Sin una sola senal positiva no se propone: seria ruido, no un candidato.
+        if($score -le 0){ continue }
+
+        [void]$out.Add([pscustomobject]@{
+            Name    = $name
+            Pid     = [int]$p.Pid
+            Score   = [int]$score
+            Store   = $store
+            Title   = $(if($p.PSObject.Properties['Title']){ [string]$p.Title } else { '' })
+            Path    = $path
+            # "Probable" = tienda, o motor + ventana. Una sola senal debil no basta para que la
+            # interfaz lo preseleccione: proponerlo si, elegirlo por el usuario no.
+            Likely  = [bool]($score -ge 50)
+            Reasons = @($reasons)
+        })
+    }
+
+    # UNA fila por APP, no por pid. Mismo principio que ya aplica session.preview con Chrome: doce
+    # procesos son UNA decision, no doce. Sin esto una app de Electron -que abre un proceso por
+    # pestana o por servicio- llenaba la lista entera con su propio nombre repetido y empujaba al
+    # juego de verdad fuera del top. Representa al grupo la instancia de MAYOR puntuacion, que es
+    # la que tiene la ventana; el numero de procesos viaja para que la interfaz pueda decirlo.
+    $best = [ordered]@{}
+    foreach($c in $out){
+        $k = $c.Name
+        if(-not $best.Contains($k) -or $c.Score -gt $best[$k].Score){ $best[$k] = $c }
+    }
+    foreach($k in @($best.Keys)){
+        $best[$k] | Add-Member -NotePropertyName Instances -NotePropertyValue ([int]$byName[$k]) -Force
+    }
+    # Empate por puntuacion -> orden estable por nombre, para que dos lecturas seguidas no bailen.
+    @(@($best.Values) | Sort-Object -Property @{Expression='Score';Descending=$true},@{Expression='Name';Descending=$false} |
+        Select-Object -First ([math]::Max(1,$Top)))
 }
 
 function Get-AXESessionLevel {

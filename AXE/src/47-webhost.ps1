@@ -51,8 +51,19 @@ function Show-AXEWebHost {
     $rt  = Get-AXEWebView2Runtime
     $bc  = New-Object System.Windows.Media.BrushConverter
     $win = New-Object System.Windows.Window
-    $win.Title='AXE'; $win.Width=1200; $win.Height=840; $win.MinWidth=1040; $win.MinHeight=720
+
+    # Tamano CALCULADO, no fijado. SystemParameters.WorkArea da el escritorio util en DIP -las
+    # mismas unidades que Window.Width/Height-, asi que recortar contra el resuelve el escalado de
+    # Windows sin tocar DPI ni manifiestos: a 125% o 150% hay menos DIP y la ventana se encoge sola.
+    # WorkArea ya descuenta la barra de tareas. La decision vive en Get-AXEWindowFit (39-webdetect,
+    # pura y testeada); aqui solo se lee el escritorio y se aplica.
+    $wa  = [System.Windows.SystemParameters]::WorkArea
+    $fit = Get-AXEWindowFit -WorkWidth $wa.Width -WorkHeight $wa.Height
+    $win.Title='AXE'
+    $win.Width=$fit.Width; $win.Height=$fit.Height
+    $win.MinWidth=$fit.MinWidth; $win.MinHeight=$fit.MinHeight
     $win.WindowStartupLocation='CenterScreen'
+    if($fit.Reason){ Write-AXELog $fit.Reason }
     $win.Background=$bc.ConvertFrom('#0E1013')
     $script:WebWin = $win
 
@@ -89,6 +100,11 @@ function Show-AXEWebHost {
             $core.Settings.AreDevToolsEnabled = $false
         }
         $core.Settings.IsStatusBarEnabled = $false
+        # Zoom: se restaura el elegido la vez anterior y se guarda cada vez que cambia. Sin esto
+        # Ctrl+rueda funcionaba pero se olvidaba al cerrar, que para quien necesita la interfaz mas
+        # grande equivale a no tenerlo. Guardar es best-effort (Set-AXEUIZoom no lanza).
+        try { $s.ZoomFactor = (Get-AXEUIZoom) } catch {}
+        $s.Add_ZoomFactorChanged({ param($zs,$ze) try { [void](Set-AXEUIZoom $zs.ZoomFactor) } catch {} })
         Register-AXEBridge $core   # Fase 2: define el despacho JS->PS (48-webbridge).
         $s.Source = [uri]'https://axe.local/index.html'
     })

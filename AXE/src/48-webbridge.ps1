@@ -12,7 +12,17 @@
 # decide como pintar). La honestidad del motor se preserva: si algo no se midio, viaja null.
 $script:AXEBridgeMap = @{
     'hw.get' = { param($a)
-        if(-not $script:HW){ $script:HW = Get-AXEHardware }
+        # Get-AXEHardware ya degrada campo a campo y no deberia lanzar. El try es defensa en
+        # profundidad: si una regresion futura la hace lanzar, el panel de hardware entero
+        # desaparecia de la ventana por un solo campo roto. Mejor devolver lo que haya con el
+        # fallo declarado en DetectWarnings, que es donde la interfaz ya sabe mirar.
+        if(-not $script:HW){
+            try { $script:HW = Get-AXEHardware }
+            catch {
+                Write-AXELog ("hw.get: la deteccion de hardware fallo entera: {0}" -f $_.Exception.Message) 'ERR'
+                return [pscustomobject]@{ DetectWarnings=@("la deteccion de hardware fallo entera: $($_.Exception.Message)") }
+            }
+        }
         $script:HW
     }
 
@@ -322,6 +332,32 @@ $script:AXEBridgeMap = @{
     # MODIFICA el sistema: crea el job, asigna y congela. Sin admin no se niega (degrada a lo que el
     # usuario posee) pero los assign fallidos viajan en 'failed'. No exige admin a proposito: negarse
     # dejaria sin funcion a quien abre AXE sin elevar, cuando lo suyo si se puede congelar.
+    # Smart detect. READ-ONLY y sin efectos: solo lee la tabla de procesos y puntua. Es la puerta
+    # de entrada que faltaba - la seccion pedia ESCRIBIR el nombre del proceso, cosa que solo sabe
+    # hacer quien ya sabe que Valorant corre como 'VALORANT-Win64-Shipping'. Devuelve las RAZONES
+    # de cada candidato, no solo el nombre: el usuario tiene que poder desmentir a la maquina.
+    'session.detect' = { param($a)
+        $n = 8; if($a.top){ $n = [int]$a.top }
+        if($n -lt 1){ $n = 1 }; if($n -gt 20){ $n = 20 }
+        $sid = [int](Get-Process -Id $PID).SessionId
+        $cands = Get-AXEGameCandidates -Processes (Get-AXESessionProcesses) -SelfPid $PID -SessionId $sid -Top $n
+        [pscustomobject]@{
+            candidates = @($cands | ForEach-Object {
+                [pscustomobject]@{
+                    name      = [string]$_.Name
+                    pid       = [int]$_.Pid
+                    score     = [int]$_.Score
+                    store     = $(if($_.Store){ [string]$_.Store } else { $null })
+                    title     = [string]$_.Title
+                    path      = $(if($_.Path){ [string]$_.Path } else { $null })
+                    likely    = [bool]$_.Likely
+                    instances = [int]$_.Instances
+                    reasons   = @($_.Reasons | ForEach-Object { [string]$_ })
+                }
+            })
+        }
+    }
+
     'session.start' = { param($a)
         if([string]::IsNullOrWhiteSpace([string]$a.game)){ throw 'falta el nombre del proceso del juego (ej: cs2)' }
         $s = Start-AXESessionTracked -GameName ([string]$a.game)
