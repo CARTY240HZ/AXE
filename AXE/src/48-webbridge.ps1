@@ -129,6 +129,27 @@ $script:AXEBridgeMap = @{
         }
     }
 
+    # Monitor de red (37-netmon.ps1). BLOQUEANTE por diseno: count * intervalo (~4s con los
+    # valores por defecto). Se acota el count por el mismo motivo que fps.capture acota los
+    # segundos: el payload viene del front y un numero grande dejaria el puente mudo un rato
+    # largo. Solo mide; ninguna rama de este cmd escribe nada.
+    'net.probe' = { param($a)
+        $n = 20; if($a.count){ $n = [int]$a.count }
+        if($n -lt 4){ $n = 4 }; if($n -gt 60){ $n = 60 }
+        $r = Measure-AXENetwork -Count $n
+        # Los stats viajan tal cual (ya son planos y JSON-seguros); null donde no se midio, que
+        # es lo que el front necesita para pintar '—' en vez de inventar un cero.
+        [pscustomobject]@{
+            adapter  = $r.Adapter
+            isWifi   = $r.IsWifi
+            gateway  = $r.Gateway
+            public   = $r.Public
+            findings = @($r.Findings | ForEach-Object { [pscustomobject]@{ sev=[string]$_.Sev; msg=[string]$_.Msg } })
+            lines    = @((Format-AXENetwork $r) -split "`r?`n")
+            ts       = $r.Timestamp
+        }
+    }
+
     # Captura de FPS con PresentMon. BLOQUEANTE: Start-Process -Wait durante 'seconds' (default 20s)
     # y requiere admin (sesion ETW). Devuelve Ok/lines del motor; si no puede, el motor da el motivo
     # honesto (PresentMon ausente, juego no abierto, sin permisos) y viaja en 'lines'.

@@ -8,7 +8,7 @@
 
 <p align="center">
   <img alt="version" src="https://img.shields.io/badge/version-7.0.0-E0A32E">
-  <img alt="tests" src="https://img.shields.io/badge/tests-671%20passing-2ea043">
+  <img alt="tests" src="https://img.shields.io/badge/tests-passing-2ea043">
   <img alt="platform" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
@@ -29,7 +29,7 @@ cada cambio es reversible con fidelidad y cada tweak declara si su efecto es pro
 | **Prueba** | Medición nativa real: timer resolution, jitter (P99.9, stalls), standby purge — antes/después | Barras de "% mejorado" ficticias |
 | **Reversión** | Snapshot real por tweak; si no hay snapshot, **se niega a inventar un default** | Muchas veces sin undo limpio |
 | **Auditable** | PowerShell abierto, fuentes citadas (learn.microsoft.com, valleyofdoom) | Binario cerrado + driver que confías a ciegas |
-| **Tests** | 671 tests Pester en CI | Ninguno público |
+| **Tests** | Suite Pester en CI, reproducible en tu máquina (ver abajo) | Ninguno público |
 | **Precio / cuenta / telemetría** | Gratis, sin cuenta, sin telemetría | Suscripción |
 
 > AXE no promete FPS mágicos. La mayoría de tweaks —en AXE **y** en las herramientas de pago—
@@ -48,7 +48,14 @@ AXE.bat -SelfTest            :: valida la integridad del catálogo de tweaks
 AXE.bat -List               :: estado real de cada tweak en este equipo
 AXE.bat -Export perfil.json  :: exporta el estado actual
 AXE.bat -Import perfil.json  :: aplica un perfil (requiere admin)
+AXE.bat -Diag                :: config mal puesta que cuesta más FPS que el catálogo entero
+AXE.bat -NetMon              :: ping, jitter de red y pérdida (router + internet). Solo mide
 ```
+
+`-NetMon` mide el **camino ICMP**, y los juegos van por UDP: muchos routers y operadores
+despriorizan ICMP, así que es un indicador, no el dato del juego. Sondea dos destinos por
+separado a propósito — tu router y una ancla pública — porque eso es lo que distingue *tu enlace*
+de *tu operador*. No puntúa el ping a internet: no existe un umbral honesto para eso.
 
 ## Seguridad
 
@@ -101,8 +108,26 @@ Requisitos: PowerShell 5.1+ y `pwsh` (7+), Pester ≥ 5, PSScriptAnalyzer (opcio
 
 ## CI
 
-Cada push/PR corre el gate completo en Windows (`.github/workflows/ci.yml`): lint + 671 tests
-Pester + SelfTest + web host harness + build. Rojo = no mergea.
+Cada push/PR corre el gate completo en Windows (`.github/workflows/ci.yml`): lint + suite Pester
++ SelfTest + web host harness + build. Rojo = no mergea.
+
+**Sobre el número de tests.** El badge no lleva cifra a propósito. Cualquier número fijo ahí
+miente al poco tiempo, y este proyecto no puede permitirse un dato decorativo justo en la sección
+que dice que mide en vez de afirmar. Los tres números se mueven por motivos distintos y legítimos:
+
+| Número | De qué depende |
+|---|---|
+| **Pasados** | Del commit. Crece con cada test nuevo. |
+| **Omitidos** | De **tu hardware**. Un equipo sin NVIDIA o sin PresentMon omite tests que en otro corren; nadie tiene el mismo total. |
+| **No ejecutados** | Los marcados `-Tag integration`, que mutan Windows real y corren en un job aparte de CI (`scripts/Invoke-AXETests.ps1:55`). |
+
+Reproducible en tu máquina, que es lo que importa:
+
+```powershell
+pwsh -File scripts\Invoke-AXETests.ps1                       # suite normal
+pwsh -File scripts\Invoke-AXETests.ps1 -IncludeIntegration   # + los que tocan Windows real
+pwsh -File dist\AXE.ps1 -SelfTest                            # integridad del catalogo
+```
 
 ## Licencia
 

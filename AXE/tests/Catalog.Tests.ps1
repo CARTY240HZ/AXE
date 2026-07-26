@@ -16,7 +16,12 @@ BeforeAll {
     . "$PSScriptRoot/../src/20-tweaks.ps1"
     . "$PSScriptRoot/../src/23-defender.ps1"
     $script:AllTweaks = @($script:CAT)
-    $script:KnownReq  = @('MinRam','Desktop','NotLaptop','NotHybrid','AC','Wired','NotHome','Nvidia','WinVer','WinBuild','CpuArch','CpuVendor','HAGS','TamperOff','Defender','NotSMode')
+    # OJO: esta lista es una COPIA de $knownReq en 45-cli.ps1 (check S19). Si anades una clave de
+    # Requires hay que tocar las dos, y el olvido se ve enseguida porque este test se pone rojo.
+    # No se importa la del CLI a proposito: 45-cli.ps1 no se puede dot-sourcear (trae dispatch y
+    # exit), y duplicar 18 cadenas cuesta menos que extraer el bloque -SelfTest a una funcion
+    # aparte solo para compartirlas.
+    $script:KnownReq  = @('MinRam','MaxRam','Desktop','NotLaptop','NotHybrid','AC','Wired','NotHome','Nvidia','WinVer','WinBuild','CpuArch','CpuVendor','HAGS','TamperOff','Defender','NotSMode','NicProp')
 }
 
 Describe 'Catalogo AXE' -Tag 'unit' {

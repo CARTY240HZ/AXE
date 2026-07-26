@@ -23,6 +23,10 @@
 #   -Benchmark -After <id> [-Report <file>]
 #                 Vuelve a medir tras aplicar+reiniciar y da el veredicto por metrica:
 #                 mejor / peor / RUIDO. Nunca declara mejora dentro del margen de ruido.
+#   -NetMon [-NetMonTarget <ip>] [-NetMonCount N]
+#                 Ping, jitter de RED y perdida contra la puerta de enlace y una ancla publica.
+#                 Solo mide. Distingue "tu enlace" de "tu operador"; no puntua el ping a
+#                 internet porque no hay umbral honesto para eso.
 #   -Diag         Configuracion mal puesta que cuesta mas FPS que todo el catalogo junto
 #                 (XMP/EXPO, canales de RAM, Hz del monitor, SSD). Solo detecta, no toca nada.
 #   -Update [-Check]  Comprueba si hay version nueva en el repo oficial. Sin -Check la instala,
@@ -77,7 +81,14 @@ param(
     # 'Update' y 'Check' no aparecen como variable en ningun modulo (grep sobre src/ = 0 hits),
     # asi que no pueden tipar a [switch] una variable de ruta ajena. S24 los vigila igual.
     [switch]$Update,
-    [switch]$Check
+    [switch]$Check,
+    # Monitor de red (37-netmon.ps1). Cubre el hueco que el audit de 2026-07-25 dejo abierto:
+    # el jitter de 32-measure es de TIMER, no de red, y de red no se medi­a nada.
+    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
+    # grep '$NetMon' sobre src/ = 0 hits fuera de 45-cli. Ninguno se usa como variable de ruta.
+    [switch]$NetMon,
+    [string]$NetMonTarget = '1.1.1.1',
+    [int]$NetMonCount = 20
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
