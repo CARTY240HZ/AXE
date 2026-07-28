@@ -3,8 +3,10 @@
 
 # AXE
 
-**Afinador de rendimiento de Windows para gaming — opt-in, reversible, medido y con fuentes.**
+**Afinador de rendimiento de Windows para gaming.**
+Primero te dice qué tienes mal configurado. Después, y solo después, toca algo.
 
+[![Release](https://img.shields.io/github/v/release/CARTY240HZ/AXE)](https://github.com/CARTY240HZ/AXE/releases/latest)
 [![CI](https://github.com/CARTY240HZ/AXE/actions/workflows/ci.yml/badge.svg?branch=axe)](https://github.com/CARTY240HZ/AXE/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -12,71 +14,134 @@
 
 ---
 
-AXE aplica *tweaks* de Windows (Registro, servicios, energía, GPU, red, Defender) pensados
-para **latencia y FPS**, pero sin los pecados habituales de los "optimizadores":
+## Por qué existe
 
-- **Todo es opt-in y reversible.** Cada cambio guarda su valor anterior real y se puede deshacer.
-- **Punto de restauración creado *y verificado*** antes de tocar nada (no confía a ciegas en `Checkpoint-Computer`).
-- **Solo muestra lo que aplica a tu equipo.** Detecta el ecosistema (RAM, CPU Intel/AMD/ARM, portátil/sobremesa, NVIDIA, SSD, Defender/Tamper, S mode…) y **oculta** los tweaks que no aplican.
-- **Nada de placebo silencioso.** Los tweaks marginales o sin fuente verificable van a Tier 2 (opt-in) y se etiquetan.
-- **Medible.** AXE Score (0-100) + jitter antes/después, para ver si de verdad mejoró.
+Un optimizador que te aplica 80 tweaks pelea por porcentajes de un dígito mientras tu RAM
+corre a la velocidad base porque XMP está apagado, o tu monitor de 144 Hz está puesto a 60.
+Eso son multiplicadores, no porcentajes, y ningún tweak los compensa.
 
-> ⚠️ AXE modifica configuración del sistema. Está diseñado para ser reversible, pero úsalo bajo tu responsabilidad. Cierra anti-cheats/juegos antes de crear el punto de restauración.
+Por eso `-Diag` va antes que el catálogo, y por eso AXE dice **UNKNOWN** cuando no puede
+comprobar algo en vez de rellenar el hueco con un OK. Un OK sin comprobar no es un OK: es la
+misma frase con menos información y más confianza.
 
-## Requisitos
+## Instalación
 
-- Windows 10 o 11 (algunos tweaks requieren build/edición concretos; se ocultan si no aplican).
-- PowerShell 5.1 o 7.x.
-- Permisos de **administrador** (AXE se auto-eleva).
+Descarga desde [**Releases**](https://github.com/CARTY240HZ/AXE/releases/latest) —
+`AXE.ps1` suelto o el `.zip` con el lanzador.
+
+### Verifica antes de ejecutar
+
+AXE corre elevado y escribe en el Registro. No lo ejecutes sin comprobar de dónde salió.
+
+```powershell
+# 1. Integridad: que el fichero llegó entero
+(Get-FileHash .\AXE.ps1 -Algorithm SHA256).Hash.ToLower()
+#    compáralo con la línea de AXE.ps1 en SHA256SUMS
+
+# 2. Procedencia: de qué repositorio, commit y workflow salió  (necesita gh CLI)
+gh attestation verify .\AXE.ps1 --repo CARTY240HZ/AXE
+```
+
+Las dos responden preguntas distintas. El hash prueba que el fichero está entero, pero viaja
+**dentro** del mismo release que el fichero: quien controle el release controla los dos. La
+attestation la firma [Sigstore](https://www.sigstore.dev/) **fuera** del release y ata esos
+bytes a este repositorio, a un commit concreto y al workflow que los construyó.
+
+> **Los releases todavía no van firmados con Authenticode.** Windows seguirá avisando por
+> SmartScreen y `-Update` **no** instalará solo. Es deliberado mientras no haya certificado:
+> preferimos que el aviso salga a fingir una firma que no existe.
 
 ## Uso
 
-**GUI (recomendado):** doble clic en `AXE/AXE.bat` — se eleva solo y abre la interfaz.
+**Interfaz:** doble clic en `AXE.bat` — se eleva solo.
 
-**CLI / avanzado:**
+**Diagnóstico (no toca nada):**
 
 ```powershell
-# validación de integridad del catálogo (sin tocar el equipo)
-pwsh -File AXE/dist/AXE.ps1 -SelfTest
-
-# listar tweaks + banner de ecosistema (qué aplica / qué se oculta y por qué)
-pwsh -File AXE/dist/AXE.ps1 -List
-
-# medir el estado actual (timer/jitter/score)
-pwsh -File AXE/dist/AXE.ps1 -Measure
+pwsh -File AXE.ps1 -Diag       # XMP/EXPO, canales de RAM, Hz reales del panel por EDID, SSD, núcleos P/E
+pwsh -File AXE.ps1 -Advice     # qué hacer ahora, ordenado por efecto real
+pwsh -File AXE.ps1 -Mouse      # sondeo real del ratón (125 vs 1000 Hz = 7 ms de input lag)
+pwsh -File AXE.ps1 -Dpc        # tirones de drivers: los que no bajan el FPS medio
+pwsh -File AXE.ps1 -NetMon     # ping, jitter y pérdida: separa tu enlace de tu operador
+pwsh -File AXE.ps1 -NetLoad    # bufferbloat: el ping que tendrás cuando alguien descargue en casa
 ```
+
+**Medir de verdad:**
+
+```powershell
+pwsh -File AXE.ps1 -Benchmark              # línea base, mediana + IQR. Imprime un id
+pwsh -File AXE.ps1 -Benchmark -After <id>  # tras aplicar y reiniciar: mejor / peor / RUIDO
+pwsh -File AXE.ps1 -Fps <proceso> -FpsCompare   # FPS reales y 1% low con PresentMon
+```
+
+`-Benchmark` dice **RUIDO** cuando la diferencia cae dentro del margen de ruido, en vez de
+apuntarse la mejora. Es la razón de que exista: un número que siempre sube no mide nada.
+
+**Aplicar:**
+
+```powershell
+pwsh -File AXE.ps1 -List       # estado real de cada tweak contra tu sistema
+pwsh -File AXE.ps1 -SelfTest   # integridad del catálogo, sin tocar el equipo
+```
+
+## Qué lo separa de los demás
+
+| | |
+|---|---|
+| **Diagnóstico antes que tweaks** | Los puntos mal configurados valen más que todo el catálogo junto, y te lo dice aunque signifique no venderte nada. |
+| **UNKNOWN existe** | Cuando una lectura no es concluyente, sale UNKNOWN. No hay OK por defecto. |
+| **Todo reversible** | Cada cambio guarda el valor anterior **real** por snapshot, no un valor "por defecto" supuesto. |
+| **Punto de restauración verificado** | Creado *y comprobado* antes de tocar nada; si VSS está bloqueado, cae a export `.reg`. |
+| **Solo lo que aplica a ti** | Detecta el ecosistema y **oculta** los tweaks que tu equipo no puede usar, con el motivo. |
+| **Nada de placebo callado** | Los tweaks marginales o sin fuente verificable van a Tier 2, etiquetados. |
+| **Verificable** | Gate bloqueante en CI, `SHA256SUMS`, SBOM CycloneDX y procedencia Sigstore en cada release. |
+
+> ⚠️ AXE modifica configuración del sistema. Está diseñado para ser reversible, pero úsalo bajo
+> tu responsabilidad. Cierra anti-cheats y juegos antes de crear el punto de restauración.
+
+## Requisitos
+
+- Windows 10 u 11 (los tweaks que piden build o edición concreta se ocultan solos).
+- PowerShell 5.1 o 7.x.
+- Administrador — AXE se auto-eleva.
 
 ## Tiers
 
 | Tier | Significado |
 |------|-------------|
 | **0** | Seguro — bajo riesgo, alta confianza |
-| **1** | Elite — efecto real medido/documentado |
-| **2** | EXTREMO / opt-in — baja protecciones o efecto marginal; requiere consentimiento explícito |
+| **1** | Elite — efecto real medido o documentado |
+| **2** | EXTREMO, opt-in — baja protecciones o efecto marginal; exige consentimiento explícito |
 
 ## Seguridad
 
-- Punto de restauración **creado y verificado** (fallback a export `.reg` si VSS está bloqueado).
-- Escrituras de registro vía primitivos con *snapshot-revert* (capturan el valor previo real).
-- Tweaks EXTREMO (Tier 2) que bajan defensas (VBS/HVCI, CFG, ASLR, mitigaciones Spectre/Meltdown) exigen confirmación y avisan qué protección cae.
-- Ajustes de Defender vía `*-MpPreference` (respetan Tamper Protection); exclusiones solo de procesos de juego + `steamapps\common` (nunca la raíz de Steam).
+- Escrituras de registro con *snapshot-revert*: capturan el valor previo real.
+- Tier 2 que baja defensas (VBS/HVCI, CFG, ASLR, mitigaciones Spectre/Meltdown) pide
+  confirmación y dice **qué protección cae**.
+- Defender vía `*-MpPreference`, respetando Tamper Protection. Exclusiones solo de procesos de
+  juego y `steamapps\common`, nunca la raíz de Steam.
+- `-Update` verifica SHA256 **y** firma Authenticode antes de reemplazar nada. Sin firma
+  válida avisa y no toca el fichero: AXE corre elevado, y un updater laxo sería la vía de
+  escalada.
 
 ## Desarrollo
 
-El código vive en módulos `AXE/src/NN-*.ps1` y se concatena a `AXE/dist/AXE.ps1`:
+El código vive en módulos `AXE/src/NN-*.ps1` y se concatena a `AXE/dist/AXE.ps1`.
 
 ```powershell
-./AXE/build.ps1                    # concatena src -> dist + corre el SelfTest gate
-
-# tests unitarios (Pester 5/7)
+./AXE/build.ps1                                  # concatena src -> dist y corre el gate completo
 Invoke-Pester -Path AXE/tests -ExcludeTag integration
 ```
 
-CI (GitHub Actions, `windows-latest`) corre en cada push: ScriptAnalyzer (Error gate) → build → SelfTest → Pester.
+El gate no es decorativo: un solo test rojo aborta el build. CI (`windows-latest`) corre en
+cada push ScriptAnalyzer → build → anti-deriva de `dist` → SelfTest → Pester, más un job de
+integración contra Windows real.
 
 ## Qué NO incluye este repo
 
-Binarios de terceros (p. ej. `winutil.exe`) **no** se distribuyen aquí: no son de este proyecto y tienen sus propias licencias. AXE funciona sin ellos — su núcleo es autocontenido (usa solo utilidades integradas de Windows).
+Binarios de terceros (por ejemplo `winutil.exe`) no se distribuyen aquí: no son de este
+proyecto y tienen sus propias licencias. El núcleo de AXE es autocontenido y usa solo
+utilidades integradas de Windows. PresentMon lo aporta el usuario.
 
 ## Licencia
 
