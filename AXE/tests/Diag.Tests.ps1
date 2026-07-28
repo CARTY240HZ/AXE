@@ -14,9 +14,12 @@ BeforeAll {
     # Atajo: hallazgo por Id, que es como se consultan en los asserts.
     function Find($findings,$id){ $findings | Where-Object Id -eq $id }
     # Hechos por defecto, todos correctos. Cada test rompe SOLO el campo que mide.
+    # CpuCores/CpuThreads van aqui porque "todo correcto" tiene que dar CERO UNKNOWN: sin ellos
+    # el hallazgo 'hybrid' (anadido despues que este helper) salia UNKNOWN y el render dejaba de
+    # decir 'Nada mal configurado'. 8/16 = HT en todos los nucleos = NO hibrida = nada que avisar.
     function OkFacts { [pscustomobject]@{
         MemModules=2; MemSpeedMhz=6000; MemType=34; MemLocators=@('DIMM_A2','DIMM_B2')
-        RefreshCur=144; RefreshMax=144; IsSSD=$true } }
+        RefreshCur=144; RefreshMax=144; IsSSD=$true; CpuCores=8; CpuThreads=16 } }
 }
 
 Describe 'Heuristica de XMP/EXPO' -Tag 'unit' {
@@ -113,5 +116,104 @@ Describe 'Render' -Tag 'unit' {
     It 'con todo correcto no inventa problemas' {
         $txt = (Format-AXEDiag -Findings (Get-AXEDiagFindings -Facts (OkFacts))) -join "`n"
         $txt | Should -Match 'Nada mal configurado'
+    }
+}
+
+Describe 'Refresco: EDID del panel vs modo del adaptador' -Tag 'unit' {
+
+    # El TODO que este modulo llevaba declarado: MaxRefreshRate es el maximo del MODO ACTUAL,
+    # asi que un panel de 144 puesto a 60 podia reportar 60/60 y salir OK.
+    It 'caza el falso negativo que el adaptador escondia' {
+        $f = OkFacts; $f.RefreshCur = 60; $f.RefreshMax = 60
+        (Find (Get-AXEDiagFindings -Facts $f) 'refresh').Status | Should -Be 'OK'   # sin EDID no se sabe
+        $f2 = OkFacts; $f2.RefreshCur = 60; $f2.RefreshMax = 60
+        $f2 | Add-Member PanelMaxHzAtRes 144 -Force
+        $r = Find (Get-AXEDiagFindings -Facts $f2) 'refresh'
+        $r.Status | Should -Be 'BAD'
+        $r.Detail | Should -Match '144'
+    }
+
+    # MEDIDO EN UN PORTATIL REAL: WmiMonitorListedSupportedSourceModes devolvio 60 Hz en un
+    # panel que estaba corriendo a 180. Sin el clamp al actual, el hallazgo imprimia
+    # "A 180Hz, el maximo disponible (60 Hz)": falso y ademas absurdo.
+    It 'no se cree una lista de EDID que reporta MENOS que el refresco actual' {
+        $f = OkFacts; $f.RefreshCur = 180; $f.RefreshMax = 180
+        $f | Add-Member PanelMaxHzAtRes 60 -Force
+        $r = Find (Get-AXEDiagFindings -Facts $f) 'refresh'
+        $r.Status | Should -Be 'OK'
+        $r.Detail | Should -Not -Match '60 Hz'
+        $r.Confidence | Should -Match 'incompletas'
+    }
+
+    It 'prefiere el maximo A TU RESOLUCION antes que el absoluto del panel' {
+        # Panel de 240@1080p pero 144@1440p, corriendo a 144: mandar a buscar 240 seria un
+        # falso positivo, porque a esa resolucion no existen.
+        $f = OkFacts; $f.RefreshCur = 144; $f.RefreshMax = 144
+        $f | Add-Member PanelMaxHz 240 -Force
+        $f | Add-Member PanelMaxHzAtRes 144 -Force
+        (Find (Get-AXEDiagFindings -Facts $f) 'refresh').Status | Should -Be 'OK'
+    }
+
+    It 'usa el absoluto solo si no se supo la resolucion actual' {
+        $f = OkFacts; $f.RefreshCur = 60; $f.RefreshMax = 60
+        $f | Add-Member PanelMaxHz 144 -Force
+        (Find (Get-AXEDiagFindings -Facts $f) 'refresh').Status | Should -Be 'BAD'
+    }
+
+    It 'sin ninguna fuente de modos sigue siendo UNKNOWN, no un OK disfrazado' {
+        # RefreshCur NO puede establecer el maximo: si lo hiciera, "no se cual es el maximo"
+        # se convertiria en "estas al maximo", que es justo el OK sin comprobar que este
+        # modulo existe para no dar.
+        $f = OkFacts; $f.RefreshMax = $null
+        (Find (Get-AXEDiagFindings -Facts $f) 'refresh').Status | Should -Be 'UNKNOWN'
+    }
+}
+
+Describe 'Nucleos P/E: aritmetica, no el nombre comercial' -Tag 'unit' {
+
+    BeforeAll {
+        function HybFacts($cores,$threads,$win11){
+            $f = OkFacts
+            $f | Add-Member CpuCores $cores -Force
+            $f | Add-Member CpuThreads $threads -Force
+            $f | Add-Member IsWin11 $win11 -Force
+            $f
+        }
+    }
+
+    It 'reparte bien un i9-13900H (14 nucleos / 20 hilos = 6P + 8E)' {
+        $r = Find (Get-AXEDiagFindings -Facts (HybFacts 14 20 $true)) 'hybrid'
+        $r.Detail | Should -Match '6 nucleos P'
+        $r.Detail | Should -Match '8 nucleos E'
+    }
+
+    It 'marca MAL una CPU hibrida en Windows 10 (sin Thread Director)' {
+        $r = Find (Get-AXEDiagFindings -Facts (HybFacts 14 20 $false)) 'hybrid'
+        $r.Status | Should -Be 'BAD'
+        $r.Fix | Should -Match 'Windows 11'
+    }
+
+    It 'da OK a una hibrida en Windows 11 y avisa de NO forzar afinidad' {
+        $r = Find (Get-AXEDiagFindings -Facts (HybFacts 14 20 $true)) 'hybrid'
+        $r.Status | Should -Be 'OK'
+        $r.Confidence | Should -Match 'NO fuerces la afinidad'
+    }
+
+    It 'no confunde HT en todos los nucleos con una hibrida' {
+        # 8 nucleos / 16 hilos: todos con HT, no hay ninguno sin el.
+        $r = Find (Get-AXEDiagFindings -Facts (HybFacts 8 16 $false)) 'hybrid'
+        $r.Status | Should -Be 'OK'
+        $r.Detail | Should -Match 'no hibrida'
+    }
+
+    It 'no confunde una CPU sin HT con una toda de nucleos E' {
+        # 8 nucleos / 8 hilos. Sin el gate, P = 8-8 = 0 y E = 8: diria que todo son nucleos E.
+        $r = Find (Get-AXEDiagFindings -Facts (HybFacts 8 8 $true)) 'hybrid'
+        $r.Status | Should -Be 'OK'
+        $r.Detail | Should -Match 'no hibrida'
+    }
+
+    It 'degrada a UNKNOWN sin datos de CPU, nunca a OK' {
+        (Find (Get-AXEDiagFindings -Facts (HybFacts $null $null $true)) 'hybrid').Status | Should -Be 'UNKNOWN'
     }
 }
