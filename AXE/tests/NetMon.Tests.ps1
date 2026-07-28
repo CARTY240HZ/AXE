@@ -152,3 +152,69 @@ Describe 'Get-AXENetFindings' {
         $f[0].Sev | Should -Be 'OK'
     }
 }
+
+Describe 'Get-AXELoadedLatency - bufferbloat' -Tag 'unit' {
+
+    # Puro: recibe dos objetos de Get-AXENetStats ya construidos. No abre red, no descarga
+    # nada. La parte que satura el enlace (Start-AXENetLoad) habla con internet y no se
+    # testea aqui, por lo mismo que Measure-AXENetProbe: dependeria del router de quien lo
+    # ejecute, y eso no es un test.
+    BeforeAll {
+        # 50 MB: por encima del minimo de 2 MB, o sea que la prueba cuenta como valida.
+        $script:OkBytes = 50MB
+        function Stats([object]$p95,[object]$avg){ [pscustomobject]@{ P95Ms=$p95; AvgMs=$avg } }
+    }
+
+    It 'da A+ cuando el ping no se mueve con el enlace saturado' {
+        $v = Get-AXELoadedLatency -Idle (Stats 20 18) -Loaded (Stats 22 19) -Bytes $script:OkBytes
+        $v.Grade  | Should -Be 'A+'
+        $v.Status | Should -Be 'OK'
+    }
+
+    It 'suspende cuando el router acumula cola' {
+        $v = Get-AXELoadedLatency -Idle (Stats 20 18) -Loaded (Stats 520 300) -Bytes $script:OkBytes
+        $v.Grade    | Should -Be 'F'
+        $v.Status   | Should -Be 'BAD'
+        $v.DeltaP95 | Should -Be 500
+    }
+
+    It 'puntua por el P95 y no por la media' {
+        # La media sube 5 ms (parece bien) pero la cola sube 150: eso es lo que se sufre.
+        $v = Get-AXELoadedLatency -Idle (Stats 20 20) -Loaded (Stats 170 25) -Bytes $script:OkBytes
+        $v.Status   | Should -Be 'BAD'
+        $v.DeltaAvg | Should -Be 5
+    }
+
+    It 'no premia el ruido: un delta negativo no puede dar mejor nota que cero' {
+        # Saturar el enlace no puede BAJAR el ping. Si sale negativo es ruido de medicion.
+        $v = Get-AXELoadedLatency -Idle (Stats 30 28) -Loaded (Stats 25 24) -Bytes $script:OkBytes
+        $v.Grade | Should -Be 'A+'
+    }
+
+    It 'se niega a puntuar si la descarga no llego a saturar el enlace' {
+        # Sin carga real un resultado bueno significaria "no se cargo", no "aguanta". Es el
+        # mismo principio que el n=3 del consejero: sin datos suficientes no se afirma.
+        $v = Get-AXELoadedLatency -Idle (Stats 20 18) -Loaded (Stats 21 19) -Bytes 100KB
+        $v.Status | Should -Be 'UNKNOWN'
+        $v.Grade  | Should -BeNullOrEmpty
+        $v.Detail | Should -Match 'no se saturo'
+    }
+
+    It 'degrada a UNKNOWN si un extremo no respondio, nunca a OK' {
+        (Get-AXELoadedLatency -Idle $null -Loaded (Stats 20 18) -Bytes $script:OkBytes).Status | Should -Be 'UNKNOWN'
+        (Get-AXELoadedLatency -Idle (Stats 20 18) -Loaded (Stats $null $null) -Bytes $script:OkBytes).Status | Should -Be 'UNKNOWN'
+    }
+
+    It 'respeta los escalones de la escala' {
+        # Frontera B/C en +60 ms: por debajo aprueba, por encima no.
+        (Get-AXELoadedLatency -Idle (Stats 20 20) -Loaded (Stats 79 20) -Bytes $script:OkBytes).Status | Should -Be 'OK'
+        (Get-AXELoadedLatency -Idle (Stats 20 20) -Loaded (Stats 81 20) -Bytes $script:OkBytes).Status | Should -Be 'BAD'
+    }
+
+    It 'no dice nunca que el problema sea la linea contratada' {
+        # El buffer es del router. Culpar al operador manda a la gente a cambiar de contrato
+        # por algo que se arregla con SQM.
+        $v = Get-AXELoadedLatency -Idle (Stats 20 18) -Loaded (Stats 520 300) -Bytes $script:OkBytes
+        $v.Detail | Should -Not -Match 'operador'
+    }
+}

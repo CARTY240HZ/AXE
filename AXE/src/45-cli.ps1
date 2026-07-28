@@ -12,7 +12,11 @@ $script:HW = $null
 #     (Wi-Fi/cable) desde $script:HW. Sin el, el informe no diria SOBRE QUE enlace se midio.
 #     -Advice es el que mas lo necesita: cruza hechos del hardware (Hz del panel, bateria, VM)
 #     con el diagnostico, y Get-AXEAppliedIds llama a Get-BlockReason una vez por tweak.
-if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag -or $Benchmark -or $NetMon -or $Advice){
+#     -NetLoad, por lo mismo que -NetMon: rotula la medida con el adaptador y el medio.
+#     -Diag lo necesita ademas para dos campos nuevos: ScreenW/ScreenH (el maximo del panel se
+#     compara A TU RESOLUCION, no en absoluto) y Cores/Threads (el reparto P/E es aritmetica
+#     sobre esos dos). Sin $HW ambos hallazgos degradan a UNKNOWN en vez de mentir.
+if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag -or $Benchmark -or $NetMon -or $Advice -or $NetLoad){
     try { $script:HW = Get-AXEHardware } catch { $script:HW = $null }
 }
 
@@ -794,6 +798,42 @@ if($NetMon){
     Write-Host ''
     Write-Host (Format-AXENetwork $r)
     exit ([int](@($r.Findings | Where-Object Sev -eq 'ERR').Count -gt 0))
+}
+if($NetLoad){
+    # Latencia bajo carga / bufferbloat (region 9.5). Es el UNICO modo de todo AXE que se
+    # conecta a un servidor de terceros, y se dice antes de hacerlo: sin saturar el enlace no
+    # existe la medida. Solo descarga; no sube nada del equipo.
+    $url = if([string]::IsNullOrWhiteSpace($NetLoadUrl)){ $script:AXENetLoadUrl } else { $NetLoadUrl }
+    Write-Host ''
+    Write-Host "Saturando el enlace a proposito descargando de: $url"
+    Write-Host 'Tarda ~15 s y consume datos. Solo descarga: no se envia nada de tu equipo.'
+    Write-Host ''
+    $r = Measure-AXENetLoaded -Target $NetMonTarget -Count $NetMonCount -Url $url
+    Write-Host (Format-AXENetLoaded $r)
+    exit ([int]($r.Verdict.Status -eq 'BAD'))
+}
+if($Mouse){
+    # Sondeo del raton (region 10f). Necesita movimiento: sin el, Get-AXEMouseRate devuelve
+    # UNKNOWN con el motivo, que es la respuesta honesta y no un numero inventado.
+    Write-Host ''
+    Write-Host "MUEVE EL RATON EN CIRCULOS SIN PARAR durante $MouseSeconds segundos, ahora."
+    Write-Host ''
+    $iv   = Measure-AXEMouseIntervals -Seconds $MouseSeconds
+    $rate = Get-AXEMouseRate -Intervals $iv
+    $f    = Get-AXEMouseFindings -Rate $rate -Settings (Get-AXEMouseSettings)
+    foreach($line in (Format-AXELatency -Findings $f)){ Write-Host $line }
+    exit ([int](@($f | Where-Object Status -eq 'BAD').Count -gt 0))
+}
+if($Dpc){
+    # Tiempo en DPC/ISR (region 10f). Solo lee contadores del kernel: no necesita admin, no
+    # abre traza ETW y no toca nada.
+    Write-Host ''
+    Write-Host "Midiendo tiempo en rutinas de drivers durante $DpcSeconds segundos..."
+    $d = Measure-AXEDpc -Seconds $DpcSeconds
+    $f = Get-AXEDpcFindings -Dpc $d
+    Write-Host ''
+    foreach($line in (Format-AXELatency -Findings $f -WithDpcNote)){ Write-Host $line }
+    exit ([int](@($f | Where-Object Status -eq 'BAD').Count -gt 0))
 }
 
 # --- GPU POR JUEGO (region 10c) -------------------------------------------------------

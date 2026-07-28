@@ -1,7 +1,7 @@
 # ================================================================
-# AXE 7.0.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-26 09:11:25Z
-# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
+# AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
+# Build UTC: 2026-07-28 20:27:41Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
@@ -35,7 +35,18 @@
 #                 Solo mide. Distingue "tu enlace" de "tu operador"; no puntua el ping a
 #                 internet porque no hay umbral honesto para eso.
 #   -Diag         Configuracion mal puesta que cuesta mas FPS que todo el catalogo junto
-#                 (XMP/EXPO, canales de RAM, Hz del monitor, SSD). Solo detecta, no toca nada.
+#                 (XMP/EXPO, canales de RAM, Hz del monitor por EDID, SSD, nucleos P/E).
+#                 Solo detecta, no toca nada.
+#   -Mouse [-MouseSeconds N]
+#                 Sondeo real del raton (125 vs 1000 Hz = 7 ms de input lag), aceleracion del
+#                 puntero y escalado 1:1. Hay que MOVER el raton mientras mide.
+#   -Dpc [-DpcSeconds N]
+#                 Tiempo en rutinas diferidas de drivers por nucleo: la otra familia de
+#                 tirones, la que no baja el FPS medio. Mide carga total, no atribuye driver.
+#   -NetLoad [-NetLoadUrl <url>]
+#                 Latencia BAJO CARGA (bufferbloat): el ping que tendras cuando alguien de casa
+#                 descargue algo. Satura el enlace a proposito descargando de Cloudflare (no
+#                 envia nada del equipo); sin saturar no hay nada que medir.
 #   -Update [-Check]  Comprueba si hay version nueva en el repo oficial. Sin -Check la instala,
 #                 pero SOLO tras verificar SHA256 + firma Authenticode; sin firma valida avisa
 #                 y NO reemplaza nada (el destino es escribible por el usuario y AXE corre
@@ -100,13 +111,28 @@ param(
     # grep '$NetMon' sobre src/ = 0 hits fuera de 45-cli. Ninguno se usa como variable de ruta.
     [switch]$NetMon,
     [string]$NetMonTarget = '1.1.1.1',
-    [int]$NetMonCount = 20
+    [int]$NetMonCount = 20,
+    # v7.1: diagnosticos de latencia que el catalogo no puede tocar.
+    #   -Mouse    sondeo del raton + aceleracion + escalado 1:1   (44-latency.ps1)
+    #   -Dpc      tiempo en rutinas diferidas de drivers          (44-latency.ps1)
+    #   -NetLoad  latencia bajo carga / bufferbloat               (37-netmon.ps1)
+    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
+    # grep de '$Mouse', '$Dpc' y '$NetLoad' sobre src/ = 0 hits. Ninguno se usa como variable
+    # de ruta en ningun modulo, asi que declararlos aqui no puede tipar nada ajeno a [switch].
+    [switch]$Mouse,
+    [int]$MouseSeconds = 3,
+    [switch]$Dpc,
+    [int]$DpcSeconds = 5,
+    [switch]$NetLoad,
+    # Vacio a proposito: el default real vive en $script:AXENetLoadUrl (37-netmon), y un param
+    # block no puede leer una variable de un modulo que aun no se ha concatenado.
+    [string]$NetLoadUrl = ''
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
 # Va DESPUES del param block (regla PS: param() debe ser la primera sentencia).
 # Fallback si el token no se reemplazo (se corre src suelto sin build).
-$script:AXEVersion = '7.0.0'
+$script:AXEVersion = '7.1.0'
 if($script:AXEVersion -like '*__AXE_VERSION__*'){ $script:AXEVersion = '6.1.0-dev' }
 
 
@@ -2729,6 +2755,12 @@ function Get-AXEDiagFacts {
         MemModules = $null; MemSpeedMhz = $null; MemType = $null; MemLocators = $null
         RefreshCur = $null; RefreshMax = $null
         IsSSD      = $null
+        # --- Campos nuevos. Ninguno de los de arriba cambia de nombre ni de tipo. ---
+        # Refresco REAL del panel (EDID), no el del modo actual del adaptador: ver el bloque
+        # de WmiMonitorListedSupportedSourceModes mas abajo y el hallazgo 3.
+        PanelMaxHz = $null; PanelMaxHzAtRes = $null
+        # Nucleos fisicos vs hilos: de ahi sale el reparto P/E por aritmetica (hallazgo 5).
+        CpuCores   = $null; CpuThreads = $null; IsWin11 = $null
     }
     try {
         $mem = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction Stop)
@@ -2753,6 +2785,41 @@ function Get-AXEDiagFacts {
               Where-Object { $_.Name -notmatch 'Virtual|Basic|Meta|Parsec|Remote' -and $_.CurrentRefreshRate } |
               Select-Object -First 1
         if($vc){ $f.RefreshCur = [int]$vc.CurrentRefreshRate; $f.RefreshMax = [int]$vc.MaxRefreshRate }
+    } catch {}
+    # --- Refresco REAL del panel, no el del adaptador ------------------------------------
+    # CIERRA EL TODO que este modulo llevaba declarado: Win32_VideoController.MaxRefreshRate es
+    # el maximo del MODO ACTUAL del adaptador, asi que un panel de 144 Hz puesto a 60 puede
+    # reportar 60/60 y salir OK. WmiMonitorListedSupportedSourceModes viene del EDID del
+    # monitor: son los modos que el PANEL declara, independientemente de como este ahora.
+    #
+    # Se guardan DOS maximos a proposito, y la diferencia importa: un panel puede dar 240 Hz a
+    # 1080p y solo 144 a 1440p. Comparar el refresco actual contra el maximo ABSOLUTO mandaria
+    # al usuario a buscar unos Hz que a su resolucion no existen, que es un falso positivo y
+    # de los que peor sientan. Manda el maximo A SU RESOLUCION; el absoluto solo se usa si la
+    # resolucion actual no se pudo leer.
+    try {
+        $curW = $null; $curH = $null
+        if($script:HW){ $curW = $script:HW.ScreenW; $curH = $script:HW.ScreenH }
+        $best = 0; $bestAtRes = 0
+        foreach($mm in @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorListedSupportedSourceModes -ErrorAction Stop)){
+            foreach($sm in @($mm.MonitorSourceModes)){
+                $den = [double]$sm.VerticalRefreshRateDenominator
+                if($den -le 0){ continue }
+                $hz = [int][math]::Round([double]$sm.VerticalRefreshRateNumerator / $den)
+                if($hz -le 0 -or $hz -gt 1000){ continue }   # modos basura del EDID
+                if($hz -gt $best){ $best = $hz }
+                if($curW -and $curH -and [int]$sm.HorizontalActivePixels -eq [int]$curW -and [int]$sm.VerticalActivePixels -eq [int]$curH){
+                    if($hz -gt $bestAtRes){ $bestAtRes = $hz }
+                }
+            }
+        }
+        if($best -gt 0){ $f.PanelMaxHz = $best }
+        if($bestAtRes -gt 0){ $f.PanelMaxHzAtRes = $bestAtRes }
+    } catch {}
+    # CPU: nucleos fisicos vs hilos logicos. De la diferencia sale el reparto P/E sin adivinar
+    # por el nombre comercial (ver hallazgo 5). Se reusa $script:HW si ya esta cargado.
+    try {
+        if($script:HW){ $f.CpuCores = $script:HW.Cores; $f.CpuThreads = $script:HW.Threads; $f.IsWin11 = $script:HW.IsWin11 }
     } catch {}
     # IsSSD ya lo calcula Get-AXEHardware; se reusa si el caller lo paso, no se recalcula.
     if($script:HW -and $null -ne $script:HW.IsSSD){ $f.IsSSD = [bool]$script:HW.IsSSD }
@@ -2815,24 +2882,78 @@ function Get-AXEDiagFindings {
     }
 
     # --- 3. Refresco del monitor --------------------------------------------------------
-    # LIMITE CONOCIDO: MaxRefreshRate es el maximo del MODO ACTUAL del adaptador, no del panel.
-    # Un 144Hz a una resolucion que el cable no aguanta puede reportar 60/60 y salir OK. Es un
-    # falso negativo aceptado: el falso positivo (mandar a tocar ajustes que ya estan bien) es
-    # peor para la confianza. Subir a WmiMonitorListedSupportedSourceModes lo arreglaria.
-    if($null -eq $Facts.RefreshCur -or $null -eq $Facts.RefreshMax -or $Facts.RefreshMax -le 0){
+    # ANTES: solo Win32_VideoController.MaxRefreshRate, que es el maximo del MODO ACTUAL del
+    # adaptador. Un panel de 144 Hz puesto a 60 reportaba 60/60 y salia OK: falso negativo
+    # conocido, declarado en un TODO y sin resolver. AHORA se prefiere el EDID del panel.
+    #
+    # PRIORIDAD, y el orden no es cosmetico:
+    #   1. PanelMaxHzAtRes  el maximo del panel A LA RESOLUCION ACTUAL. Es el unico que puede
+    #                       compararse contra RefreshCur sin mentir.
+    #   2. PanelMaxHz       maximo absoluto del panel. Solo si no se supo la resolucion actual;
+    #                       si no, un panel de 240@1080p / 144@1440p mandaria a buscar 240 Hz
+    #                       que a 1440p no existen.
+    #   3. RefreshMax       el del adaptador, como antes. Ultimo recurso: en RDP, en algunos
+    #                       hibridos y con drivers basicos el namespace root\wmi no responde.
+    # NINGUNA de las tres fuentes es de fiar como techo. Todas valen como SUELO:
+    #   RefreshCur       lo que hay puesto ahora. Suelo garantizado del maximo real.
+    #   PanelMaxHz*      modos del EDID. MEDIDO EN UN PORTATIL REAL DURANTE ESTA SESION: la
+    #                    lista devolvio 60 Hz en un panel que estaba corriendo a 180. La clase
+    #                    WmiMonitorListedSupportedSourceModes solo trae los timings ESTANDAR
+    #                    del EDID, no los detallados, asi que en muchos paneles se queda corta.
+    #                    Tomarla por techo daba un OK con confianza 'cierta' que era falso, y
+    #                    ademas imprimia "A 180Hz, el maximo disponible (60 Hz)".
+    #   RefreshMax       maximo del modo actual del adaptador. Otro suelo, el de siempre.
+    # Por eso el maximo efectivo es el MAYOR de los que haya. La unica afirmacion honesta que
+    # se puede hacer desde aqui es "estas por debajo de un refresco que SE PUEDE VER"; probar
+    # que estas al techo real del panel no se puede, y por eso el OK nunca dice 'cierta'.
+    # OJO CON EL PAPEL DE RefreshCur: es un TOPE INFERIOR, no una fuente. Si entrase como
+    # candidato a maximo, con las otras dos fuentes caidas el maximo saldria igual al actual y
+    # el hallazgo diria OK. Eso convierte "no se cual es el maximo" en "estas al maximo", que
+    # es exactamente el OK sin comprobar que este modulo existe para no dar. Sin ninguna fuente
+    # de modos -> UNKNOWN, como siempre.
+    $refMax = $null; $refSrc = $null; $panel = $null
+    if($Facts.PanelMaxHzAtRes -and $Facts.PanelMaxHzAtRes -gt 0){
+        $panel = [int]$Facts.PanelMaxHzAtRes
+    } elseif($Facts.PanelMaxHz -and $Facts.PanelMaxHz -gt 0){
+        # Absoluto solo si no se supo la resolucion actual: un panel de 240@1080p / 144@1440p
+        # mandaria a buscar unos Hz que a la resolucion puesta no existen.
+        $panel = [int]$Facts.PanelMaxHz
+    }
+    foreach($c in @($panel, $Facts.RefreshMax)){
+        if($c -and [int]$c -gt 0 -and ($null -eq $refMax -or [int]$c -gt $refMax)){ $refMax = [int]$c }
+    }
+    if($null -ne $refMax){
+        # Una fuente que reporta MENOS que el refresco que hay PUESTO esta incompleta, y hay que
+        # decirlo aunque OTRA fuente gane el maximo. El caso MEDIDO en portatil: el EDID devolvio
+        # 60 con el panel corriendo a 180; el maximo lo salvo RefreshMax, pero la confianza no
+        # puede presumir de haber leido el panel cuando lo que leyo estaba mal.
+        #   Mirar solo el maximo final (lo que hacia antes este bloque) perdia ese aviso en cuanto
+        # una sola fuente acertaba: el unico caso que quedaba delatado era el de TODAS cortas.
+        $cur   = if($Facts.RefreshCur){ [int]$Facts.RefreshCur } else { $null }
+        $under = @(@($panel, $Facts.RefreshMax) | Where-Object { $_ -and $cur -and [int]$_ -lt $cur })
+        # Clamp al actual para el caso de TODAS cortas: sin el, el hallazgo imprimia
+        # "A 180Hz, el maximo disponible (60 Hz)", que ademas de falso es absurdo.
+        if($cur -and $cur -gt $refMax){ $refMax = $cur }
+        $refSrc = if($under.Count -gt 0){ 'parcial (las listas de modos reportan menos que tu refresco actual: estan incompletas)' }
+                  elseif($panel -and $panel -eq $refMax){ 'parcial (modos que declara el EDID del panel; la lista puede estar incompleta)' }
+                  else { 'parcial (maximo del modo actual del adaptador, no del panel)' }
+    }
+    if($null -eq $Facts.RefreshCur -or $null -eq $refMax){
         [void]$out.Add((New-AXEDiagFinding 'refresh' 'UNKNOWN' 'Refresco del monitor' `
             'No se pudo leer el refresco actual o el maximo.' `
             'Configuracion > Pantalla > Configuracion avanzada de pantalla.' 'hasta 2x' 'desconocida'))
-    } elseif($Facts.RefreshCur -lt $Facts.RefreshMax){
-        $mult = [math]::Round($Facts.RefreshMax / [double]$Facts.RefreshCur,1)
+    } elseif($Facts.RefreshCur -lt $refMax){
+        $mult = [math]::Round($refMax / [double]$Facts.RefreshCur,1)
         [void]$out.Add((New-AXEDiagFinding 'refresh' 'BAD' 'Refresco del monitor' `
-            "A $($Facts.RefreshCur)Hz cuando admite $($Facts.RefreshMax)Hz. Estas viendo ${mult}x menos frames de los que ya renderiza tu GPU." `
+            "A $($Facts.RefreshCur)Hz cuando admite $refMax Hz. Estas viendo ${mult}x menos frames de los que ya renderiza tu GPU." `
             'Configuracion > Pantalla > Configuracion avanzada > Elegir frecuencia de actualizacion.' `
-            "${mult}x" 'cierta'))
+            "${mult}x" $refSrc))
     } else {
+        # "el mas alto que AXE puede ver", no "el maximo del panel": ver el bloque de arriba.
+        # Decir lo segundo seria afirmar algo que ninguna de las tres fuentes prueba.
         [void]$out.Add((New-AXEDiagFinding 'refresh' 'OK' 'Refresco del monitor' `
-            "A $($Facts.RefreshCur)Hz, el maximo que reporta el adaptador." `
-            $null 'hasta 2x' 'parcial (maximo del modo actual, no del panel)'))
+            "A $($Facts.RefreshCur)Hz, el mas alto de los modos que AXE puede ver." `
+            $null 'hasta 2x' $refSrc))
     }
 
     # --- 4. Disco de sistema ------------------------------------------------------------
@@ -2849,6 +2970,50 @@ function Get-AXEDiagFindings {
         [void]$out.Add((New-AXEDiagFinding 'ssd' 'OK' 'Disco de sistema' 'SSD/NVMe.' $null 'grande en stutter' 'cierta'))
     }
 
+    # --- 5. Nucleos P/E (CPU hibrida) ---------------------------------------------------
+    # POR ARITMETICA, NO POR EL NOMBRE COMERCIAL. En una CPU hibrida de Intel los nucleos P
+    # llevan Hyper-Threading (2 hilos) y los E no (1 hilo). Entonces:
+    #     P = hilos - nucleos       E = nucleos - P
+    # Un i9-13900H (14 nucleos / 20 hilos) da P=6, E=8. Correcto.
+    # El gate es que 'hilos' caiga ESTRICTAMENTE entre 'nucleos' y '2*nucleos': con HT en todos
+    # los nucleos hilos=2*nucleos (no hibrida, P=nucleos y E=0), y sin HT hilos=nucleos (no
+    # hibrida tampoco). Solo el caso intermedio prueba que hay nucleos sin HT.
+    #   Esto es mejor que $HW.IsHybrid, que adivina por regex sobre el nombre ('1[2-9]th Gen'
+    # o 'Ultra'): eso falla con cualquier CPU futura y con las que no rotulan la generacion.
+    #
+    # Y ES UN DIAGNOSTICO, NO UN TWEAK, a proposito. Forzar la afinidad a los nucleos P suena
+    # bien y suele EMPEORARLO: Thread Director mueve los hilos con telemetria del propio
+    # silicio, y una mascara fija le quita esa informacion. El catalogo ya bloquea core parking
+    # en hibridas por este motivo (20-tweaks: 'pelea con Thread Director'). Aqui se explica
+    # que hay que mirar; no se toca nada.
+    $hc = $Facts.CpuCores; $ht = $Facts.CpuThreads
+    if($null -eq $hc -or $null -eq $ht -or $hc -le 0 -or $ht -le 0){
+        [void]$out.Add((New-AXEDiagFinding 'hybrid' 'UNKNOWN' 'Nucleos P/E' `
+            'No se pudo leer el numero de nucleos fisicos o de hilos.' `
+            'Administrador de tareas > Rendimiento > CPU: compara "Nucleos" con "Procesadores logicos".' `
+            'tirones si el juego cae en nucleos E' 'desconocida'))
+    } elseif($ht -gt $hc -and $ht -lt (2 * $hc)) {
+        $pc = $ht - $hc; $ec = $hc - $pc
+        if($Facts.IsWin11 -eq $false){
+            # Win10 no tiene Thread Director por hardware: el planificador reparte a ciegas y
+            # los hilos del juego acaban en nucleos E con mucha mas frecuencia. Es el unico
+            # caso de este hallazgo que merece BAD, y el arreglo es real (actualizar el SO).
+            [void]$out.Add((New-AXEDiagFinding 'hybrid' 'BAD' 'Nucleos P/E' `
+                "CPU hibrida ($pc nucleos P + $ec nucleos E) con Windows 10. Win10 no recibe la telemetria de Thread Director, asi que reparte los hilos sin saber que nucleos son rapidos: los del juego caen en nucleos E mas de la cuenta y eso son tirones." `
+                'Actualiza a Windows 11. Es de las pocas veces que el cambio de version tiene efecto medible en juego, y solo pasa en CPUs hibridas como la tuya.' `
+                'tirones si el juego cae en nucleos E' 'cierta (aritmetica de nucleos e hilos)'))
+        } else {
+            [void]$out.Add((New-AXEDiagFinding 'hybrid' 'OK' 'Nucleos P/E' `
+                "CPU hibrida ($pc nucleos P + $ec nucleos E) con Windows 11: Thread Director reparte con telemetria del propio silicio." `
+                $null 'tirones si el juego cae en nucleos E' `
+                'cierta (aritmetica de nucleos e hilos). NO fuerces la afinidad a los nucleos P: una mascara fija le quita a Thread Director la informacion con la que decide, y suele salir peor.'))
+        }
+    } else {
+        [void]$out.Add((New-AXEDiagFinding 'hybrid' 'OK' 'Nucleos P/E' `
+            "CPU no hibrida ($hc nucleos / $ht hilos): todos los nucleos son iguales, no hay reparto que pueda salir mal." `
+            $null 'tirones si el juego cae en nucleos E' 'cierta (aritmetica de nucleos e hilos)'))
+    }
+
     $out.ToArray()
 }
 
@@ -2856,9 +3021,21 @@ function Format-AXEDiag {
     # PURA. Devuelve lineas; el caller decide donde van (Write-Host en CLI, LogBox en GUI).
     # Texto compartido a proposito: si CLI y GUI redactaran cada una lo suyo acabarian
     # diciendo cosas distintas del mismo hallazgo, que es como se pierde la confianza.
-    param([Parameter(Mandatory)]$Findings)
+    # $Title existe para que 44-latency reuse ESTE render en vez de escribir el suyo: un
+    # hallazgo debe leerse igual venga de donde venga. El default es el literal de siempre, asi
+    # que todos los llamantes anteriores producen exactamente la misma salida que antes.
+    # $BadNote es la linea que explica DONDE se arregla lo que salio mal, y tiene que ser
+    # parametrizable porque no es cierta fuera de este modulo: los hallazgos de 35-diag viven
+    # en la BIOS y en los slots, pero los de 44-latency viven en un driver o en el software del
+    # raton. Reusar el render con el pie equivocado seria decirle al usuario que busque en la
+    # BIOS un problema de DPC. El default es el literal de siempre.
+    param(
+        [Parameter(Mandatory)]$Findings,
+        [string]$Title = 'AXE DIAGNOSTICO DE CONFIGURACION',
+        [string]$BadNote = 'Ninguno se arregla desde AXE: viven en la BIOS, en los slots o en Configuracion de Windows.'
+    )
     $L = New-Object System.Collections.Generic.List[string]
-    [void]$L.Add('== AXE DIAGNOSTICO DE CONFIGURACION ==')
+    [void]$L.Add("== $Title ==")
     [void]$L.Add('')
     $bad = @($Findings | Where-Object Status -eq 'BAD')
     $unk = @($Findings | Where-Object Status -eq 'UNKNOWN')
@@ -2879,8 +3056,10 @@ function Format-AXEDiag {
         [void]$L.Add('Los tweaks del catalogo pelean por porcentajes de un digito sobre esta base.')
     } else {
         if($bad.Count -gt 0){
-            [void]$L.Add(("{0} punto(s) mal configurados. Valen mas que los 78 tweaks juntos." -f $bad.Count))
-            [void]$L.Add('Ninguno se arregla desde AXE: viven en la BIOS, en los slots o en Configuracion de Windows.')
+            # Sin cifra de catalogo a proposito: el numero de tweaks crece y una constante aqui
+            # envejece sola. Es el mismo motivo por el que el badge de tests no lleva numero.
+            [void]$L.Add(("{0} punto(s) mal configurados. Valen mas que todo el catalogo junto." -f $bad.Count))
+            if($BadNote){ [void]$L.Add($BadNote) }
         }
         if($unk.Count -gt 0){ [void]$L.Add(("{0} sin comprobar: se dicen en vez de darlos por buenos." -f $unk.Count)) }
     }
@@ -3155,6 +3334,212 @@ function Measure-AXENetwork {
         Public    = $pub
         Findings  = (Get-AXENetFindings -Gw $gw -Pub $pub)
     }
+}
+
+# =====================================================
+# LATENCIA BAJO CARGA (bufferbloat)
+# =====================================================
+#
+# POR QUE EXISTE: todo lo de arriba mide la red EN REPOSO, y en reposo casi cualquier linea da
+# un ping decente. La latencia de juego no se muere en reposo: se muere cuando alguien de casa
+# se pone a descargar algo. Ahi el router llena su buffer de salida, tus paquetes de juego se
+# ponen a la cola detras de megas de descarga, y el ping se va de 20 ms a 300 sin que se caiga
+# nada. Eso es bufferbloat, y es LA metrica de red que importa para jugar.
+#
+# No se puede medir sin saturar el enlace: es la naturaleza de la prueba. Por eso va detras de
+# un switch propio y no dentro de -NetMon, y por eso dice a donde se conecta antes de hacerlo.
+
+# Destino de carga por defecto. speed.cloudflare.com es anycast, gratuito, sin cuenta y sin
+# limite de peticiones; el parametro 'bytes' pide un flujo de basura del tamanio que se quiera.
+# No se manda NADA del equipo: es una descarga. Configurable por si alguien prefiere su propio
+# servidor o no quiere tocar Cloudflare.
+$script:AXENetLoadUrl = 'https://speed.cloudflare.com/__down?bytes=250000000'
+
+# Cuatro flujos en paralelo. Con uno solo, una linea rapida no se satura: el control de
+# congestion de un unico TCP no llega al techo en los pocos segundos que dura la prueba, y
+# entonces se mediria "no hay bufferbloat" cuando lo que pasa es que no se cargo el enlace.
+$script:AXENetLoadStreams = 4
+
+# Escala de nota. Es la del proyecto Bufferbloat / Waveform, que es el estandar de facto para
+# esto, traducida al incremento de P95 sobre el reposo.
+$script:AXENetLoadGrades = @(
+    @{ Max =   5; Grade = 'A+' }
+    @{ Max =  30; Grade = 'A'  }
+    @{ Max =  60; Grade = 'B'  }
+    @{ Max = 200; Grade = 'C'  }
+    @{ Max = 400; Grade = 'D'  }
+)
+
+function Start-AXENetLoad {
+    # IMPURA: abre N descargas en runspaces y vuelve enseguida. El que llama sondea MIENTRAS
+    # esto corre. Cada runspace lleva su propio limite de tiempo: si el que llama muere, las
+    # descargas se paran solas y no queda nada colgado tirando de la linea.
+    param(
+        [string]$Url = $script:AXENetLoadUrl,
+        [int]$Streams = $script:AXENetLoadStreams,
+        [int]$Seconds = 15
+    )
+    $pool = [runspacefactory]::CreateRunspacePool(1, [math]::Max(1,$Streams))
+    $pool.Open()
+    $work = New-Object System.Collections.Generic.List[object]
+    $sb = {
+        param($url, $seconds)
+        $total = 0L
+        try {
+            # Tls12 explicito: PS 5.1 en Win10 arranca con SSL3/Tls1 y Cloudflare los rechaza.
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+            $req = [System.Net.HttpWebRequest]::Create($url)
+            $req.Timeout = 10000; $req.ReadWriteTimeout = 10000
+            $resp = $req.GetResponse()
+            $st   = $resp.GetResponseStream()
+            $buf  = New-Object byte[] 65536
+            $deadline = (Get-Date).AddSeconds($seconds)
+            while((Get-Date) -lt $deadline){
+                $n = $st.Read($buf, 0, $buf.Length)
+                if($n -le 0){ break }
+                $total += $n
+            }
+            $st.Close(); $resp.Close()
+        } catch {}
+        $total
+    }
+    for($i=0; $i -lt $Streams; $i++){
+        $ps = [powershell]::Create()
+        $ps.RunspacePool = $pool
+        [void]$ps.AddScript($sb).AddArgument($Url).AddArgument($Seconds)
+        [void]$work.Add([pscustomobject]@{ Ps = $ps; Handle = $ps.BeginInvoke() })
+    }
+    [pscustomobject]@{ Pool = $pool; Work = $work.ToArray() }
+}
+
+function Stop-AXENetLoad {
+    # Recoge los bytes descargados y cierra todo. En finally del llamante: dejar un runspace
+    # pool abierto deja hilos vivos en el proceso, y en la GUI eso se acumula por cada prueba.
+    param($Load)
+    $bytes = 0L
+    if(-not $Load){ return 0L }
+    foreach($w in @($Load.Work)){
+        try { foreach($r in @($w.Ps.EndInvoke($w.Handle))){ if($r){ $bytes += [long]$r } } } catch {}
+        try { $w.Ps.Dispose() } catch {}
+    }
+    try { $Load.Pool.Close(); $Load.Pool.Dispose() } catch {}
+    $bytes
+}
+
+function Get-AXELoadedLatency {
+    # PURA: dos objetos de Get-AXENetStats (reposo y bajo carga) -> veredicto.
+    #
+    # SE PUNTUA EL P95, NO LA MEDIA, y es deliberado. El bufferbloat no sube el ping de forma
+    # uniforme: llena el buffer a rachas. Una media que sube 20 ms puede esconder picos de 300
+    # que son exactamente los que te matan en la partida. La media se reporta igual, pero la
+    # nota sale de la cola, que es lo que se sufre.
+    param($Idle, $Loaded, [long]$Bytes = 0)
+
+    if($null -eq $Idle -or $null -eq $Loaded -or $null -eq $Idle.P95Ms -or $null -eq $Loaded.P95Ms){
+        return [pscustomobject]@{
+            IdleP95=$null; LoadedP95=$null; DeltaP95=$null; DeltaAvg=$null
+            Grade=$null; Status='UNKNOWN'; MBytes=[math]::Round($Bytes/1MB,1)
+            Detail='no se pudo medir el ping en reposo o bajo carga (sin respuesta del destino).'
+        }
+    }
+    # Sin descarga real no hay prueba: si la carga no llego a bajar nada, un resultado bueno
+    # significaria "no se cargo el enlace", no "el enlace aguanta". Se dice, no se puntua.
+    if($Bytes -lt 2MB){
+        return [pscustomobject]@{
+            IdleP95=$Idle.P95Ms; LoadedP95=$Loaded.P95Ms
+            DeltaP95=[math]::Round($Loaded.P95Ms - $Idle.P95Ms,2); DeltaAvg=$null
+            Grade=$null; Status='UNKNOWN'; MBytes=[math]::Round($Bytes/1MB,1)
+            Detail='la descarga de carga no llego a 2 MB: el enlace no se saturo, asi que el resultado no significa nada. Comprueba que hay internet y vuelve a probar.'
+        }
+    }
+
+    $dP95 = [math]::Round($Loaded.P95Ms - $Idle.P95Ms, 2)
+    $dAvg = $null
+    if($null -ne $Idle.AvgMs -and $null -ne $Loaded.AvgMs){ $dAvg = [math]::Round($Loaded.AvgMs - $Idle.AvgMs, 2) }
+
+    # Un delta negativo es ruido de medicion, no una mejora: cargar el enlace no puede bajar el
+    # ping. Se trata como 0 para la nota en vez de premiar el ruido con un A+ inmerecido.
+    $forGrade = [math]::Max(0.0, [double]$dP95)
+    $grade = 'F'
+    foreach($g in $script:AXENetLoadGrades){ if($forGrade -lt $g.Max){ $grade = $g.Grade; break } }
+
+    # BAD a partir de C: +60 ms de cola sobre el reposo ya se nota en cualquier juego online.
+    $status = if($grade -in @('A+','A','B')){ 'OK' } else { 'BAD' }
+    $detail = if($status -eq 'OK'){
+        "El ping sube $dP95 ms (P95) con el enlace saturado. El router no acumula cola: nota $grade."
+    } else {
+        "El ping sube $dP95 ms (P95) con el enlace saturado: de $($Idle.P95Ms) a $($Loaded.P95Ms) ms. Nota $grade. Es lo que te pasa cuando alguien de casa descarga algo mientras juegas."
+    }
+
+    [pscustomobject]@{
+        IdleP95=$Idle.P95Ms; LoadedP95=$Loaded.P95Ms; DeltaP95=$dP95; DeltaAvg=$dAvg
+        Grade=$grade; Status=$status; MBytes=[math]::Round($Bytes/1MB,1); Detail=$detail
+    }
+}
+
+function Measure-AXENetLoaded {
+    # IMPURA: reposo -> saturar -> bajo carga. El orden importa: medir primero en reposo evita
+    # que la cola que deje la descarga contamine la linea base.
+    param(
+        [string]$Target = '1.1.1.1',
+        [int]$Count = 20,
+        [int]$IntervalMs = 200,
+        [string]$Url = $script:AXENetLoadUrl,
+        [int]$Streams = $script:AXENetLoadStreams
+    )
+    $idle = Measure-AXENetProbe -Target $Target -Count $Count -IntervalMs $IntervalMs
+
+    # La descarga dura un poco mas que el sondeo para que NO se corte antes de la ultima sonda:
+    # si la carga terminase primero, las ultimas sondas medirian reposo y bajarian el P95.
+    $probeMs = ($Count * $IntervalMs) + 2000
+    $load = $null; $bytes = 0L; $loaded = $null
+    try {
+        $load   = Start-AXENetLoad -Url $Url -Streams $Streams -Seconds ([int][math]::Ceiling($probeMs/1000.0) + 3)
+        # Un segundo de margen: el arranque de TCP no satura el enlace de forma instantanea, y
+        # sondear durante ese arranque diluiria la carga con muestras casi de reposo.
+        Start-Sleep -Milliseconds 1000
+        $loaded = Measure-AXENetProbe -Target $Target -Count $Count -IntervalMs $IntervalMs
+    } finally {
+        $bytes = Stop-AXENetLoad -Load $load
+    }
+
+    [pscustomobject]@{
+        Timestamp = (Get-Date).ToUniversalTime().ToString('u')
+        Adapter   = $(if($script:HW){ $script:HW.NicName } else { $null })
+        IsWifi    = $(if($script:HW){ [bool]$script:HW.IsWifi } else { $null })
+        Target    = $Target
+        LoadUrl   = $Url
+        Idle      = $idle
+        Loaded    = $loaded
+        Verdict   = (Get-AXELoadedLatency -Idle $idle -Loaded $loaded -Bytes $bytes)
+    }
+}
+
+function Format-AXENetLoaded {
+    # PURA. Render de la prueba bajo carga.
+    param($r)
+    if(-not $r){ return 'Sin medicion de latencia bajo carga.' }
+    $L = New-Object System.Collections.ArrayList
+    $ad = $(if($r.Adapter){ $r.Adapter } else { 'adaptador desconocido' })
+    $md = $(if($r.IsWifi -eq $true){ 'Wi-Fi' } elseif($r.IsWifi -eq $false){ 'cable' } else { 'medio desconocido' })
+    [void]$L.Add("LATENCIA BAJO CARGA (bufferbloat) - $ad ($md)")
+    [void]$L.Add("Destino de ping: $($r.Target)   Carga: $($r.LoadUrl)")
+    [void]$L.Add('')
+    $v = $r.Verdict
+    if($null -ne $v.IdleP95){   [void]$L.Add(("  reposo      P95 {0} ms" -f $v.IdleP95)) }
+    if($null -ne $v.LoadedP95){ [void]$L.Add(("  bajo carga  P95 {0} ms   ({1} MB descargados)" -f $v.LoadedP95,$v.MBytes)) }
+    if($null -ne $v.DeltaAvg){  [void]$L.Add(("  media       {0} ms de subida" -f $v.DeltaAvg)) }
+    [void]$L.Add('')
+    $mark = switch($v.Status){ 'BAD'{'[MAL]'} 'OK'{'[OK ]'} default{'[ ? ]'} }
+    [void]$L.Add(("{0} {1}" -f $mark,$v.Detail))
+    if($v.Status -eq 'BAD'){
+        [void]$L.Add('')
+        [void]$L.Add('ARREGLO: activa SQM/QoS inteligente en el router (busca "Smart Queue", "SQM"')
+        [void]$L.Add('o "cake"/"fq_codel"). Si el router no lo trae, limitar la subida al 85-90%')
+        [void]$L.Add('de lo contratado suele quitar la mayor parte de la cola. Cambiar de operador')
+        [void]$L.Add('casi nunca hace falta: el buffer es del router, no de la linea.')
+    }
+    ($L -join "`r`n")
 }
 
 function Format-AXENetwork {
@@ -5467,6 +5852,470 @@ Descarga el release a mano si quieres continuar:
 }
 
 
+# >>>>> MODULE: 44-latency.ps1 >>>>>
+# =====================================================
+# REGION 10f - LATENCIA DEL SISTEMA: SONDEO DEL RATON Y TIEMPO EN DPC
+# =====================================================
+#
+# POR QUE EXISTE: 35-diag cubre el hardware MAL CONFIGURADO (XMP, canales, Hz, disco). Quedan
+# dos fuentes de latencia grandes que no son ni un tweak ni una pieza mal puesta, y que el
+# catalogo entero no puede tocar:
+#
+#   Sondeo del raton   Un raton a 125 Hz manda su posicion cada 8 ms; a 1000 Hz, cada 1 ms.
+#                      Son 7 ms de retardo aniadidos a CADA movimiento, antes de que el juego
+#                      se entere. Ningun tweak del registro compensa eso.
+#   Tiempo en DPC      Un driver que se pasa de tiempo en su rutina diferida bloquea el nucleo
+#                      donde corre. Es la otra gran familia de tirones: el FPS medio sale bien
+#                      y aun asi la imagen da saltos.
+#
+# DIVISION PURO/HARDWARE, la misma de 33-fps y 35-diag:
+#   Measure-*  -> tocan hardware o cronometran. No testeables en CI.
+#   Get-*      -> PURAS. Reciben muestras, deciden. Testeables sin raton y sin drivers.
+# Si el juicio viviera dentro de la medicion solo se podria probar en la maquina del que lo
+# escribio, o sea nunca.
+#
+# LIMITE DECLARADO DEL MODULO DE DPC, y es importante: aqui se mide el TIEMPO TOTAL en DPC,
+# no la duracion de cada DPC ni quien la causo. Un driver con DPCs raras pero de 2 ms produce
+# un tiron audible y sale con un porcentaje ridiculo. Atribuir por driver exige consumir ETW
+# (kernel logger) y resolver direcciones contra los modulos cargados; eso no se puede hacer en
+# PowerShell sin meter un binario de terceros en el que haya que confiar a ciegas, que es
+# justo lo que este proyecto le reprocha a los optimizadores de pago. Asi que se mide lo que se
+# puede medir con honestidad y se DICE lo que falta, en vez de fingir un LatencyMon.
+
+# Rangos de sondeo estandar de un raton USB. bInterval del endpoint HID: 8 ms, 4, 2, 1, y los
+# 0.5/0.25/0.125 ms de los inalambricos de competicion. Se usan para "encajar" la medida: una
+# lectura de 987 Hz es un raton de 1000 Hz con muestras perdidas, no un raton de 987 Hz.
+$script:AXEMouseRates = @(125, 250, 500, 1000, 2000, 4000, 8000)
+
+# Tolerancia del encaje. 20% cubre la perdida tipica de muestras sin llegar a confundir dos
+# escalones contiguos: entre 500 y 1000 hay un factor 2, muy por encima del 20%.
+$script:AXEMouseSnapTol = 0.20
+
+# Minimo de intervalos para afirmar algo. Por debajo, el resultado es UNKNOWN y se dice por que.
+# 30 muestras a 125 Hz son 0.24 s de movimiento real: si el usuario no movio el raton, se nota.
+$script:AXEMouseMinSamples = 30
+
+# Umbral de tiempo en DPC por nucleo. Por encima de esto un nucleo pasa tanto rato atendiendo
+# rutinas diferidas de drivers que el hilo del juego que le toque sufre. Es un umbral de la
+# industria (Process Explorer pinta rojo por ahi), no una medida de esta maquina.
+$script:AXEDpcBadPct  = 3.0
+$script:AXEIsrBadPct  = 2.0
+
+# --- Capa nativa ----------------------------------------------------------------------
+# Tipo APARTE de AXE.Native (32-measure): Add-Type no puede aniadir miembros a un tipo ya
+# cargado, y 32-measure se carga antes. C# 5 compat-safe (csc de PS 5.1 + Roslyn de PS 7):
+# sin var implicito en campos, sin interpolacion de cadenas, sin record.
+if(-not ('AXE.Lat' -as [type])){
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+namespace AXE {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct LatPoint { public int X; public int Y; }
+
+  // SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION. DpcTime e InterruptTime son SUBCONJUNTOS de
+  // KernelTime, y KernelTime YA INCLUYE IdleTime: por eso el denominador del porcentaje es
+  // (Kernel + User) y no (Kernel + User + Idle), que contaria el reposo dos veces.
+  [StructLayout(LayoutKind.Sequential)]
+  public struct LatCpuPerf {
+    public long IdleTime; public long KernelTime; public long UserTime;
+    public long DpcTime;  public long InterruptTime; public uint InterruptCount;
+  }
+
+  public static class Lat {
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out LatPoint p);
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtQuerySystemInformation(int cls, IntPtr buf, int len, out int ret);
+
+    private const int SystemProcessorPerformanceInformation = 8;
+
+    // Muestrea los intervalos entre CAMBIOS de la posicion del cursor.
+    //
+    // POR QUE ASI y no con GetMouseMovePointsEx: esa API devuelve el historial con marca de
+    // tiempo, pero exige encajar un punto semilla exacto contra su buffer interno y falla con
+    // -1 en cuanto el punto no esta (escalado de DPI, cursor movido por otra cosa). Esto es
+    // un sondeo directo: si el cursor cambio de sitio, el raton acaba de reportar. El bucle
+    // debe ser NATIVO por el mismo motivo que el jitter de 32-measure: un bucle de PowerShell
+    // mediria al interprete, no al raton.
+    //
+    // Quema un nucleo mientras dura. Es a proposito y es corto: sin busy-wait no se puede
+    // muestrear por encima de la frecuencia que se quiere medir.
+    public static double[] SampleCursorIntervals(int ms) {
+      if (ms < 100) ms = 100;
+      List<double> outv = new List<double>();
+      LatPoint last; GetCursorPos(out last);
+      double toMs = 1000.0 / (double)Stopwatch.Frequency;
+      long t0 = Stopwatch.GetTimestamp();
+      long tLast = t0;
+      long deadline = t0 + (long)((ms / 1000.0) * Stopwatch.Frequency);
+      LatPoint cur;
+      while (Stopwatch.GetTimestamp() < deadline) {
+        GetCursorPos(out cur);
+        if (cur.X != last.X || cur.Y != last.Y) {
+          long tn = Stopwatch.GetTimestamp();
+          outv.Add((tn - tLast) * toMs);
+          tLast = tn; last = cur;
+        }
+      }
+      return outv.ToArray();
+    }
+
+    // Instantanea de contadores por CPU logica. Devuelve un array plano de 5 valores por CPU:
+    // {Idle, Kernel, User, Dpc, Interrupt} en unidades de 100 ns. Plano y no un array de
+    // structs porque PowerShell marshalea arrays de long sin ceremonia.
+    public static long[] ProcessorPerf() {
+      int n = Environment.ProcessorCount;
+      int sz = Marshal.SizeOf(typeof(LatCpuPerf));
+      IntPtr buf = Marshal.AllocHGlobal(sz * n);
+      try {
+        int ret;
+        int st = NtQuerySystemInformation(SystemProcessorPerformanceInformation, buf, sz * n, out ret);
+        if (st != 0) return new long[0];
+        int have = ret / sz;
+        if (have > n) have = n;
+        long[] outv = new long[have * 5];
+        for (int i = 0; i < have; i++) {
+          IntPtr p = new IntPtr(buf.ToInt64() + (long)(i * sz));
+          LatCpuPerf c = (LatCpuPerf)Marshal.PtrToStructure(p, typeof(LatCpuPerf));
+          outv[i * 5 + 0] = c.IdleTime;
+          outv[i * 5 + 1] = c.KernelTime;
+          outv[i * 5 + 2] = c.UserTime;
+          outv[i * 5 + 3] = c.DpcTime;
+          outv[i * 5 + 4] = c.InterruptTime;
+        }
+        return outv;
+      } finally { Marshal.FreeHGlobal(buf); }
+    }
+  }
+}
+'@ -ErrorAction SilentlyContinue
+}
+
+# =====================================================
+# RATON
+# =====================================================
+
+function Measure-AXEMouseIntervals {
+    # IMPURA: cronometra el raton de verdad. Devuelve intervalos en ms entre reportes.
+    # Necesita que el usuario MUEVA el raton: sin movimiento no hay reportes que cronometrar,
+    # y devolver un array corto es la respuesta correcta (Get-AXEMouseRate lo convierte en
+    # UNKNOWN con motivo, no en un numero inventado).
+    param([int]$Seconds = 3)
+    if($Seconds -lt 1){ $Seconds = 1 }
+    if($Seconds -gt 15){ $Seconds = 15 }
+    try { ,([AXE.Lat]::SampleCursorIntervals($Seconds * 1000)) } catch { ,@() }
+}
+
+function Get-AXEMouseRate {
+    # PURA: mismos intervalos dentro, mismo veredicto fuera.
+    #
+    # SE USA LA MODA, y las dos alternativas obvias se probaron y FALLAN por lados opuestos:
+    #
+    #   Mediana        Un movimiento lento produce reportes con delta 0 px que no mueven el
+    #                  cursor y se ven como un intervalo del doble o del triple. La mediana se
+    #                  los traga y un raton de 1000 Hz movido despacio sale como uno de 300.
+    #   Percentil 10   Fue la primera implementacion, con el argumento de que el ruido solo
+    #                  puede ALARGAR intervalos, nunca acortarlos. Es falso: el stack de
+    #                  entrada de Windows entrega reportes A RAFAGAS tras una pausa de
+    #                  planificacion, y esa rafaga son intervalos casi cero. MEDIDO: con un
+    #                  generador sintetico a 500 Hz el P10 devolvia 1000, y a 1000 devolvia
+    #                  2000. Sobreestima justo el doble, que es el error mas enganioso posible
+    #                  porque 2x cae en otro escalon estandar y encaja igual de "limpio".
+    #
+    # La moda no tiene ninguno de los dos problemas: el periodo REAL es, por definicion, el
+    # intervalo que mas veces aparece cuando el movimiento es continuo. Los reportes perdidos
+    # se acumulan en 2T y 3T (modas menores) y las rafagas cerca de 0 (otra moda menor), y
+    # ninguna de las dos le gana a la fundamental.
+    param([object[]]$Intervals)
+
+    $raw = @($Intervals)
+    # El primer intervalo va desde el arranque del bucle hasta el primer movimiento: mide
+    # cuanto tardo el usuario en reaccionar, no el raton. Fuera siempre.
+    if($raw.Count -gt 0){ $raw = @($raw[1..($raw.Count-1)]) }
+    $ok = @($raw | Where-Object { $null -ne $_ -and [double]$_ -gt 0 } | ForEach-Object { [double]$_ })
+
+    if($ok.Count -lt $script:AXEMouseMinSamples){
+        return [pscustomobject]@{
+            Hz=$null; RawHz=$null; Snapped=$false; Samples=$ok.Count; PeriodMs=$null
+            Confidence='desconocida'
+            Reason=("solo $($ok.Count) reportes utiles (hacen falta $($script:AXEMouseMinSamples)): hay que mover el raton sin parar mientras mide.")
+        }
+    }
+
+    # Moda por histograma de anchura RELATIVA (bins del 12% en escala logaritmica), no absoluta.
+    # Absoluta no sirve: 1 ms y 8 ms son el mismo fenomeno a dos escalas, y un bin fijo que
+    # separe bien a 8 ms mete todo el rango de 1 ms en una sola cubeta. El 12% es mas estrecho
+    # que la distancia entre escalones estandar (que es 2x) y mas ancho que el jitter tipico
+    # del planificador, asi que separa 500 de 1000 sin partir en dos la moda de un mismo raton.
+    $bins = @{}
+    $lb = [math]::Log(1.12)
+    foreach($v in $ok){
+        $k = [int][math]::Floor([math]::Log($v) / $lb)
+        if($bins.ContainsKey($k)){ [void]$bins[$k].Add($v) } else { $bins[$k] = (New-Object System.Collections.Generic.List[double]); [void]$bins[$k].Add($v) }
+    }
+    $bestBin = $null; $bestN = 0
+    foreach($k in $bins.Keys){
+        $n = $bins[$k].Count
+        # Empate a favor del bin MAS LARGO: entre dos cubetas igual de pobladas, la corta es
+        # una rafaga y la larga es el periodo. Preferir la corta es sobreestimar, que es el
+        # error que se acaba de corregir.
+        if($n -gt $bestN -or ($n -eq $bestN -and $null -ne $bestBin -and $k -gt $bestBin)){ $bestN = $n; $bestBin = $k }
+    }
+    $modeVals = @($bins[$bestBin] | Sort-Object)
+    $mode = [double]$modeVals[[int][math]::Floor($modeVals.Count / 2)]
+    if($mode -le 0){
+        return [pscustomobject]@{
+            Hz=$null; RawHz=$null; Snapped=$false; Samples=$ok.Count; PeriodMs=$null
+            Confidence='desconocida'; Reason='los intervalos medidos son cero: el reloj no dio resolucion suficiente.'
+        }
+    }
+
+    $rawHz = 1000.0 / $mode
+    # Encaje al escalon estandar mas cercano en proporcion (no en distancia absoluta): entre
+    # 125 y 250 la distancia absoluta enganiaria a favor del escalon alto.
+    $best = $null; $bestRel = [double]::MaxValue
+    foreach($r in $script:AXEMouseRates){
+        $rel = [math]::Abs($rawHz - $r) / [double]$r
+        if($rel -lt $bestRel){ $bestRel = $rel; $best = $r }
+    }
+    $snapped = ($bestRel -le $script:AXEMouseSnapTol)
+    $hz = if($snapped){ [int]$best } else { [int][math]::Round($rawHz) }
+
+    # Confianza: cuantas muestras hay y como de limpio quedo el encaje. No se promete precision
+    # que el metodo no da; con pocas muestras se dice "parcial" aunque el numero salga redondo.
+    # La moda tambien tiene que ser MAYORITARIA de verdad. Si la cubeta ganadora se lleva menos
+    # de un tercio de las muestras, la distribucion esta repartida (movimiento a tirones, o el
+    # cursor lo movio algo que no es el raton) y el numero no se sostiene: sale 'parcial'
+    # aunque haya miles de muestras.
+    $share = [double]$bestN / [double]$ok.Count
+    $conf = if(-not $snapped){ 'parcial (no encaja en ningun sondeo estandar; puede ser un raton raro o poco movimiento)' }
+            elseif($share -lt 0.33){ 'parcial (los intervalos salen muy repartidos: mueve el raton de forma continua)' }
+            elseif($ok.Count -ge 200){ 'cierta' }
+            else { 'parcial (pocas muestras)' }
+
+    [pscustomobject]@{
+        Hz=$hz; RawHz=[math]::Round($rawHz,1); Snapped=$snapped; Samples=$ok.Count
+        PeriodMs=[math]::Round($mode,3); ModeShare=[math]::Round($share,3)
+        Confidence=$conf; Reason=$null
+    }
+}
+
+function Get-AXEMouseSettings {
+    # IMPURA: lee el registro. Ajustes del puntero que SI son estaticos y SI se leen siempre,
+    # con raton parado y en modo headless. Cada uno en su try: en una maquina por la que ya
+    # paso otro optimizador cualquiera de estas claves puede no existir.
+    $s = [ordered]@{ Accel=$null; Sensitivity=$null; QueueSize=$null }
+    try {
+        $m = Get-ItemProperty 'HKCU:\Control Panel\Mouse' -ErrorAction Stop
+        # MouseSpeed es el interruptor de "Mejorar la precision del puntero" (aceleracion).
+        # 0 = apagado. 1 y 2 son los dos escalones de aceleracion.
+        if($null -ne $m.MouseSpeed){ $s.Accel = [int]$m.MouseSpeed }
+        # MouseSensitivity 10 = 1:1 (el punto medio del deslizador, 6 de 11). Cualquier otro
+        # valor multiplica los contadores del raton, o sea que duplica o SE SALTA pixeles.
+        if($null -ne $m.MouseSensitivity){ $s.Sensitivity = [int]$m.MouseSensitivity }
+    } catch {}
+    try {
+        $q = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\mouclass\Parameters' -ErrorAction Stop
+        if($null -ne $q.MouseDataQueueSize){ $s.QueueSize = [int]$q.MouseDataQueueSize }
+    } catch {}
+    [pscustomobject]$s
+}
+
+function Get-AXEMouseFindings {
+    # PURA. Devuelve hallazgos con la MISMA forma que 35-diag (New-AXEDiagFinding) para que el
+    # render y la GUI no tengan que aprender un segundo formato.
+    param($Rate, $Settings)
+    $out = New-Object System.Collections.Generic.List[object]
+
+    # --- Sondeo -------------------------------------------------------------------------
+    if($null -eq $Rate -or $null -eq $Rate.Hz){
+        $why = if($Rate -and $Rate.Reason){ $Rate.Reason } else { 'no se midio el sondeo del raton.' }
+        [void]$out.Add((New-AXEDiagFinding 'mouse_rate' 'UNKNOWN' 'Sondeo del raton' `
+            $why 'Vuelve a medir moviendo el raton en circulos sin parar durante toda la cuenta.' `
+            '1-7 ms de input lag' 'desconocida'))
+    } elseif($Rate.Hz -lt 500){
+        $ms = [math]::Round(1000.0 / $Rate.Hz, 1)
+        $gain = [math]::Round($ms - 1.0, 1)
+        [void]$out.Add((New-AXEDiagFinding 'mouse_rate' 'BAD' 'Sondeo del raton' `
+            "Reporta a $($Rate.Hz) Hz: manda su posicion cada $ms ms. A 1000 Hz seria cada 1 ms." `
+            "Software del raton (Logitech G HUB, Razer Synapse, etc.) > tasa de sondeo > 1000 Hz. Si no tiene software, mira si trae un interruptor fisico. Un raton que no pasa de 125 Hz es de los pocos casos en que cambiar de raton se nota de verdad." `
+            "${gain} ms de input lag" $Rate.Confidence))
+    } else {
+        [void]$out.Add((New-AXEDiagFinding 'mouse_rate' 'OK' 'Sondeo del raton' `
+            "Reporta a $($Rate.Hz) Hz (cada $([math]::Round(1000.0/$Rate.Hz,2)) ms)." `
+            $null '1-7 ms de input lag' $Rate.Confidence))
+    }
+
+    # --- Aceleracion --------------------------------------------------------------------
+    # Esto no es folclore: con la aceleracion puesta, el MISMO movimiento fisico produce
+    # distinta distancia en pantalla segun la velocidad del gesto. La punteria se aprende por
+    # memoria muscular, y la memoria muscular necesita que la relacion sea constante.
+    if($null -eq $Settings -or $null -eq $Settings.Accel){
+        [void]$out.Add((New-AXEDiagFinding 'mouse_accel' 'UNKNOWN' 'Aceleracion del puntero' `
+            'No se pudo leer HKCU\Control Panel\Mouse.' `
+            'Configuracion > Bluetooth y dispositivos > Raton > Configuracion adicional > Opciones de puntero.' `
+            'consistencia de punteria' 'desconocida'))
+    } elseif($Settings.Accel -ne 0){
+        [void]$out.Add((New-AXEDiagFinding 'mouse_accel' 'BAD' 'Aceleracion del puntero' `
+            '"Mejorar la precision del puntero" esta ACTIVADA. El mismo gesto fisico recorre distinta distancia segun lo rapido que lo hagas.' `
+            'Configuracion > Raton > Configuracion adicional > Opciones de puntero > desmarca "Mejorar la precision del puntero".' `
+            'consistencia de punteria' 'cierta (es el ajuste, leido del registro)'))
+    } else {
+        [void]$out.Add((New-AXEDiagFinding 'mouse_accel' 'OK' 'Aceleracion del puntero' `
+            'Desactivada: la relacion entre gesto y pantalla es constante.' `
+            $null 'consistencia de punteria' 'cierta'))
+    }
+
+    # --- Escalado 1:1 -------------------------------------------------------------------
+    if($null -eq $Settings -or $null -eq $Settings.Sensitivity){
+        [void]$out.Add((New-AXEDiagFinding 'mouse_scale' 'UNKNOWN' 'Escalado del puntero' `
+            'No se pudo leer la sensibilidad del puntero.' `
+            'Opciones de puntero > deja el deslizador de velocidad en el punto medio (6 de 11).' `
+            'pixeles saltados' 'desconocida'))
+    } elseif($Settings.Sensitivity -ne 10){
+        [void]$out.Add((New-AXEDiagFinding 'mouse_scale' 'BAD' 'Escalado del puntero' `
+            "El deslizador de velocidad no esta en el punto medio (valor $($Settings.Sensitivity), 1:1 es 10). Windows multiplica los contadores del raton: duplica o se salta pixeles." `
+            'Opciones de puntero > pon el deslizador en el 6 de 11 (el punto medio) y ajusta la sensibilidad DENTRO del juego.' `
+            'pixeles saltados' 'cierta (es el ajuste, leido del registro)'))
+    } else {
+        [void]$out.Add((New-AXEDiagFinding 'mouse_scale' 'OK' 'Escalado del puntero' `
+            'En 1:1 (punto medio del deslizador): Windows no multiplica los contadores.' `
+            $null 'pixeles saltados' 'cierta'))
+    }
+
+    $out.ToArray()
+}
+
+# =====================================================
+# DPC / ISR
+# =====================================================
+
+function Get-AXEDpcStats {
+    # PURA: recibe dos instantaneas planas de [AXE.Lat]::ProcessorPerf() y devuelve el
+    # porcentaje por nucleo. Separada de la medicion para poder probar la aritmetica sin
+    # drivers: los numeros de un test son los mismos que los de una maquina real.
+    param([object[]]$Before, [object[]]$After)
+
+    $b = @($Before); $a = @($After)
+    if($b.Count -eq 0 -or $a.Count -ne $b.Count -or ($b.Count % 5) -ne 0){
+        return [pscustomobject]@{ Cpus=@(); MaxDpcPct=$null; MaxIsrPct=$null; TotalDpcPct=$null; TotalIsrPct=$null }
+    }
+
+    $n = [int]($b.Count / 5)
+    $cpus = New-Object System.Collections.Generic.List[object]
+    $sumDpc = 0.0; $sumIsr = 0.0; $sumTot = 0.0
+    for($i=0; $i -lt $n; $i++){
+        $o = $i * 5
+        # Denominador = Kernel + User. KernelTime YA incluye Idle en esta estructura, asi que
+        # sumar Idle aparte contaria el reposo dos veces y hundiria todos los porcentajes.
+        $dKern = [double]($a[$o+1] - $b[$o+1])
+        $dUser = [double]($a[$o+2] - $b[$o+2])
+        $dDpc  = [double]($a[$o+3] - $b[$o+3])
+        $dInt  = [double]($a[$o+4] - $b[$o+4])
+        $tot   = $dKern + $dUser
+        if($tot -le 0){ continue }
+        $sumDpc += $dDpc; $sumIsr += $dInt; $sumTot += $tot
+        [void]$cpus.Add([pscustomobject]@{
+            Cpu    = $i
+            DpcPct = [math]::Round(100.0 * $dDpc / $tot, 2)
+            IsrPct = [math]::Round(100.0 * $dInt / $tot, 2)
+        })
+    }
+    $arr = $cpus.ToArray()
+    if($arr.Count -eq 0){
+        return [pscustomobject]@{ Cpus=@(); MaxDpcPct=$null; MaxIsrPct=$null; TotalDpcPct=$null; TotalIsrPct=$null }
+    }
+    [pscustomobject]@{
+        Cpus        = $arr
+        MaxDpcPct   = ($arr | Measure-Object DpcPct -Maximum).Maximum
+        MaxIsrPct   = ($arr | Measure-Object IsrPct -Maximum).Maximum
+        TotalDpcPct = [math]::Round(100.0 * $sumDpc / $sumTot, 2)
+        TotalIsrPct = [math]::Round(100.0 * $sumIsr / $sumTot, 2)
+    }
+}
+
+function Measure-AXEDpc {
+    # IMPURA: dos instantaneas separadas por $Seconds. No necesita admin ni ETW: los contadores
+    # por CPU salen de NtQuerySystemInformation, que es lo mismo que lee el Administrador de
+    # tareas para pintar "tiempo de kernel".
+    param([int]$Seconds = 5)
+    if($Seconds -lt 1){ $Seconds = 1 }
+    if($Seconds -gt 60){ $Seconds = 60 }
+    $b = @(); $a = @()
+    try { $b = @([AXE.Lat]::ProcessorPerf()) } catch { $b = @() }
+    if($b.Count -eq 0){
+        return [pscustomobject]@{ Cpus=@(); MaxDpcPct=$null; MaxIsrPct=$null; TotalDpcPct=$null; TotalIsrPct=$null; Seconds=$Seconds }
+    }
+    Start-Sleep -Seconds $Seconds
+    try { $a = @([AXE.Lat]::ProcessorPerf()) } catch { $a = @() }
+    $st = Get-AXEDpcStats -Before $b -After $a
+    $st | Add-Member -NotePropertyName Seconds -NotePropertyValue $Seconds -Force
+    $st
+}
+
+function Get-AXEDpcFindings {
+    # PURA. Mismo formato de hallazgo que 35-diag.
+    param($Dpc)
+    $out = New-Object System.Collections.Generic.List[object]
+
+    if($null -eq $Dpc -or $null -eq $Dpc.MaxDpcPct){
+        [void]$out.Add((New-AXEDiagFinding 'dpc' 'UNKNOWN' 'Tiempo en DPC' `
+            'No se pudieron leer los contadores por nucleo.' `
+            'Vuelve a intentarlo; si sigue fallando, el sistema esta limitando NtQuerySystemInformation.' `
+            'tirones, no FPS medio' 'desconocida'))
+        return $out.ToArray()
+    }
+
+    $worst = @($Dpc.Cpus | Sort-Object DpcPct -Descending | Select-Object -First 1)
+    $wcpu  = if($worst.Count -gt 0){ $worst[0].Cpu } else { 0 }
+
+    if($Dpc.MaxDpcPct -ge $script:AXEDpcBadPct){
+        [void]$out.Add((New-AXEDiagFinding 'dpc' 'BAD' 'Tiempo en DPC' `
+            "El nucleo $wcpu paso el $($Dpc.MaxDpcPct)% del tiempo en rutinas diferidas de drivers (media de todos: $($Dpc.TotalDpcPct)%). Por encima del $($script:AXEDpcBadPct)% el hilo que caiga en ese nucleo sufre tirones." `
+            'Sospecha primero de red y almacenamiento: actualiza el driver de la tarjeta de red y el del chipset desde la web del FABRICANTE del equipo, no desde Windows Update. Para saber QUE driver es hace falta una traza ETW (LatencyMon o xperf); AXE no lo atribuye, ver la nota de abajo.' `
+            'tirones, no FPS medio' 'cierta (medido en esta maquina, ventana corta)'))
+    } else {
+        [void]$out.Add((New-AXEDiagFinding 'dpc' 'OK' 'Tiempo en DPC' `
+            "Maximo por nucleo $($Dpc.MaxDpcPct)%, media $($Dpc.TotalDpcPct)%. Por debajo del umbral." `
+            $null 'tirones, no FPS medio' 'parcial (mide carga total, no la duracion de cada DPC)'))
+    }
+
+    if($Dpc.MaxIsrPct -ge $script:AXEIsrBadPct){
+        $iworst = @($Dpc.Cpus | Sort-Object IsrPct -Descending | Select-Object -First 1)
+        $icpu = if($iworst.Count -gt 0){ $iworst[0].Cpu } else { 0 }
+        [void]$out.Add((New-AXEDiagFinding 'isr' 'BAD' 'Tiempo en interrupciones' `
+            "El nucleo $icpu paso el $($Dpc.MaxIsrPct)% atendiendo interrupciones de hardware." `
+            'Suele ser un dispositivo USB que reinterrumpe o un driver de red antiguo. Desconecta perifericos USB uno a uno y vuelve a medir.' `
+            'tirones, no FPS medio' 'cierta (medido en esta maquina, ventana corta)'))
+    }
+
+    $out.ToArray()
+}
+
+function Format-AXELatency {
+    # PURA. Reusa el render de 35-diag para que un hallazgo se lea IGUAL venga de donde venga,
+    # y aniade la nota de limite del DPC, que es especifica de este modulo y no del render.
+    param([Parameter(Mandatory)]$Findings, [switch]$WithDpcNote)
+    $L = New-Object System.Collections.Generic.List[string]
+    $note = 'Ninguno se arregla con un tweak del registro: viven en el driver, en el software del raton o en Opciones de puntero de Windows.'
+    foreach($line in (Format-AXEDiag -Findings $Findings -Title 'AXE LATENCIA: RATON Y DPC' -BadNote $note)){ [void]$L.Add($line) }
+    if($WithDpcNote){
+        [void]$L.Add('')
+        [void]$L.Add('NOTA SOBRE EL DPC: esto mide CUANTO tiempo total se va en rutinas de drivers,')
+        [void]$L.Add('no CUANTO dura cada una ni de QUE driver es. Un driver con DPCs raras pero de')
+        [void]$L.Add('2 ms da un porcentaje bajo y aun asi produce tirones. Atribuir por driver exige')
+        [void]$L.Add('consumir ETW y resolver simbolos: AXE no lo hace porque necesitaria un binario')
+        [void]$L.Add('de terceros, que es justo lo que este proyecto no quiere pedirte que te creas.')
+        [void]$L.Add('Si este apartado sale MAL, LatencyMon (gratis) te dice el nombre del driver.')
+    }
+    $L.ToArray()
+}
+
+
 # >>>>> MODULE: 45-cli.ps1 >>>>>
 # =====================================================
 # REGION 11 - MODOS CLI (headless)
@@ -5482,7 +6331,11 @@ $script:HW = $null
 #     (Wi-Fi/cable) desde $script:HW. Sin el, el informe no diria SOBRE QUE enlace se midio.
 #     -Advice es el que mas lo necesita: cruza hechos del hardware (Hz del panel, bateria, VM)
 #     con el diagnostico, y Get-AXEAppliedIds llama a Get-BlockReason una vez por tweak.
-if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag -or $Benchmark -or $NetMon -or $Advice){
+#     -NetLoad, por lo mismo que -NetMon: rotula la medida con el adaptador y el medio.
+#     -Diag lo necesita ademas para dos campos nuevos: ScreenW/ScreenH (el maximo del panel se
+#     compara A TU RESOLUCION, no en absoluto) y Cores/Threads (el reparto P/E es aritmetica
+#     sobre esos dos). Sin $HW ambos hallazgos degradan a UNKNOWN en vez de mentir.
+if($SelfTest -or $List -or $Export -or $Import -or $Measure -or $Score -or $Report -or $TimerSweep -or $Diag -or $Benchmark -or $NetMon -or $Advice -or $NetLoad){
     try { $script:HW = Get-AXEHardware } catch { $script:HW = $null }
 }
 
@@ -6264,6 +7117,42 @@ if($NetMon){
     Write-Host ''
     Write-Host (Format-AXENetwork $r)
     exit ([int](@($r.Findings | Where-Object Sev -eq 'ERR').Count -gt 0))
+}
+if($NetLoad){
+    # Latencia bajo carga / bufferbloat (region 9.5). Es el UNICO modo de todo AXE que se
+    # conecta a un servidor de terceros, y se dice antes de hacerlo: sin saturar el enlace no
+    # existe la medida. Solo descarga; no sube nada del equipo.
+    $url = if([string]::IsNullOrWhiteSpace($NetLoadUrl)){ $script:AXENetLoadUrl } else { $NetLoadUrl }
+    Write-Host ''
+    Write-Host "Saturando el enlace a proposito descargando de: $url"
+    Write-Host 'Tarda ~15 s y consume datos. Solo descarga: no se envia nada de tu equipo.'
+    Write-Host ''
+    $r = Measure-AXENetLoaded -Target $NetMonTarget -Count $NetMonCount -Url $url
+    Write-Host (Format-AXENetLoaded $r)
+    exit ([int]($r.Verdict.Status -eq 'BAD'))
+}
+if($Mouse){
+    # Sondeo del raton (region 10f). Necesita movimiento: sin el, Get-AXEMouseRate devuelve
+    # UNKNOWN con el motivo, que es la respuesta honesta y no un numero inventado.
+    Write-Host ''
+    Write-Host "MUEVE EL RATON EN CIRCULOS SIN PARAR durante $MouseSeconds segundos, ahora."
+    Write-Host ''
+    $iv   = Measure-AXEMouseIntervals -Seconds $MouseSeconds
+    $rate = Get-AXEMouseRate -Intervals $iv
+    $f    = Get-AXEMouseFindings -Rate $rate -Settings (Get-AXEMouseSettings)
+    foreach($line in (Format-AXELatency -Findings $f)){ Write-Host $line }
+    exit ([int](@($f | Where-Object Status -eq 'BAD').Count -gt 0))
+}
+if($Dpc){
+    # Tiempo en DPC/ISR (region 10f). Solo lee contadores del kernel: no necesita admin, no
+    # abre traza ETW y no toca nada.
+    Write-Host ''
+    Write-Host "Midiendo tiempo en rutinas de drivers durante $DpcSeconds segundos..."
+    $d = Measure-AXEDpc -Seconds $DpcSeconds
+    $f = Get-AXEDpcFindings -Dpc $d
+    Write-Host ''
+    foreach($line in (Format-AXELatency -Findings $f -WithDpcNote)){ Write-Host $line }
+    exit ([int](@($f | Where-Object Status -eq 'BAD').Count -gt 0))
 }
 
 # --- GPU POR JUEGO (region 10c) -------------------------------------------------------

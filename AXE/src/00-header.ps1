@@ -28,7 +28,18 @@
 #                 Solo mide. Distingue "tu enlace" de "tu operador"; no puntua el ping a
 #                 internet porque no hay umbral honesto para eso.
 #   -Diag         Configuracion mal puesta que cuesta mas FPS que todo el catalogo junto
-#                 (XMP/EXPO, canales de RAM, Hz del monitor, SSD). Solo detecta, no toca nada.
+#                 (XMP/EXPO, canales de RAM, Hz del monitor por EDID, SSD, nucleos P/E).
+#                 Solo detecta, no toca nada.
+#   -Mouse [-MouseSeconds N]
+#                 Sondeo real del raton (125 vs 1000 Hz = 7 ms de input lag), aceleracion del
+#                 puntero y escalado 1:1. Hay que MOVER el raton mientras mide.
+#   -Dpc [-DpcSeconds N]
+#                 Tiempo en rutinas diferidas de drivers por nucleo: la otra familia de
+#                 tirones, la que no baja el FPS medio. Mide carga total, no atribuye driver.
+#   -NetLoad [-NetLoadUrl <url>]
+#                 Latencia BAJO CARGA (bufferbloat): el ping que tendras cuando alguien de casa
+#                 descargue algo. Satura el enlace a proposito descargando de Cloudflare (no
+#                 envia nada del equipo); sin saturar no hay nada que medir.
 #   -Update [-Check]  Comprueba si hay version nueva en el repo oficial. Sin -Check la instala,
 #                 pero SOLO tras verificar SHA256 + firma Authenticode; sin firma valida avisa
 #                 y NO reemplaza nada (el destino es escribible por el usuario y AXE corre
@@ -93,7 +104,22 @@ param(
     # grep '$NetMon' sobre src/ = 0 hits fuera de 45-cli. Ninguno se usa como variable de ruta.
     [switch]$NetMon,
     [string]$NetMonTarget = '1.1.1.1',
-    [int]$NetMonCount = 20
+    [int]$NetMonCount = 20,
+    # v7.1: diagnosticos de latencia que el catalogo no puede tocar.
+    #   -Mouse    sondeo del raton + aceleracion + escalado 1:1   (44-latency.ps1)
+    #   -Dpc      tiempo en rutinas diferidas de drivers          (44-latency.ps1)
+    #   -NetLoad  latencia bajo carga / bufferbloat               (37-netmon.ps1)
+    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
+    # grep de '$Mouse', '$Dpc' y '$NetLoad' sobre src/ = 0 hits. Ninguno se usa como variable
+    # de ruta en ningun modulo, asi que declararlos aqui no puede tipar nada ajeno a [switch].
+    [switch]$Mouse,
+    [int]$MouseSeconds = 3,
+    [switch]$Dpc,
+    [int]$DpcSeconds = 5,
+    [switch]$NetLoad,
+    # Vacio a proposito: el default real vive en $script:AXENetLoadUrl (37-netmon), y un param
+    # block no puede leer una variable de un modulo que aun no se ha concatenado.
+    [string]$NetLoadUrl = ''
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
