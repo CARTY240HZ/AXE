@@ -18,7 +18,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write        # necesario para crear el release; nada mas
+  contents: write        # necesario para crear el release
+  id-token: write        # OIDC: lo exige la attestation de procedencia. No publica nada por si solo.
+  attestations: write    # escribe la attestation en el almacen del repo
 
 jobs:
   release:
@@ -115,6 +117,22 @@ jobs:
           path: AXE/dist/release/**
           if-no-files-found: error
 
+      # Procedencia (SLSA / Sigstore). Responde la UNICA pregunta que el checksum no puede:
+      # QUIEN publico esto. SHA256SUMS viaja dentro del mismo release que el fichero, asi que
+      # prueba que llego entero pero un atacante que sustituya ambos pasa la verificacion igual.
+      # La attestation la firma Sigstore FUERA del release y ata los bytes a este repo, este
+      # commit y este workflow, asi que sustituirla no esta al alcance de quien controle el
+      # release. No sustituye a Authenticode: Windows sigue sin confiar en el fichero y
+      # SmartScreen sigue avisando. Cubre autenticidad, no confianza del SO.
+      #   Solo en tag: en el dry-run de PR no hay artefacto publicado al que atar procedencia.
+      - name: Attestation de procedencia
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            AXE/dist/release/AXE.ps1
+            AXE/dist/release/AXE-*.zip
+
       - name: Publicar release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -133,14 +151,25 @@ jobs:
             **Estado de la firma: `${{ steps.pack.outputs.signed == 'true' && 'FIRMADO (Authenticode + timestamp RFC3161)' || 'SIN FIRMAR' }}`**
 
             ```powershell
-            # Integridad (que el fichero llego entero)
+            # 1. Integridad (que el fichero llego entero)
             (Get-FileHash .\AXE.ps1 -Algorithm SHA256).Hash.ToLower()
             # comparalo con la linea de AXE.ps1 en SHA256SUMS
 
-            # Autenticidad (quien lo publico)
+            # 2. Procedencia (de que repo, commit y workflow salio). Necesita gh CLI.
+            gh attestation verify .\AXE.ps1 --repo CARTY240HZ/AXE
+
+            # 3. Firma Authenticode (si este release salio firmado)
             Get-AuthenticodeSignature .\AXE.ps1 | Format-List Status, SignerCertificate
             ```
             Desde Linux/WSL: `sha256sum -c SHA256SUMS`
+
+            Las tres comprobaciones responden preguntas distintas y **no** se sustituyen entre si:
+            el hash prueba que el fichero llego entero, pero viaja en el mismo release que el
+            fichero (quien controle el release controla los dos). La **attestation** la firma
+            Sigstore fuera del release: ata estos bytes a este repositorio, este commit y este
+            workflow, y por eso vale aunque el release no este firmado. Lo que la attestation
+            **no** hace es que Windows confie en el script: eso solo lo da Authenticode, asi que
+            SmartScreen seguira avisando mientras el punto 3 salga vacio.
 
             `sbom.json` (CycloneDX 1.5) lista los componentes de terceros que van dentro del zip,
             con su hash y su licencia. PresentMon **no** se redistribuye: lo aporta el usuario.
