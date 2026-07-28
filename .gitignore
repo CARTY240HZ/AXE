@@ -33,6 +33,13 @@ AXE/dist/axe_shown.png
 # Artefactos de test side-effect del rewrite v6 abandonado (directorio ya no existe)
 LWSuite-v6/
 
+# Documentos de trabajo del asistente (planes y specs generados durante el desarrollo).
+# NO son documentacion del proyecto: son el cuaderno de a bordo de como se llego aqui, con
+# instrucciones, hipotesis descartadas y notas de sesion. Quien clona el repo quiere saber
+# QUE hace AXE y COMO se construye -eso vive en README.md, docs/BUILD.md y docs/SIGNING.md-,
+# no la deliberacion que produjo cada modulo. Se quedan en local a proposito.
+AXE/docs/superpowers/
+
 # Ficheros locales del equipo, no fuente del proyecto:
 #   winutil.exe  - binario de terceros (WinUtil), descargado para comparar. No es nuestro, no se
 #                  redistribuye y no tiene por que viajar en el repo.
