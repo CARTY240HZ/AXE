@@ -1,6 +1,6 @@
 # Publicar AXE en winget
 
-Subproyecto B (spec `docs/superpowers/specs/2026-07-24-axe-signing-release-design.md`).
+Cadena de firma y publicacion: ver `docs/SIGNING.md`.
 
 `winget install AXE` es distribucion **nativa** de Windows: sin warning de SmartScreen en la
 descarga, con actualizacion por `winget upgrade`, y sin que el usuario tenga que confiar en un
