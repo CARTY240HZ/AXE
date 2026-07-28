@@ -32,6 +32,12 @@ jobs:
       - name: Install Pester + PSScriptAnalyzer
         shell: pwsh
         run: |
+          # Ver ci.yml: PSGallery puede no venir registrada en la imagen del runner. Aqui importa
+          # el doble, porque este workflow es el que publica: no puede caerse por eso justo cuando
+          # se etiqueta una version.
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default -ErrorAction Stop
+          }
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser -ErrorAction Stop
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop

@@ -16,6 +16,13 @@ jobs:
       - name: Install PSScriptAnalyzer + Pester
         shell: pwsh
         run: |
+          # PSGallery no siempre viene registrada en la imagen del runner: 'Set-PSRepository
+          # PSGallery' peto con "No repository with the name 'PSGallery' was found" en un job
+          # mientras el otro, con la MISMA linea, pasaba. Registrarla si falta convierte un rojo
+          # aleatorio en algo determinista. Un rojo que no es del codigo ensena a ignorar los rojos.
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default -ErrorAction Stop
+          }
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop
           Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser -ErrorAction Stop
@@ -85,6 +92,10 @@ jobs:
       - name: Install Pester
         shell: pwsh
         run: |
+          # Ver el comentario del job build-test: PSGallery puede no estar registrada.
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default -ErrorAction Stop
+          }
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser -ErrorAction Stop
 
