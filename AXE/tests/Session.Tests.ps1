@@ -351,6 +351,32 @@ Describe 'Diario de prioridades - la red de la salida sucia' -Tag 'unit' {
     }
 }
 
+Describe 'Start-AXESession -- diario escrito POR ITERACION, no solo al final del bucle (REGRESION)' -Tag 'unit' {
+    # Start-AXESession pide JobObject/kernel real (ver nota del encabezado del fichero), asi que no
+    # se ejecuta aqui. Se inspecciona el CODIGO -- mismo criterio que RevertFidelity.Tests.ps1 para
+    # los tweaks fuera de snapshot: lo que importa es el ORDEN de las operaciones, no el resultado
+    # de correrlas contra hardware real.
+    BeforeAll { $script:StartSrc = (Get-Command Start-AXESession).ScriptBlock.ToString() }
+
+    It 'Write-AXESessionJournal se llama justo tras cada Add al degradar, no despues del bucle entero' {
+        # Antes: el diario se escribia UNA sola vez, tras completar el bucle foreach del plan
+        # Degradado. Si AXE moria (crash/kill/BSOD) a mitad del bucle, el ultimo proceso degradado
+        # antes de morir no quedaba registrado en ningun lado: Restore-AXESessionDegraded en el
+        # siguiente arranque no encontraba su entrada y lo dejaba en BelowNormal para siempre.
+        # Comprobacion por ORDEN (indices), no por regex de distancia entre lineas: fragil contar
+        # lineas de comentario a mano; lo que importa es que Write-AXESessionJournal quede DENTRO
+        # del cuerpo del try, entre el Add y el 'catch' que lo cierra, no despues del foreach entero.
+        $addIdx   = $script:StartSrc.IndexOf('[void]$degraded.Add(')
+        $writeIdx = $script:StartSrc.IndexOf('Write-AXESessionJournal $degraded')
+        $catchIdx = $script:StartSrc.IndexOf('} catch {}', $addIdx)
+        $addIdx   | Should -BeGreaterThan -1
+        $writeIdx | Should -BeGreaterThan -1
+        $catchIdx | Should -BeGreaterThan -1
+        $writeIdx | Should -BeGreaterThan $addIdx
+        $writeIdx | Should -BeLessThan $catchIdx
+    }
+}
+
 Describe 'Get-AXESessionFamily / Test-AXESessionHardApp - puras' -Tag 'unit' {
 
     It 'clasifica por familia, con o sin extension' {

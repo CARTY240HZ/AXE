@@ -174,3 +174,40 @@ Describe 'Revert sin snapshot: net_dns (FIX -- antes asumia DHCP, ahora captura 
         $rv | Should -Match "-eq '\(auto\)'"
     }
 }
+
+Describe 'Revert sin snapshot: net_intmod (FIX -- antes asumia 1, ahora captura el valor real previo)' -Tag 'unit' {
+    # Set-NetAdapterAdvancedProperty no pasa por Set-RD/Push-RegBackup: no hay snapshot automatico
+    # para esta escritura (no la cubre Test-SnapEligible, que solo mira bcdedit/powercfg/
+    # ProcessMitigation/Set-DnsClient), asi que antes del fix el Revert hardcodeaba 1 -- valido solo
+    # si el driver usa el toggle simple 0/1; algunos (Realtek/Marvell) usan valores multi-nivel.
+
+    It 'REGRESION net_intmod: Apply captura el valor previo antes de sobreescribir' {
+        $ap = (Get-Tw 'net_intmod').Apply.ToString()
+        $ap | Should -Match 'IntModPrev'
+        $ap | Should -Match 'Get-NetAdapterAdvancedProperty'
+    }
+
+    It 'REGRESION net_intmod: Revert usa el valor capturado cuando existe, no 1 a ciegas' {
+        $rv = (Get-Tw 'net_intmod').Revert.ToString()
+        $rv | Should -Match 'IntModPrev'
+        $rv | Should -Match '-RegistryValue \(\[int\]\$p\)'
+    }
+}
+
+Describe 'Import-AXEProfile -- gate de Tier 2 EXTREME (FIX -- antes aplicaba sin confirmar, igual que la GUI exige)' -Tag 'unit' {
+    BeforeAll { $script:ImportSrc2 = Get-Content "$PSScriptRoot/../src/28-revert-export.ps1" -Raw }
+
+    It 'REGRESION: un tweak Tier 2 en el perfil se omite salvo que se pida -Extreme explicitamente' {
+        # Antes: Import-AXEProfile solo comprobaba Get-BlockReason (compatibilidad de hardware),
+        # nunca el Tier. La GUI exige confirmar Tier 2 antes de aplicar (48-webbridge.ps1: "el front
+        # confirma Tier 2 ... antes de disparar"); -Import (headless) no tenia NINGUN gate
+        # equivalente, asi que un perfil ajeno (o un export propio antiguo) podia apagar
+        # CFG/ASLR/DEP/Hypervisor en silencio.
+        $script:ImportSrc2 | Should -Match '\[int\]\$tw\.Tier -eq 2'
+        $script:ImportSrc2 | Should -Match '-not \$Extreme'
+    }
+
+    It 'el parametro -Extreme existe y no queda inalcanzable' {
+        $script:ImportSrc2 | Should -Match 'function Import-AXEProfile\(\$file,\[switch\]\$Extreme\)'
+    }
+}

@@ -540,11 +540,14 @@ function Start-AXESession {
             try { $startTicks = [long]$pr.StartTime.Ticks } catch {}
             $pr.PriorityClass = 'BelowNormal'
             [void]$degraded.Add([pscustomobject]@{ Pid=[int]$p.Pid; Name=[string]$pr.ProcessName; Prev=[string]$prev; StartTicks=$startTicks })
+            # Diario en disco tras CADA proceso, no al final del bucle: si AXE muere a mitad del
+            # bucle (crash/kill/BSOD), el ultimo proceso degradado antes de morir tenia que quedar
+            # escrito YA, o el proximo arranque no sabe que restaurarle. Write-AXESessionJournal
+            # sobreescribe con la lista completa (no acumula), asi que llamarla aqui es seguro y
+            # barato: cada iteracion dega el diario al dia.
+            Write-AXESessionJournal $degraded
         } catch {}
     }
-    # Diario en disco ANTES de devolver: si AXE muere a partir de aqui, el kernel descongela pero la
-    # prioridad la devuelve el proximo arranque leyendo esto.
-    Write-AXESessionJournal $degraded
 
     [pscustomobject]@{
         Ok=$true; Handle=$hJob; Game=$GameName; GamePid=[int]$gproc.Id; SessionId=$sid

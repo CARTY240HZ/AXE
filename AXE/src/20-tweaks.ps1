@@ -152,8 +152,34 @@ Add-Tweak @{Id='net_intmod';Cat='RED';Tier=1;Reboot=$false;Name='Interrupt Moder
         $rv=@($p)[0].RegistryValue
         if($rv -is [array]){ $rv=@($rv)[0] }
         try { ([int]$rv -eq 0) } catch { $false } };
- Apply={ if($script:HW.NicName){ Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 0 -EA SilentlyContinue } };
- Revert={ if($script:HW.NicName){ Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 1 -EA SilentlyContinue } }}
+ Apply={
+   if($script:HW.NicName){
+     # Captura el valor previo real. Igual que net_dns/cpu_park: Set-NetAdapterAdvancedProperty no
+     # pasa por Set-RD/Push-RegBackup (no hay snapshot automatico para esta escritura), asi que el
+     # Revert hardcodeado a 1 antes asumia el toggle simple 0/1 -- algunos drivers (Realtek/Marvell)
+     # usan valores multi-nivel, y 1 puede no ser lo que traia el adaptador de fabrica.
+     if($null -eq (Get-RV 'HKCU:\Software\AXE' 'IntModPrev')){
+       $p=Get-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -EA SilentlyContinue
+       if($null -ne $p){
+         $rv=@($p)[0].RegistryValue; if($rv -is [array]){ $rv=@($rv)[0] }
+         try { Set-RD 'HKCU:\Software\AXE' 'IntModPrev' ([int]$rv) } catch {}
+       }
+     }
+     Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 0 -EA SilentlyContinue
+   }
+ };
+ Revert={
+   if($script:HW.NicName){
+     $p=(Get-RV 'HKCU:\Software\AXE' 'IntModPrev')
+     if($null -eq $p){
+       Write-AXELog 'net_intmod: no hay valor previo guardado, uso 1 (default tipico) -- puede no coincidir con el driver.' 'WARN'
+       Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 1 -EA SilentlyContinue
+     } else {
+       Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue ([int]$p) -EA SilentlyContinue
+       Del-RV 'HKCU:\Software\AXE' 'IntModPrev'
+     }
+   }
+ }}
 Add-Tweak @{Id='net_dns';Cat='RED';Tier=1;Reboot=$false;Name='[OPT] DNS rapidos 1.1.1.1 / 8.8.8.8';Desc='OJO: rompe DNS local/VPN. No va en preset. Afecta a la RESOLUCION de nombres, no al ping ni al throughput: no da FPS';Requires=@{};Source='https://developers.cloudflare.com/1.1.1.1/';
  Test={ if(-not $script:HW.NicName){return $false}; try{(Get-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -AddressFamily IPv4 -EA Stop).ServerAddresses -contains '1.1.1.1'}catch{$false} };
  Apply={

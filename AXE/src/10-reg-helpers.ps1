@@ -99,7 +99,13 @@ function Restore-TweakState($id){
                     if(-not(Test-Path $r.P)){ New-Item -Path $r.P -Force -EA Stop | Out-Null }
                     New-ItemProperty -Path $r.P -Name $r.N -Value $r.V -PropertyType $r.K -Force -EA Stop | Out-Null
                 } else { Remove-ItemProperty -Path $r.P -Name $r.N -ErrorAction SilentlyContinue }
-            } elseif($r.T -eq 'svc'){ if($r.Start){ & sc.exe config $r.N start= $r.Start | Out-Null } }
+            } elseif($r.T -eq 'svc'){
+                if($r.Start){ & sc.exe config $r.N start= $r.Start | Out-Null }
+                # Sin start-type capturado: mismo criterio que cpu_park (20-tweaks.ps1) -- no se
+                # inventa un valor, se avisa y no se toca. Antes era un no-op mudo: el usuario no
+                # tenia forma de saber que ese servicio en concreto no se habia restaurado.
+                else { Write-AXELog "Restore ${id}: servicio $($r.N) sin start-type previo capturado, no toco (evita fijar un valor supuesto)." 'WARN' }
+            }
         } catch { Write-AXELog "Restore ${id}: fallo en $($r.P)\$($r.N): $($_.Exception.Message)" 'ERR' }
     }
     Remove-TweakState $id

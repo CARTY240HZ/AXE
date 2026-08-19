@@ -33,15 +33,24 @@ function Export-AXEProfile($file){
     Write-AXELog "Perfil exportado: $file ($($prof.Count) tweaks)"
 }
 function Test-Admin { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
-function Import-AXEProfile($file){
+function Import-AXEProfile($file,[switch]$Extreme){
     if(-not(Test-Path $file)){ Write-AXELog "No existe: $file" 'ERR'; return }
     if(-not (Test-Admin)){ Write-AXELog 'Import requiere admin. Ejecuta via AXE.bat (se eleva solo) o como administrador.' 'ERR'; return }
     $data = Get-Content $file -Raw -Encoding UTF8 | ConvertFrom-Json
-    $applied=0; $errors=0
+    $applied=0; $errors=0; $skippedExtreme=0
     foreach($e in $data){
         $tw = $script:CAT | Where-Object Id -eq $e.Id
         if(-not $tw){ continue }
         if(Get-BlockReason $tw){ continue }
+        # La GUI exige confirmar Tier 2 EXTREME antes de aplicar (48-webbridge: "el front confirma
+        # Tier 2 ... antes de disparar"); Import es headless y no tenia ningun gate equivalente, asi
+        # que un perfil de otra persona (o un export propio antiguo) podia apagar CFG/ASLR/DEP/
+        # Hypervisor en silencio. Por defecto se omite; -ImportExtreme (CLI) / -Extreme lo permite.
+        if($e.On -and [int]$tw.Tier -eq 2 -and -not $Extreme){
+            $skippedExtreme++
+            Write-AXELog "Import: '$($tw.Id)' es Tier 2 EXTREME, omitido (usa -ImportExtreme para permitirlo)." 'WARN'
+            continue
+        }
         try {
             if($e.On){
                 # Mismo protocolo de snapshot que la GUI (57-gui-handlers:429). Import lo saltaba
@@ -61,6 +70,8 @@ function Import-AXEProfile($file){
             $applied++
         } catch { $errors++; Write-AXELog "Error importando $($tw.Id): $($_.Exception.Message)" 'ERR' }
     }
-    Write-AXELog "Perfil importado: $applied aplicados, $errors errores. Reinicia si hubo cambios."
+    $msg = "Perfil importado: $applied aplicados, $errors errores"
+    if($skippedExtreme -gt 0){ $msg += ", $skippedExtreme Tier 2 omitidos (usa -ImportExtreme)" }
+    Write-AXELog "$msg. Reinicia si hubo cambios."
 }
 

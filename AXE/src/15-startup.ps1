@@ -16,7 +16,15 @@ function Read-StartupBackup {
         $obj = $raw | ConvertFrom-Json -ErrorAction Stop
         # Normalizar a array SIEMPRE (@(...) envuelve objeto suelto o deja array tal cual)
         return @($obj)
-    } catch { return @() }
+    } catch {
+        # Antes: return @() en silencio. Disable-Autorun lee esto, anade UNA entrada y SOBREESCRIBE
+        # el fichero entero con solo esa lista -- si el JSON estaba corrupto (crash a mitad de
+        # escritura, etc.) con entradas previas recuperables, se perdian todas sin aviso ni rastro.
+        # Mismo patron que Read-StateBak (10-reg-helpers.ps1): renombrar a .corrupt en vez de tragarselo.
+        Write-AXELog "startup_disabled.json ilegible: $($_.Exception.Message). Renombrado a .corrupt" 'ERR'
+        try { Move-Item $script:RunBak "$($script:RunBak).corrupt" -Force -EA Stop } catch {}
+        return @()
+    }
 }
 function Get-Autoruns {
     $list = New-Object System.Collections.ArrayList
@@ -24,14 +32,19 @@ function Get-Autoruns {
         $p = $script:RunKeys[$k]; if(-not(Test-Path $p)){ continue }
         $item = Get-Item $p
         foreach($n in $item.GetValueNames()){
-            [void]$list.Add([pscustomobject]@{Hive=$k; Path=$p; Name=$n; Value=$item.GetValue($n)})
+            # Captura el ValueKind (REG_SZ vs REG_EXPAND_SZ, comun en autoruns con %ProgramFiles%
+            # etc.). Antes se perdia y Restore-Autorun restauraba siempre como String -- una entrada
+            # ExpandString volvia sin expandir sus variables tras desactivar+restaurar.
+            $kind = try { $item.GetValueKind($n).ToString() } catch { 'String' }
+            [void]$list.Add([pscustomobject]@{Hive=$k; Path=$p; Name=$n; Value=$item.GetValue($n); Kind=$kind})
         }
     }
     $list
 }
 function Disable-Autorun($entry){
     $bak = [System.Collections.ArrayList]@(Read-StartupBackup)
-    [void]$bak.Add([pscustomobject]@{Hive=$entry.Hive; Path=$entry.Path; Name=$entry.Name; Value=$entry.Value})
+    $kind = if($entry.PSObject.Properties['Kind'] -and $entry.Kind){ $entry.Kind } else { 'String' }
+    [void]$bak.Add([pscustomobject]@{Hive=$entry.Hive; Path=$entry.Path; Name=$entry.Name; Value=$entry.Value; Kind=$kind})
     $bak.ToArray() | ConvertTo-Json -Depth 5 | Set-Content $script:RunBak -Encoding UTF8
     Remove-ItemProperty $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
     Write-AXELog "Startup desactivado: $($entry.Name) (backup guardado)"
@@ -44,7 +57,10 @@ function Restore-Autorun {
     foreach($e in $bak){
         try {
             if(-not(Test-Path $e.Path)){ New-Item -Path $e.Path -Force | Out-Null }
-            New-ItemProperty -Path $e.Path -Name $e.Name -Value $e.Value -PropertyType String -Force | Out-Null
+            # Backups anteriores a este fix no traen Kind -> String (comportamiento previo, sin
+            # cambios para ellos). Los nuevos restauran el tipo real capturado en Get-Autoruns.
+            $kind = if($e.PSObject.Properties['Kind'] -and $e.Kind){ $e.Kind } else { 'String' }
+            New-ItemProperty -Path $e.Path -Name $e.Name -Value $e.Value -PropertyType $kind -Force | Out-Null
             $restored++
             Write-AXELog "Startup restaurado: $($e.Name)"
         } catch { Write-AXELog "No pude restaurar $($e.Name): $($_.Exception.Message)" 'ERR' }
@@ -65,14 +81,16 @@ function Repair-StartupBackup {
         foreach($c in $candidates){
             # Objeto valido: tiene Hive, Path, Name
             if($c.PSObject.Properties['Hive'] -and $c.PSObject.Properties['Path'] -and $c.PSObject.Properties['Name']){
-                [void]$clean.Add([pscustomobject]@{Hive=$c.Hive; Path=$c.Path; Name=$c.Name; Value=$c.Value})
+                $k = if($c.PSObject.Properties['Kind'] -and $c.Kind){ $c.Kind } else { 'String' }
+                [void]$clean.Add([pscustomobject]@{Hive=$c.Hive; Path=$c.Path; Name=$c.Name; Value=$c.Value; Kind=$k})
                 continue
             }
             # Formato heredado corrupto: el dato real puede estar bajo 'value' (array)
             if($c.PSObject.Properties['value'] -and $c.value){
                 foreach($inner in @($c.value)){
                     if($inner.PSObject.Properties['Hive'] -and $inner.PSObject.Properties['Path']){
-                        [void]$clean.Add([pscustomobject]@{Hive=$inner.Hive; Path=$inner.Path; Name=$inner.Name; Value=$inner.Value})
+                        $k = if($inner.PSObject.Properties['Kind'] -and $inner.Kind){ $inner.Kind } else { 'String' }
+                        [void]$clean.Add([pscustomobject]@{Hive=$inner.Hive; Path=$inner.Path; Name=$inner.Name; Value=$inner.Value; Kind=$k})
                     }
                 }
             }
