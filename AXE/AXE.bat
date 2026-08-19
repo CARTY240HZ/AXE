@@ -18,8 +18,10 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-:: Quitar Mark-of-the-Web del .ps1 por si se descargo
-powershell -NoProfile -Command "Unblock-File -Path '%~dp0dist\AXE.ps1' -ErrorAction SilentlyContinue"
+:: Quitar Mark-of-the-Web de TODO el arbol por si vino de un ZIP descargado. No basta con
+:: desbloquear dist\AXE.ps1: los DLL de webview2\ (Microsoft.Web.WebView2.Core.dll y compania)
+:: tambien llegan marcados y .NET se niega a cargarlos (0x80131515), aunque el .ps1 si arranque.
+powershell -NoProfile -Command "Get-ChildItem -Path '%~dp0' -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue"
 
 :: Si hay argumentos, reenviarlos al .ps1 (modo CLI). Si no, abre GUI (admin ya concedido).
 set "AXEARGS=%*"
