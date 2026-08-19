@@ -1,6 +1,6 @@
-# ================================================================
+﻿# ================================================================
 # AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-07-28 20:27:41Z
+# Build UTC: 2026-08-19 21:04:36Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -740,7 +740,36 @@ Add-Tweak @{Id='net_intmod';Cat='RED';Tier=1;Reboot=$false;Name='Interrupt Moder
  Revert={ if($script:HW.NicName){ Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 1 -EA SilentlyContinue } }}
 Add-Tweak @{Id='net_dns';Cat='RED';Tier=1;Reboot=$false;Name='[OPT] DNS rapidos 1.1.1.1 / 8.8.8.8';Desc='OJO: rompe DNS local/VPN. No va en preset. Afecta a la RESOLUCION de nombres, no al ping ni al throughput: no da FPS';Requires=@{};Source='https://developers.cloudflare.com/1.1.1.1/';
  Test={ if(-not $script:HW.NicName){return $false}; try{(Get-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -AddressFamily IPv4 -EA Stop).ServerAddresses -contains '1.1.1.1'}catch{$false} };
- Apply={ if($script:HW.NicName){ Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ServerAddresses @('1.1.1.1','8.8.8.8') } };Revert={ if($script:HW.NicName){ Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ResetServerAddresses } }}
+ Apply={
+   if($script:HW.NicName){
+     # Captura el DNS previo. Igual que rend_ultperf/cpu_park: usa Set-DnsClient => Test-SnapEligible
+     # lo excluye del snapshot, asi que el Revert es el UNICO camino de vuelta. Antes: ResetServerAddresses
+     # asumia que el origen era DHCP/automatico; si el usuario tenia DNS manual propio (su ISP, un
+     # Pi-hole, un servidor corporativo) el revert lo perdia sin avisar y sin poder recuperarlo.
+     if($null -eq (Get-RV 'HKCU:\Software\AXE' 'DnsServersPrev')){
+       $prev = @(try{ (Get-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -AddressFamily IPv4 -EA Stop).ServerAddresses }catch{ @() })
+       Set-RS 'HKCU:\Software\AXE' 'DnsServersPrev' $(if($prev.Count -eq 0){'(auto)'}else{$prev -join ','})
+     }
+     Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ServerAddresses @('1.1.1.1','8.8.8.8')
+   }
+ };
+ Revert={
+   if($script:HW.NicName){
+     $p=(Get-RV 'HKCU:\Software\AXE' 'DnsServersPrev')
+     if($null -eq $p){
+       # No se capturo (aplicado por una version anterior). Sin valor previo, el mejor fallback
+       # disponible sigue siendo volver a automatico/DHCP -- pero se avisa de que NO es un restore.
+       Write-AXELog 'net_dns: no hay DNS previo guardado, reseteo a automatico/DHCP (no es un restore fiel).' 'WARN'
+       Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ResetServerAddresses
+     } elseif($p -eq '(auto)'){
+       Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ResetServerAddresses
+       Del-RV 'HKCU:\Software\AXE' 'DnsServersPrev'
+     } else {
+       Set-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -ServerAddresses ($p -split ',')
+       Del-RV 'HKCU:\Software\AXE' 'DnsServersPrev'
+     }
+   }
+ }}
 
 # --- MEMORIA (Tier 0/1) ---
 Add-Tweak @{Id='mem_pagingexec';Cat='MEMORIA';Tier=1;Reboot=$true;Name='Kernel siempre en RAM';Desc='DisablePagingExecutive=1 (necesita RAM holgada) (REINICIO)';Requires=@{MinRam=16};

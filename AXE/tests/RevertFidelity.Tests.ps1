@@ -105,3 +105,72 @@ Describe 'Import-AXEProfile usa el protocolo de snapshot' -Tag 'unit' {
         $script:ImportSrc | Should -Match 'Restore-TweakState'
     }
 }
+
+# Cobertura anadida: los otros 7 tweaks fuera de snapshot (bcdedit x4, ProcessMitigation x2,
+# Set-DnsClient x1) no tenian NINGUN test de fidelidad -- solo rend_ultperf/cpu_park/gpu_mmcss
+# los tenian, que eran justo los que la auditoria 2026-07-19 encontro rotos. Mismo hueco, mismo
+# riesgo: si el Revert no invierte de verdad al Apply, aqui es donde se veria.
+Describe 'Revert sin snapshot: bcdedit / ProcessMitigation (cobertura previamente ausente)' -Tag 'unit' {
+
+    It '<_> siguen fuera del snapshot (premisa)' -ForEach 'cpu_dyntick','cpu_tsc','ext_hypervisor','ext_dep','ext_cfg','ext_aslr' {
+        (Test-SnapEligibleLocal (Get-Tw $_)) | Should -BeFalse
+    }
+
+    It 'cpu_dyntick: Revert borra el valor bcd en vez de fijar uno fijo' {
+        $rv = (Get-Tw 'cpu_dyntick').Revert.ToString()
+        $rv | Should -Match 'deletevalue disabledynamictick'
+    }
+
+    It 'cpu_tsc: Revert borra el valor bcd en vez de fijar uno fijo' {
+        $rv = (Get-Tw 'cpu_tsc').Revert.ToString()
+        $rv | Should -Match 'deletevalue tscsyncpolicy'
+    }
+
+    It 'ext_hypervisor: Revert vuelve al default real de Windows (auto), no a un valor inventado' {
+        $rv = (Get-Tw 'ext_hypervisor').Revert.ToString()
+        $rv | Should -Match 'hypervisorlaunchtype auto'
+    }
+
+    It 'ext_dep: Revert vuelve al default real de Windows (OptIn), no a un valor inventado' {
+        $rv = (Get-Tw 'ext_dep').Revert.ToString()
+        $rv | Should -Match 'nx OptIn'
+    }
+
+    It 'ext_cfg: Revert usa -Enable CFG (inverso real de la API), no una copia de Apply' {
+        $ap = (Get-Tw 'ext_cfg').Apply.ToString(); $rv = (Get-Tw 'ext_cfg').Revert.ToString()
+        $ap | Should -Match '-Disable CFG'
+        $rv | Should -Match '-Enable CFG'
+    }
+
+    It 'ext_aslr: Revert usa -Enable ForceRelocateImages (inverso real de la API), no una copia de Apply' {
+        $ap = (Get-Tw 'ext_aslr').Apply.ToString(); $rv = (Get-Tw 'ext_aslr').Revert.ToString()
+        $ap | Should -Match '-Disable ForceRelocateImages'
+        $rv | Should -Match '-Enable ForceRelocateImages'
+    }
+}
+
+Describe 'Revert sin snapshot: net_dns (FIX -- antes asumia DHCP, ahora captura el DNS real previo)' -Tag 'unit' {
+
+    It 'net_dns sigue fuera del snapshot (usa Set-DnsClient)' {
+        (Test-SnapEligibleLocal (Get-Tw 'net_dns')) | Should -BeFalse
+    }
+
+    It 'REGRESION net_dns: Apply captura el DNS previo antes de sobreescribir' {
+        $ap = (Get-Tw 'net_dns').Apply.ToString()
+        $ap | Should -Match 'DnsServersPrev'
+        $ap | Should -Match 'Get-DnsClientServerAddress'
+    }
+
+    It 'REGRESION net_dns: Revert usa el DNS capturado cuando existe, no ResetServerAddresses a ciegas' {
+        # Antes: 'Set-DnsClientServerAddress ... -ResetServerAddresses' incondicional, que perdia
+        # un DNS manual propio (ISP, Pi-hole, servidor corporativo) sin avisar y sin poder recuperarlo.
+        $rv = (Get-Tw 'net_dns').Revert.ToString()
+        $rv | Should -Match 'DnsServersPrev'
+        $rv | Should -Match "ServerAddresses \(\`$p -split ','\)"
+    }
+
+    It 'net_dns: Revert solo cae a ResetServerAddresses si no hay valor capturado o si era automatico' {
+        $rv = (Get-Tw 'net_dns').Revert.ToString()
+        $rv | Should -Match "-eq '\(auto\)'"
+    }
+}
