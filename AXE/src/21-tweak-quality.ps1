@@ -29,7 +29,11 @@ if($null -ne $mmcss){
 $ctcp = @($script:CAT | Where-Object Id -eq 'net_ctcp')[0]
 if($null -ne $ctcp){
     $ctcp.Tier = 2
-    $ctcp.PlaceboLikely = $true
+    if(-not $ctcp.PSObject.Properties['PlaceboLikely']){
+        $ctcp | Add-Member -MemberType NoteProperty -Name PlaceboLikely -Value $true
+    } else {
+        $ctcp.PlaceboLikely = $true
+    }
     $ctcp.Name = 'CTCP (experimental / opt-in)'
     $ctcp.Desc = 'Algoritmo de congestion alternativo. CUBIC es la opcion moderna por defecto; solo probar con medicion especifica de latencia/throughput'
     $ctcp.NotesEng = 'Opt-in only. Microsoft documentation and current Windows behavior do not justify presenting CTCP as a general gaming optimization. Keep available for controlled A/B testing on a workload that demonstrably benefits from it.'
