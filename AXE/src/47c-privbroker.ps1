@@ -9,8 +9,10 @@
 #   UI process creates an ACL-restricted server pipe.
 #   UI launches one elevated AXE process with -BrokerServer + pipe name + nonce.
 #   Elevated child connects as the pipe CLIENT, receives exactly one request, executes it,
-#   writes exactly one response, and exits. UI owns the server end and never executes the
-#   privileged operation itself.
+#   writes exactly one response, and exits.
+#   Before sending the request, UI checks the connected pipe client PID against the exact
+#   process object returned by Start-Process. This prevents a different same-user process
+#   from racing the broker connection even if it can discover the pipe name/nonce.
 #
 # The broker process starts with Windows PowerShell -ExecutionPolicy AllSigned. Before UAC is
 # requested the client checks that the consolidated AXE.ps1 is Authenticode-valid; AllSigned
@@ -24,7 +26,17 @@ $script:AXEBrokerAllowed = @{
     'tweaks.apply'        = $true
     'tweaks.revert'       = $true
     'tweaks.masterRevert' = $true
-    'fps.capture'         = $true
+}
+
+if(-not ('AXEBrokerNative' -as [type])){
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class AXEBrokerNative {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint clientProcessId);
+}
+'@
 }
 
 function Get-AXECurrentUserSid {
@@ -39,6 +51,17 @@ function Test-AXEBrokerSignature {
         $sig = Get-AuthenticodeSignature -LiteralPath $ScriptPath
         return ($sig.Status -eq 'Valid' -and $null -ne $sig.SignerCertificate)
     } catch { return $false }
+}
+
+function Get-AXEBrokerClientProcessId {
+    param([Parameter(Mandatory)][System.IO.Pipes.NamedPipeServerStream]$Pipe)
+    [uint32]$clientPid = 0
+    $handle = $Pipe.SafePipeHandle.DangerousGetHandle()
+    if(-not [AXEBrokerNative]::GetNamedPipeClientProcessId($handle,[ref]$clientPid)){
+        throw 'broker: no pude identificar el PID del cliente del pipe'
+    }
+    if($clientPid -eq 0){ throw 'broker: PID de cliente invalido' }
+    [int]$clientPid
 }
 
 function Test-AXEBrokerPayload {
@@ -65,11 +88,6 @@ function Test-AXEBrokerPayload {
         'tweaks.apply' { if(@($props.Name) -notcontains 'id' -or @($props.Name).Count -ne 1){ throw 'broker: forma invalida para tweaks.apply' } }
         'tweaks.revert' { if(@($props.Name) -notcontains 'id' -or @($props.Name).Count -ne 1){ throw 'broker: forma invalida para tweaks.revert' } }
         'tweaks.masterRevert' { if(@($props.Name).Count -ne 0){ throw 'broker: forma invalida para tweaks.masterRevert' } }
-        'fps.capture' {
-            if(@($props.Name) -notcontains 'process' -or @($props.Name | Where-Object { $_ -notin 'process','seconds' }).Count -gt 0){ throw 'broker: forma invalida para fps.capture' }
-            if([string]$a.process -notmatch '^[A-Za-z0-9._-]{1,128}$'){ throw 'broker: proceso invalido' }
-            if($p.Properties['args'] -and $a.PSObject.Properties['seconds'] -and [int]$a.seconds -lt 1){ throw 'broker: seconds invalido' }
-        }
     }
     $Payload
 }
@@ -89,6 +107,7 @@ function New-AXEBrokerRequest {
 function Invoke-AXEPrivilegedBroker {
     param([Parameter(Mandatory)][string]$Command,[object]$Args = [pscustomobject]@{})
     if(Test-Admin){ throw 'broker: el host GUI no deberia ejecutar operaciones privilegiadas directamente' }
+    if($Command -notin @('tweaks.apply','tweaks.revert','tweaks.masterRevert')){ throw 'broker: operacion no privilegiada rechazada' }
     $scriptPath = $PSCommandPath
     if(-not (Test-AXEBrokerSignature -ScriptPath $scriptPath)){
         throw 'AXE no tiene firma Authenticode valida; no se solicita elevacion automatica.'
@@ -113,10 +132,13 @@ function Invoke-AXEPrivilegedBroker {
         $quotedScript = '"' + $scriptPath.Replace('"','\"') + '"'
         $argLine = '-NoProfile -NonInteractive -ExecutionPolicy AllSigned -STA -File ' + $quotedScript +
             ' -BrokerServer -BrokerPipeName "' + $pipeName + '" -BrokerNonce "' + $request.nonce + '"'
-        [void](Start-Process -FilePath $psExe -Verb RunAs -ArgumentList $argLine -PassThru -WindowStyle Hidden -ErrorAction Stop)
+        $brokerProcess = Start-Process -FilePath $psExe -Verb RunAs -ArgumentList $argLine -PassThru -WindowStyle Hidden -ErrorAction Stop
 
         $waitTask = $server.WaitForConnectionAsync()
         if(-not $waitTask.Wait(15000)){ throw 'broker: timeout esperando el proceso elevado (UAC cancelado o broker no arranco)' }
+        $clientPid = Get-AXEBrokerClientProcessId -Pipe $server
+        if($clientPid -ne $brokerProcess.Id){ throw "broker: PID cliente inesperado ($clientPid != $($brokerProcess.Id))" }
+
         $writer = New-Object IO.StreamWriter($server,[Text.Encoding]::UTF8,4096,$true)
         $writer.AutoFlush = $true
         $reader = New-Object IO.StreamReader($server,[Text.Encoding]::UTF8,$false,4096,$true)
@@ -179,20 +201,11 @@ function Start-AXEBrokerServer {
                 try{Invoke-AXEMasterRevertTail}catch{}
                 $result=[pscustomobject]@{ok=$true;data=[pscustomobject]@{reverted=$done;errors=$err};error=$null}
             }
-            'fps.capture' {
-                $proc=[string]$payload.args.process
-                $secs=20;if($payload.args.seconds){$secs=[int]$payload.args.seconds};if($secs -lt 3){$secs=3};if($secs -gt 120){$secs=120}
-                $s=Measure-AXEFps -ProcessName $proc -Seconds $secs
-                $result=[pscustomobject]@{ok=$true;data=[pscustomobject]@{ok=[bool]$s.Ok;lines=@(Format-AXEFpsStats $s 'Captura')};error=$null}
-            }
             default { throw 'broker: cmd no permitido' }
         }
     } catch { $result=[pscustomobject]@{ok=$false;data=$null;error=$_.Exception.Message} }
     finally {
-        if($pipe){
-            try{$writer.WriteLine(($result|ConvertTo-Json -Compress -Depth 8));$writer.Flush()}catch{}
-            try{$pipe.Dispose()}catch{}
-        }
+        if($pipe){ try{$writer.WriteLine(($result|ConvertTo-Json -Compress -Depth 8));$writer.Flush()}catch{};try{$pipe.Dispose()}catch{} }
     }
     $result
 }
