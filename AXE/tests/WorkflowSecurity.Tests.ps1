@@ -7,6 +7,7 @@ Describe 'Workflow security contracts' -Tag 'unit','security' {
         $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
         $script:CI      = Get-Content (Join-Path $repoRoot '.github/workflows/ci.yml') -Raw
         $script:Release = Get-Content (Join-Path $repoRoot '.github/workflows/release.yml') -Raw
+        $script:Publish = (($script:Release -split '(?m)^\s+publish:\s*$')[1])
     }
 
     It 'all third-party actions are pinned to a full commit SHA' {
@@ -44,7 +45,8 @@ Describe 'Workflow security contracts' -Tag 'unit','security' {
     }
 
     It 'privileged publish does not checkout repository code' {
-        $script:Release | Should -Not -Match '(?s)publish:.*?actions/checkout@'
-        $script:Release | Should -Match '(?s)publish:.*?Download immutable release bundle.*?actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'
+        $script:Publish | Should -Not -Match 'actions/checkout@'
+        $script:Publish | Should -Match 'Download immutable release bundle'
+        $script:Publish | Should -Match 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'
     }
 }
