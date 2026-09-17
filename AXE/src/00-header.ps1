@@ -46,7 +46,7 @@
 #                 pero SOLO tras verificar SHA256 + firma Authenticode; sin firma valida avisa
 #                 y NO reemplaza nada (el destino es escribible por el usuario y AXE corre
 #                 elevado: un updater laxo seria la via de escalada). No envia nada del equipo.
-#   (sin args)    GUI (requiere admin via el launcher .bat)
+#   (sin args)    GUI sin privilegios. Las operaciones privilegiadas usan el broker aislado.
 # =====================================================
 
 [CmdletBinding()]
@@ -60,74 +60,39 @@ param(
     [switch]$Score,
     [string]$Report,
     [switch]$TimerSweep,
-    # Verificado sin colision contra el resto de src/ antes de anadirlo (ver nota de $GameList).
     [switch]$Diag,
-    # Consejero (42-advisor). Comprobado como manda la leccion S24 antes de anadirlo:
-    # 'grep $Advice src/' = 0 apariciones fuera de aqui y de 45-cli, ninguna como variable de
-    # ruta. Declarar un switch cuyo nombre ya usa un modulo como variable local lo tipa a nivel de
-    # script y revienta esa asignacion en silencio: fue exactamente lo que paso con $Games.
     [switch]$Advice,
-    # OJO: NO llamar a este switch '$Games'. 20-tweaks.ps1 usa $Games como variable local para
-    # la ruta de la tarea MMCSS ('...\SystemProfile\Tasks\Games'); declararlo aqui como [switch]
-    # la tipa a nivel de script y la asignacion de esa cadena revienta => gpu_mmcss se queda
-    # apuntando a una ruta vacia. Pasaba el SelfTest con 0 fallos (su Test solo devuelve false).
     [switch]$GameList,
     [string]$OptimizeGame,
     [string]$RevertGame,
     [switch]$NoFSO,
-    # Nombres verificados contra el resto de src/ antes de anadirlos: ver la nota de $GameList
-    # sobre la colision con el $Games de 20-tweaks.ps1, y el check S24 que la caza.
     [string]$Fps,
     [int]$FpsSeconds = 20,
     [switch]$FpsCompare,
-    # Daemon de sesion de juego (subsistema A, spec 2026-07-20): congela el fondo mientras
-    # juegas y lo descongela al cerrar el juego o AXE. Nombre verificado sin colision en src/.
     [string]$Session,
     [int]$SessionPoll = 1000,
-    # Benchmark "pruebalo en tu PC" (subproyecto C, spec 2026-07-24). Dos fases con reinicio
-    # humano en medio: -Benchmark guarda la linea base, -Benchmark -After <id> la compara.
-    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
-    # 'Benchmark' no aparece en ningun modulo; 'After' solo existe como PARAMETRO LOCAL de
-    # Get-AXEFpsVerdict (param([object]$After)), que tiene su propio ambito y no colisiona con
-    # una variable de script. Ninguno de los dos se usa como variable de ruta => S24 no aplica.
     [switch]$Benchmark,
     [string]$After,
     [int]$BenchPasses = 7,
-    # Updater con cadena de confianza (subproyectos A+B, spec 2026-07-24). '-Update' comprueba
-    # y, si hay version nueva, la instala SOLO tras verificar checksum + firma Authenticode.
-    # '-Update -Check' se queda en informar y no descarga nada.
-    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
-    # 'Update' y 'Check' no aparecen como variable en ningun modulo (grep sobre src/ = 0 hits),
-    # asi que no pueden tipar a [switch] una variable de ruta ajena. S24 los vigila igual.
     [switch]$Update,
     [switch]$Check,
-    # Monitor de red (37-netmon.ps1). Cubre el hueco que el audit de 2026-07-25 dejo abierto:
-    # el jitter de 32-measure es de TIMER, no de red, y de red no se medi­a nada.
-    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
-    # grep '$NetMon' sobre src/ = 0 hits fuera de 45-cli. Ninguno se usa como variable de ruta.
     [switch]$NetMon,
     [string]$NetMonTarget = '1.1.1.1',
     [int]$NetMonCount = 20,
-    # v7.1: diagnosticos de latencia que el catalogo no puede tocar.
-    #   -Mouse    sondeo del raton + aceleracion + escalado 1:1   (44-latency.ps1)
-    #   -Dpc      tiempo en rutinas diferidas de drivers          (44-latency.ps1)
-    #   -NetLoad  latencia bajo carga / bufferbloat               (37-netmon.ps1)
-    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
-    # grep de '$Mouse', '$Dpc' y '$NetLoad' sobre src/ = 0 hits. Ninguno se usa como variable
-    # de ruta en ningun modulo, asi que declararlos aqui no puede tipar nada ajeno a [switch].
     [switch]$Mouse,
     [int]$MouseSeconds = 3,
     [switch]$Dpc,
     [int]$DpcSeconds = 5,
     [switch]$NetLoad,
-    # Vacio a proposito: el default real vive en $script:AXENetLoadUrl (37-netmon), y un param
-    # block no puede leer una variable de un modulo que aun no se ha concatenado.
-    [string]$NetLoadUrl = ''
+    [string]$NetLoadUrl = '',
+    # Internal only: one-shot privileged broker entrypoint. Never exposed to WebView2/JS.
+    [switch]$BrokerServer,
+    [string]$BrokerPipeName = '',
+    [string]$BrokerNonce = ''
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
 # Va DESPUES del param block (regla PS: param() debe ser la primera sentencia).
-# Fallback si el token no se reemplazo (se corre src suelto sin build).
 $script:AXEVersion = '__AXE_VERSION__'
 if($script:AXEVersion -like '*__AXE_VERSION__*'){ $script:AXEVersion = '6.1.0-dev' }
 
