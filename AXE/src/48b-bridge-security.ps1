@@ -21,7 +21,11 @@ try {
 function Test-AXEBridgeOriginTrusted {
     try {
         $src = if($script:Web -and $script:Web.Source){ [Uri]$script:Web.Source } else { $null }
-        return [bool]($src -and $src.Scheme -eq 'https' -and $src.Host -eq 'axe.local' -and ($src.Port -eq -1 -or $src.Port -eq 443))
+        if(-not $src){ return $false }
+        if($src.Scheme -ne 'https'){ return $false }
+        if($src.Host -ne 'axe.local'){ return $false }
+        if($src.Port -ne -1 -and $src.Port -ne 443){ return $false }
+        return $true
     } catch {
         return $false
     }
