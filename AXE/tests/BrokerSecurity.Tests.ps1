@@ -31,11 +31,17 @@ Describe 'Privileged broker security contracts' -Tag 'unit','security' {
         $script:Broker | Should -Match 'Wait\(15000\)'
     }
 
+    It 'broker binds IPC to the exact elevated process PID' {
+        $script:Broker | Should -Match 'GetNamedPipeClientProcessId'
+        $script:Broker | Should -Match 'Get-AXEBrokerClientProcessId'
+        $script:Broker | Should -Match '\$clientPid -ne \$brokerProcess\.Id'
+    }
+
     It 'broker has a closed allow-list and bounded payload' {
         $script:Broker | Should -Match "'tweaks\.apply'"
         $script:Broker | Should -Match "'tweaks\.revert'"
         $script:Broker | Should -Match "'tweaks\.masterRevert'"
-        $script:Broker | Should -Match "'fps\.capture'"
+        $script:Broker | Should -Not -Match "'fps\.capture'"
         $script:Broker | Should -Match '\$script:AXEBrokerMaxJsonBytes = 32768'
         $script:Broker | Should -Match 'nonce.*ExpectedNonce'
         $script:Broker | Should -Match 'cmd no permitido'
@@ -51,15 +57,14 @@ Describe 'Privileged broker security contracts' -Tag 'unit','security' {
         $script:Broker | Should -Match 'forma invalida para tweaks\.apply'
         $script:Broker | Should -Match 'forma invalida para tweaks\.revert'
         $script:Broker | Should -Match 'forma invalida para tweaks\.masterRevert'
-        $script:Broker | Should -Match 'forma invalida para fps\.capture'
         $script:Broker | Should -Match 'nombre de pipe invalido'
     }
 
-    It 'bridge routes privileged operations to the broker when GUI is unelevated' {
+    It 'bridge routes only state-changing operations to the broker' {
         $script:Bridge | Should -Match "'tweaks\.apply'"
         $script:Bridge | Should -Match "'tweaks\.revert'"
         $script:Bridge | Should -Match "'tweaks\.masterRevert'"
-        $script:Bridge | Should -Match "'fps\.capture'"
+        $script:Bridge | Should -Not -Match "'fps\.capture'"
         $script:Bridge | Should -Match 'Invoke-AXEPrivilegedBroker'
         $script:Bridge | Should -Match 'if\(Test-Admin\)'
     }
