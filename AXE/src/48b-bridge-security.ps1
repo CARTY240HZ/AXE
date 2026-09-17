@@ -4,14 +4,131 @@
 # Defense-in-depth around the existing closed RPC map in 48-webbridge.ps1.
 # The original dispatcher remains the single business-logic path; this wrapper
 # only validates trust boundary inputs before handing them to it.
+#
+# GUI-only long-running reads (timer sweep) are also dispatched asynchronously
+# so the WebView2/WPF UI thread never blocks on a multi-second measurement.
 # =====================================================
 
 $script:AXEBridgeOriginal = $null
+$script:AXETimerSweepState = $null
+$script:AXETimerSweepTimer = $null
 try {
     if(Get-Command Invoke-AXEBridgeCmd -CommandType Function -EA SilentlyContinue){
         $script:AXEBridgeOriginal = ${function:Invoke-AXEBridgeCmd}
     }
 } catch {}
+
+function Test-AXEBridgeOriginTrusted {
+    try {
+        $src = if($script:Web -and $script:Web.Source){ [Uri]$script:Web.Source } else { $null }
+        return [bool]($src -and $src.Scheme -eq 'https' -and $src.Host -eq 'axe.local' -and ($src.Port -eq -1 -or $src.Port -eq 443))
+    } catch {
+        return $false
+    }
+}
+
+function Complete-AXETimerSweepAsync {
+    $st = $script:AXETimerSweepState
+    if(-not $st -or -not $st.Process){ return }
+    try {
+        if(-not $st.Process.HasExited){ return }
+
+        $exitCode = [int]$st.Process.ExitCode
+        $raw = ''
+        $errRaw = ''
+        try { if(Test-Path -LiteralPath $st.OutFile){ $raw = Get-Content -LiteralPath $st.OutFile -Raw -EA SilentlyContinue } } catch {}
+        try { if(Test-Path -LiteralPath $st.ErrFile){ $errRaw = Get-Content -LiteralPath $st.ErrFile -Raw -EA SilentlyContinue } } catch {}
+
+        if($exitCode -eq 0){
+            $lines = @($raw -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            $res = [pscustomobject]@{
+                ok   = $true
+                data = [pscustomobject]@{
+                    lines      = $lines
+                    conclusive = $null
+                    bestMs     = $null
+                    originalMs = $null
+                }
+                err = ''
+            }
+        } else {
+            $why = ([string]$errRaw).Trim()
+            if([string]::IsNullOrWhiteSpace($why)){ $why = "el barrido termino con codigo $exitCode" }
+            $res = [pscustomobject]@{ ok=$false; data=$null; err=$why }
+        }
+
+        if($script:Web -and $script:Web.CoreWebView2){
+            $json = ($res | ConvertTo-Json -Depth 8 -Compress)
+            $js = 'window.__axeReply(' + [int]$st.RequestId + ', ' + ($json | ConvertTo-Json) + ')'
+            [void]$script:Web.CoreWebView2.ExecuteScriptAsync($js)
+        }
+    } catch {
+        try {
+            if($script:Web -and $script:Web.CoreWebView2){
+                $res = [pscustomobject]@{ ok=$false; data=$null; err="barrido: $($_.Exception.Message)" }
+                $json = ($res | ConvertTo-Json -Depth 6 -Compress)
+                $js = 'window.__axeReply(' + [int]$st.RequestId + ', ' + ($json | ConvertTo-Json) + ')'
+                [void]$script:Web.CoreWebView2.ExecuteScriptAsync($js)
+            }
+        } catch {}
+    } finally {
+        try { if($script:AXETimerSweepTimer){ $script:AXETimerSweepTimer.Stop() } } catch {}
+        try { $st.Process.Dispose() } catch {}
+        try { if($st.TempDir -and (Test-Path -LiteralPath $st.TempDir)){ Remove-Item -LiteralPath $st.TempDir -Recurse -Force -EA SilentlyContinue } } catch {}
+        $script:AXETimerSweepState = $null
+    }
+}
+
+function Start-AXETimerSweepAsync {
+    param([int]$RequestId)
+    if($RequestId -le 0){ return [pscustomobject]@{ Ok=$false; Err='request id invalido' } }
+    if($script:AXETimerSweepState){ return [pscustomobject]@{ Ok=$false; Err='barrido ya en curso' } }
+    if(-not $script:AXERoot){ return [pscustomobject]@{ Ok=$false; Err='ruta de AXE no disponible' } }
+    if(-not ($script:Web -and $script:Web.CoreWebView2)){ return [pscustomobject]@{ Ok=$false; Err='WebView2 no inicializado' } }
+
+    # En un build normal AXERoot = ...\AXE\dist y AXE.ps1 es el entrypoint consolidado.
+    $scriptPath = Join-Path $script:AXERoot 'AXE.ps1'
+    if(-not (Test-Path -LiteralPath $scriptPath)){
+        return [pscustomobject]@{ Ok=$false; Err='entrypoint dist/AXE.ps1 no encontrado' }
+    }
+
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ('axe-timersweep-' + [guid]::NewGuid().ToString('N'))
+    $outFile = Join-Path $dir 'stdout.txt'
+    $errFile = Join-Path $dir 'stderr.txt'
+    try {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if(-not (Test-Path -LiteralPath $psExe)){ throw 'powershell.exe no disponible' }
+
+        $argList = @('-NoProfile','-NonInteractive')
+        # Mantener, cuando exista, la politica de proceso con la que se lanzo AXE. Si no existe,
+        # se deja que powershell.exe use la politica efectiva del usuario/equipo.
+        if($env:PSExecutionPolicyPreference){ $argList += @('-ExecutionPolicy',[string]$env:PSExecutionPolicyPreference) }
+        $argList += @('-File',$scriptPath,'-TimerSweep')
+
+        $proc = Start-Process -FilePath $psExe -ArgumentList $argList -WorkingDirectory $script:AXERoot `
+            -WindowStyle Hidden -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru -ErrorAction Stop
+
+        $script:AXETimerSweepState = [pscustomobject]@{
+            RequestId = $RequestId
+            Process   = $proc
+            OutFile   = $outFile
+            ErrFile   = $errFile
+            TempDir   = $dir
+        }
+
+        if(-not $script:AXETimerSweepTimer){
+            $script:AXETimerSweepTimer = New-Object System.Windows.Threading.DispatcherTimer
+            $script:AXETimerSweepTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+            $script:AXETimerSweepTimer.Add_Tick({ Complete-AXETimerSweepAsync })
+        }
+        $script:AXETimerSweepTimer.Start()
+        [pscustomobject]@{ Ok=$true; Err='' }
+    } catch {
+        try { if(Test-Path -LiteralPath $dir){ Remove-Item -LiteralPath $dir -Recurse -Force -EA SilentlyContinue } } catch {}
+        [pscustomobject]@{ Ok=$false; Err=$_.Exception.Message }
+    }
+}
 
 function Test-AXEBridgeValue {
     param([AllowNull()]$Value,[int]$Depth=0)
@@ -59,15 +176,8 @@ function Invoke-AXEBridgeCmd {
         return [pscustomobject]@{ ok=$false; data=$null; err='cmd invalido' }
     }
 
-    # The host is allowed to execute privileged operations only for the trusted local document.
-    # A navigation elsewhere must never retain access to this process boundary.
-    try {
-        $src = if($script:Web -and $script:Web.Source){ [Uri]$script:Web.Source } else { $null }
-        if(-not $src -or $src.Scheme -ne 'https' -or $src.Host -ne 'axe.local' -or ($src.Port -ne -1 -and $src.Port -ne 443)){
-            return [pscustomobject]@{ ok=$false; data=$null; err='origen web no confiable' }
-        }
-    } catch {
-        return [pscustomobject]@{ ok=$false; data=$null; err='origen web invalido' }
+    if(-not (Test-AXEBridgeOriginTrusted)){
+        return [pscustomobject]@{ ok=$false; data=$null; err='origen web no confiable' }
     }
 
     if($null -ne $cmdArgs){
@@ -77,6 +187,21 @@ function Invoke-AXEBridgeCmd {
         if($cmdArgs.Count -gt 32 -or -not (Test-AXEBridgeValue $cmdArgs)){ 
             return [pscustomobject]@{ ok=$false; data=$null; err='payload fuera de limites' }
         }
+    }
+
+    # measure.timerSweep is a potentially long, read-only measurement. In the GUI the JS client
+    # supplies its own request id in _axeRid; this lets the dispatcher return an async sentinel while
+    # the actual result is pushed later by Complete-AXETimerSweepAsync. Direct/unit callers that do
+    # not provide _axeRid keep the original synchronous semantics.
+    if($cmd -eq 'measure.timerSweep' -and $cmdArgs -and $cmdArgs.ContainsKey('_axeRid')){
+        $ridRaw = $cmdArgs['_axeRid']
+        try { $rid = [int]$ridRaw } catch { return [pscustomobject]@{ ok=$false; data=$null; err='request id invalido' } }
+        $clean = @{}
+        foreach($k in $cmdArgs.Keys){ if($k -ne '_axeRid'){ $clean[$k] = $cmdArgs[$k] } }
+        if($clean.Count -ne 0){ return [pscustomobject]@{ ok=$false; data=$null; err='args invalidos' } }
+        $start = Start-AXETimerSweepAsync -RequestId $rid
+        if($start.Ok){ return [pscustomobject]@{ ok=$true; async=$true; data=$null; err='' } }
+        return [pscustomobject]@{ ok=$false; data=$null; err=[string]$start.Err }
     }
 
     & $script:AXEBridgeOriginal $cmd $cmdArgs
