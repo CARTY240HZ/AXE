@@ -11,19 +11,25 @@ permissions:
 jobs:
   package:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+
+      - name: Build and test fresh dist
+        shell: pwsh
+        run: ./AXE/build.ps1
 
       - name: Remove CI-only workflow and git metadata
         shell: pwsh
         run: |
           Remove-Item -LiteralPath '.git' -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath '.github/workflows/_package-test.yml' -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath 'AXE/.github/workflows/_package-test.yml' -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath 'AXE/.github/workflows/_rebuild-dist-once.yml' -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath '.github/workflows/_rebuild-dist-test.yml' -Force -ErrorAction SilentlyContinue
 
       - name: Create ZIP
         shell: pwsh
@@ -31,7 +37,7 @@ jobs:
           Compress-Archive -Path 'AXE' -DestinationPath "$env:RUNNER_TEMP\AXE-test.zip" -CompressionLevel Optimal
 
       - name: Upload complete project ZIP
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: AXE-test-complete
           path: ${{ runner.temp }}/AXE-test.zip
