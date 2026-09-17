@@ -8,6 +8,7 @@ Describe 'Privileged broker security contracts' -Tag 'unit','security' {
         $script:Entry  = Get-Content (Join-Path $root 'src/47d-brokerentry.ps1') -Raw
         $script:Broker = Get-Content (Join-Path $root 'src/47c-privbroker.ps1') -Raw
         $script:Bridge = Get-Content (Join-Path $root 'src/48c-broker-bridge.ps1') -Raw
+        $script:RpcSec = Get-Content (Join-Path $root 'src/48b-bridge-security.ps1') -Raw
         $script:Bat   = Get-Content (Join-Path $root 'AXE.bat') -Raw
     }
 
@@ -68,6 +69,14 @@ Describe 'Privileged broker security contracts' -Tag 'unit','security' {
         $script:Bridge | Should -Not -Match "'fps\.capture'"
         $script:Bridge | Should -Match 'Invoke-AXEPrivilegedBroker'
         $script:Bridge | Should -Match 'if\(Test-Admin\)'
+    }
+
+    It 'timer sweep correlation id is narrowly scoped before payload validation' {
+        $script:RpcSec | Should -Match "\$cmd -eq 'measure\.timerSweep'"
+        $script:RpcSec | Should -Match "\$cmdArgs\.ContainsKey\('_axeRid'\)"
+        $script:RpcSec | Should -Match '\$cmdArgs\.Count -ne 1'
+        $script:RpcSec | Should -Match '\$rid -le 0'
+        $script:RpcSec | Should -Match 'Start-AXETimerSweepAsync -RequestId \$rid'
     }
 
     It 'GUI launcher does not auto-elevate the no-argument path' {
