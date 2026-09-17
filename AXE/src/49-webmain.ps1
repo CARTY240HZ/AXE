@@ -1,9 +1,9 @@
 # =====================================================
 # REGION 14b - ARRANQUE DEL HOST WEB (bootstrap)
 # =====================================================
-# Va DESPUES de 47-webhost (Show-AXEWebHost) y 48-webbridge (Register-AXEBridge) para que ambos
-# esten definidos cuando arranque. Espeja el rol de 99-main.ps1 con la GUI vieja: separa el
-# bootstrap de las definiciones.
+# Va DESPUES de 47-webhost, 47b-websecurity y 48-webbridge para que todas las definiciones
+# existan cuando arranque. Espeja el rol de 99-main.ps1 con la GUI vieja: separa el bootstrap
+# de las definiciones.
 #
 # Cutover (Fase 8): la GUI WPF vieja (50-60, 99-main) se retiro. Este es el arranque UNICO del
 # frontend, incondicional. Llegar aqui = modo GUI: los modos CLI (-SelfTest/-List/-Diag/...) ya
@@ -16,5 +16,10 @@
 # estado del job. El diario en disco (AXE/session_degraded.json) las devuelve, comprobando
 # pid+nombre+arranque para no tocar un proceso que solo heredo el numero.
 try { [void](Restore-AXESessionDegraded) } catch {}
+
+# WebView2 se ejecuta con una superficie de privilegios sensible. La politica de seguridad se
+# inicializa SOLO aqui, dentro del camino GUI/STA, nunca durante la carga headless del motor.
+try { Start-AXEWebSecurityWatcher } catch { Write-AXELog "No pude iniciar el watcher de seguridad WebView2: $($_.Exception.Message)" 'ERR' }
+
 Show-AXEWebHost
 exit 0

@@ -1,0 +1,34 @@
+name: AXE one-shot dist rebuild
+
+on:
+  push:
+    branches:
+      - ai/tweak-quality-hardening-2026-09-17
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild:
+    if: ${{ github.event.head_commit.message != 'ci: rebuild dist from source' }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Rebuild and commit dist from this branch
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = "https://x-access-token:$env:GITHUB_TOKEN@github.com/$env:GITHUB_REPOSITORY.git"
+          git init
+          git remote add origin $repo
+          git fetch --depth=1 origin "$env:GITHUB_REF"
+          git checkout -B "$env:GITHUB_REF_NAME" FETCH_HEAD
+          ./AXE/build.ps1
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add AXE/dist/AXE.ps1
+          if (git diff --cached --quiet -- AXE/dist/AXE.ps1) { exit 0 }
+          git commit -m 'ci: rebuild dist from source'
+          git push origin "HEAD:$env:GITHUB_REF_NAME"

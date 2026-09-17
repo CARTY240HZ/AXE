@@ -4,6 +4,9 @@ BeforeAll {
     # _load-engine salta 00-header (bloque param/#Requires); en dist ese modulo fija la version.
     # Aqui la suplimos para probar app.info como en produccion (donde nunca es nula: fallback 6.1.0-dev).
     if(-not $script:AXEVersion){ $script:AXEVersion = '0.0.0-test' }
+    # El guard de seguridad exige un origen WebView2 confiable para el camino normal del bridge.
+    # Los tests de rechazo de origen viven en WebSecurity.Tests; estos prueban el dispatcher.
+    $script:Web = [pscustomobject]@{ Source = [uri]'https://axe.local/index.html' }
 }
 
 Describe 'Puente: lista blanca cerrada' {
