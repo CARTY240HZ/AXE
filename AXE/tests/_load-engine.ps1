@@ -10,3 +10,6 @@ Get-ChildItem $src -Filter '*.ps1' | Sort-Object Name | ForEach-Object {
     if($_.Name -match '^(00|15|23|25|45|47|49|50|52|55|57|60|99)'){ return }
     . $_.FullName
 }
+# Los tests de dispatcher no crean un WebView2 real. Simulamos exclusivamente el estado de
+# navegacion que la GUI real establece al cargar https://axe.local/index.html.
+$script:Web = [pscustomobject]@{ Source = [uri]'https://axe.local/index.html' }
