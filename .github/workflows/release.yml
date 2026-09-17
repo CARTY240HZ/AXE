@@ -1,9 +1,10 @@
 name: AXE Release
 
 # Release is split into two trust zones:
-#   1) build-package: read-only repository token; builds, tests, signs (if configured) and packages.
+#   1) build-package: read-only repository token; builds, tests and packages.
+#      Signing secrets are only present on an actual version-tag run.
 #   2) publish: write/attestation permissions only on a version tag; consumes the immutable artifact.
-# Pull requests therefore never receive a write-capable release token.
+# Pull requests and manual non-tag runs never receive signing secrets.
 on:
   push:
     tags: [ 'v*' ]
@@ -27,6 +28,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Pester + PSScriptAnalyzer
         shell: pwsh
@@ -54,7 +57,10 @@ jobs:
           }
           Write-Host "tag y VERSION coinciden: $ver"
 
+      # IMPORTANTE: estos pasos solo existen en un run de tag. Un PR no puede obtener el PFX
+      # simplemente modificando el workflow porque el job no expone las variables secretas.
       - name: Preparar certificado (si hay secret)
+        if: startsWith(github.ref, 'refs/tags/v')
         id: cert
         env:
           PFX: ${{ secrets.AXE_CODESIGN_PFX_BASE64 }}
@@ -65,11 +71,12 @@ jobs:
           [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:PFX))
           "path=$path" >> $env:GITHUB_OUTPUT
 
-      - name: Artefactos de release (firmados si hay cert)
-        shell: pwsh
+      - name: Artefactos de release (tag, firmados si hay cert)
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           PFX_PATH: ${{ steps.cert.outputs.path }}
           PFX_PASS: ${{ secrets.AXE_CODESIGN_PFX_PASSWORD }}
+        shell: pwsh
         run: |
           $p = @{ SkipBuild = $true }
           if ($env:PFX_PATH) {
@@ -79,6 +86,12 @@ jobs:
             Write-Warning 'Sin secret de firma: el release saldra SIN FIRMAR.'
           }
           ./AXE/scripts/New-AXERelease.ps1 @p
+
+      - name: Artefactos de validacion (PR/manual, nunca con secretos)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        shell: pwsh
+        run: |
+          ./AXE/scripts/New-AXERelease.ps1 -SkipBuild
 
       - name: Borrar el certificado del runner
         if: always()
@@ -98,6 +111,7 @@ jobs:
             if([string]::IsNullOrWhiteSpace($row)){ continue }
             if($row -notmatch '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$'){ [void]$bad.Add("linea ilegible: $row"); continue }
             $hash = $Matches[1]; $name = $Matches[2]
+            if($seen.ContainsKey($name)){ [void]$bad.Add("nombre duplicado: $name"); continue }
             $seen[$name] = $true
             $path = Join-Path $dir $name
             if(-not (Test-Path -LiteralPath $path -PathType Leaf)){ [void]$bad.Add("ausente: $name"); continue }
@@ -144,6 +158,7 @@ jobs:
             if([string]::IsNullOrWhiteSpace($row)){ continue }
             if($row -notmatch '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$'){ [void]$bad.Add("linea ilegible: $row"); continue }
             $hash = $Matches[1]; $name = $Matches[2]
+            if($seen.ContainsKey($name)){ [void]$bad.Add("nombre duplicado: $name"); continue }
             $seen[$name] = $true
             $path = Join-Path $dir $name
             if(-not (Test-Path -LiteralPath $path -PathType Leaf)){ [void]$bad.Add("ausente: $name"); continue }
