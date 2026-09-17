@@ -12,22 +12,20 @@
 :: Unblock-File de abajo quita el Mark-of-the-Web si vino de un ZIP.
 :: =====================================================
 
-:: Preservar el modo headless sin pedir UAC: solo se eleva cuando una operacion realmente
-:: necesita privilegios (la GUI y los comandos mutativos). Los modos de lectura salen antes.
+:: Los modos de lectura mantienen el contrato sin UAC. Se examina solo el primer argumento:
+:: evita expandir %* dentro de un FOR, que seria fragil ante metacaracteres de CMD.
 set "AXEARGS=%*"
 set "HEADLESS=0"
-for %%A in (%AXEARGS%) do (
-    if /I "%%~A"=="-SelfTest" set "HEADLESS=1"
-    if /I "%%~A"=="-List" set "HEADLESS=1"
-    if /I "%%~A"=="-Diag" set "HEADLESS=1"
-    if /I "%%~A"=="-Measure" set "HEADLESS=1"
-    if /I "%%~A"=="-Score" set "HEADLESS=1"
-    if /I "%%~A"=="-Report" set "HEADLESS=1"
-    if /I "%%~A"=="-TimerSweep" set "HEADLESS=1"
-    if /I "%%~A"=="-Advice" set "HEADLESS=1"
-    if /I "%%~A"=="-NetMon" set "HEADLESS=1"
-    if /I "%%~A"=="-NetLoad" set "HEADLESS=1"
-)
+if /I "%~1"=="-SelfTest" set "HEADLESS=1"
+if /I "%~1"=="-List" set "HEADLESS=1"
+if /I "%~1"=="-Diag" set "HEADLESS=1"
+if /I "%~1"=="-Measure" set "HEADLESS=1"
+if /I "%~1"=="-Score" set "HEADLESS=1"
+if /I "%~1"=="-Report" set "HEADLESS=1"
+if /I "%~1"=="-TimerSweep" set "HEADLESS=1"
+if /I "%~1"=="-Advice" set "HEADLESS=1"
+if /I "%~1"=="-NetMon" set "HEADLESS=1"
+if /I "%~1"=="-NetLoad" set "HEADLESS=1"
 
 if "%HEADLESS%"=="0" (
     net session >nul 2>&1
