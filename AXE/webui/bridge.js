@@ -4,6 +4,30 @@
   let seq = 1;
   const listeners = new Map(); // evt -> Set<fn>
 
+  // El backend tiene operaciones de duracion muy distinta. Mantener un timeout unico de 15s
+  // hacia que fps/benchmark fallasen en la UI aunque el motor siguiera trabajando correctamente.
+  // Los limites solo controlan cuanto espera el cliente; no cambian la semantica del motor.
+  const RPC_TIMEOUT_MS = Object.freeze({
+    'fps.capture': 150000,
+    'bench.baseline': 120000,
+    'bench.after': 120000,
+    'measure.score': 30000,
+    'measure.timerSweep': 30000,
+    'net.probe': 90000,
+    'netload.probe': 90000,
+    'diag.get': 30000,
+    'prueba.baseline': 30000,
+    'prueba.report': 30000,
+    'session.start': 30000,
+    'session.status': 10000,
+    'session.stop': 30000,
+    'tweaks.list': 45000,
+    'tweaks.apply': 30000,
+    'tweaks.revert': 30000,
+    'tweaks.masterRevert': 120000
+  });
+  const DEFAULT_TIMEOUT_MS = 15000;
+
   window.__axeReply = function (id, json) {
     const p = pending.get(id);
     if (!p) return;
@@ -18,12 +42,18 @@
       const id = seq++;
       pending.set(id, { resolve, reject });
       const bridge = window.chrome && window.chrome.webview;
-      if (!bridge) { reject(new Error('puente no disponible (¿fuera de WebView2?)')); return; }
+      if (!bridge) { pending.delete(id); reject(new Error('puente no disponible (¿fuera de WebView2?)')); return; }
       // Postar el OBJETO (no un string): WebView2 lo serializa y WebMessageAsJson lo entrega como
       // objeto JSON que ConvertFrom-Json (PS) parsea a {id,cmd,args}. Un JSON.stringify aqui haria
       // que el lado PS reciba un string doble-codificado (id=0, cmd vacio).
       bridge.postMessage({ id, cmd, args: args || {} });
-      setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error('timeout: ' + cmd)); } }, 15000);
+      const timeout = RPC_TIMEOUT_MS[cmd] || DEFAULT_TIMEOUT_MS;
+      setTimeout(() => {
+        if (pending.has(id)) {
+          pending.delete(id);
+          reject(new Error('timeout: ' + cmd));
+        }
+      }, timeout);
     });
   }
 
