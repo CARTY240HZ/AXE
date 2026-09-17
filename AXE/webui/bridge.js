@@ -43,12 +43,14 @@
       const bridge = window.chrome && window.chrome.webview;
       if (!bridge) { reject(new Error('puente no disponible (¿fuera de WebView2?)')); return; }
       const id = seq++;
-      // Internal-only correlation id for the asynchronous timer sweep. The backend strips it
-      // before dispatching to the business-logic function.
+      // Correlacion interna SOLO para el barrido asíncrono. El backend la consume y no la pasa
+      // al mapa de negocio.
       if (cmd === 'measure.timerSweep') safe = Object.assign({}, safe, { _axeRid: id });
       pending.set(id, { resolve, reject });
       bridge.postMessage({ id, cmd, args: safe });
-      const timeoutMs = cmd === 'measure.timerSweep' ? 120000 : 15000;
+      // Las operaciones largas no deben caducar antes de que el backend termine. El barrido
+      // se ejecuta fuera del hilo UI; net.probe puede tardar por timeouts ICMP reales.
+      const timeoutMs = cmd === 'measure.timerSweep' ? 120000 : (cmd === 'net.probe' ? 60000 : 15000);
       setTimeout(() => {
         if (pending.has(id)) {
           pending.delete(id);
