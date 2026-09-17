@@ -15,9 +15,11 @@
   window.__axeReply = function (id, json) {
     const p = pending.get(id);
     if (!p) return;
-    pending.delete(id);
     let res;
-    try { res = JSON.parse(json); } catch (e) { p.reject(new Error('respuesta ilegible')); return; }
+    try { res = JSON.parse(json); } catch (e) { pending.delete(id); p.reject(new Error('respuesta ilegible')); return; }
+    // Asynchronous backend command: keep the Promise pending until the real result arrives.
+    if (res && res.async === true) return;
+    pending.delete(id);
     if (res.ok) p.resolve(res.data); else p.reject(new Error(res.err || 'error'));
   };
 
@@ -41,17 +43,18 @@
       const bridge = window.chrome && window.chrome.webview;
       if (!bridge) { reject(new Error('puente no disponible (¿fuera de WebView2?)')); return; }
       const id = seq++;
+      // Internal-only correlation id for the asynchronous timer sweep. The backend strips it
+      // before dispatching to the business-logic function.
+      if (cmd === 'measure.timerSweep') safe = Object.assign({}, safe, { _axeRid: id });
       pending.set(id, { resolve, reject });
-      // Postar el OBJETO (no un string): WebView2 lo serializa y WebMessageAsJson lo entrega como
-      // objeto JSON que ConvertFrom-Json (PS) parsea a {id,cmd,args}. Un JSON.stringify aqui haria
-      // que el lado PS reciba un string doble-codificado (id=0, cmd vacio).
       bridge.postMessage({ id, cmd, args: safe });
+      const timeoutMs = cmd === 'measure.timerSweep' ? 120000 : 15000;
       setTimeout(() => {
         if (pending.has(id)) {
           pending.delete(id);
           reject(new Error('timeout: ' + cmd));
         }
-      }, 15000);
+      }, timeoutMs);
     });
   }
 
@@ -68,8 +71,6 @@
   if (bridge) {
     bridge.addEventListener('message', (ev) => {
       const m = ev.data;
-      // Eventos solo deben entrar como objetos simples desde el canal WebView2; el CSP bloquea
-      // red externa, pero no sustituye la validacion de datos que cruza el boundary nativo.
       if (!m || typeof m !== 'object' || Array.isArray(m) || typeof m.evt !== 'string' || m.evt.length > 64) return;
       if (listeners.has(m.evt)) listeners.get(m.evt).forEach((fn) => {
         try { fn(m.data); } catch (_) {}
