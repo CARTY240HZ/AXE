@@ -5,9 +5,9 @@
 # The UI is local content only: https://axe.local/*.
 # No generic external navigation, host objects, dialogs or new-window paths are allowed.
 #
-# This module does not change business logic. It waits for CoreWebView2 to exist and then
-# applies the security policy once. The timer is intentionally tiny and stops immediately
-# after the control is protected.
+# This module defines the policy and a GUI-only watcher. It deliberately does NOT instantiate
+# WPF/DispatcherTimer objects while the engine is being loaded headlessly by tests/builds.
+# 49-webmain starts the watcher on the STA GUI path.
 # =====================================================
 
 function Protect-AXEWebView2 {
@@ -20,7 +20,6 @@ function Protect-AXEWebView2 {
         $settings.AreDefaultScriptDialogsEnabled = $false
         $settings.IsStatusBarEnabled = $false
         $settings.IsWebMessageEnabled = $true
-        # DevTools remain opt-in for an explicitly debugged local session; production is closed.
         if($env:AXE_WEBUI_DEBUG -ne '1'){ $settings.AreDevToolsEnabled = $false }
 
         $Core.Add_NavigationStarting({
@@ -56,7 +55,7 @@ function Protect-AXEWebView2 {
         $Core.Add_NewWindowRequested({
             param($sender,$args)
             $args.Handled = $true
-            try { Write-AXELog "WebView2: ventana nueva bloqueada" 'WARN' } catch {}
+            try { Write-AXELog 'WebView2: ventana nueva bloqueada' 'WARN' } catch {}
         })
         $true
     } catch {
@@ -65,20 +64,24 @@ function Protect-AXEWebView2 {
     }
 }
 
-# Show-AXEWebHost crea CoreWebView2 dentro de un evento Loaded/InitializationCompleted.
-# Este timer evita tocar la lógica existente y aplica la política en el primer tick de UI.
-if(-not $script:AXEWebSecurityTimer){
-    $script:AXEWebSecurityTimer = New-Object System.Windows.Threading.DispatcherTimer
-    $script:AXEWebSecurityTimer.Interval = [TimeSpan]::FromMilliseconds(100)
-    $script:AXEWebSecurityTimer.Add_Tick({
-        try {
-            if($script:Web -and $script:Web.CoreWebView2){
-                if(Protect-AXEWebView2 -Core $script:Web.CoreWebView2){
-                    $script:AXEWebSecurityTimer.Stop()
-                    $script:AXEWebSecurityApplied = $true
+function Start-AXEWebSecurityWatcher {
+    if($env:AXE_WEBUI_TEST -eq '1'){ return }
+    if($script:AXEWebSecurityTimer){ return }
+    try {
+        $script:AXEWebSecurityTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $script:AXEWebSecurityTimer.Interval = [TimeSpan]::FromMilliseconds(100)
+        $script:AXEWebSecurityTimer.Add_Tick({
+            try {
+                if($script:Web -and $script:Web.CoreWebView2){
+                    if(Protect-AXEWebView2 -Core $script:Web.CoreWebView2){
+                        $script:AXEWebSecurityTimer.Stop()
+                        $script:AXEWebSecurityApplied = $true
+                    }
                 }
-            }
-        } catch {}
-    })
-    $script:AXEWebSecurityTimer.Start()
+            } catch {}
+        })
+        $script:AXEWebSecurityTimer.Start()
+    } catch {
+        try { Write-AXELog "WebView2 security watcher no pudo arrancar: $($_.Exception.Message)" 'ERR' } catch {}
+    }
 }
