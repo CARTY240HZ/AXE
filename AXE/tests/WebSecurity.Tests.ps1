@@ -1,4 +1,4 @@
-# Unit — static security contracts for the WebView2/native boundary.
+# Unit — static security contracts for the WebView2/native boundary and launcher.
 # These tests never launch WebView2 and never modify the host.
 
 Describe 'WebView2 security contracts' -Tag 'unit','security' {
@@ -7,6 +7,7 @@ Describe 'WebView2 security contracts' -Tag 'unit','security' {
         $rpcSource  = Get-Content "$PSScriptRoot/../src/48b-bridge-security.ps1" -Raw
         $jsSource   = Get-Content "$PSScriptRoot/../webui/bridge.js" -Raw
         $htmlSource = Get-Content "$PSScriptRoot/../webui/index.html" -Raw
+        $batSource  = Get-Content "$PSScriptRoot/../AXE.bat" -Raw
     }
 
     It 'WebView2 policy disables host objects and external navigation' {
@@ -38,5 +39,12 @@ Describe 'WebView2 security contracts' -Tag 'unit','security' {
         $htmlSource | Should -Match "connect-src 'none'"
         $htmlSource | Should -Match "base-uri 'none'"
         $htmlSource | Should -Match "form-action 'none'"
+    }
+
+    It 'launcher resolves the Windows PowerShell binary explicitly and narrows MOTW removal' {
+        $batSource | Should -Match 'set "PS_EXE=%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"'
+        $batSource | Should -Match 'Unblock-File -LiteralPath'
+        $batSource | Should -Match 'webview2'
+        $batSource | Should -Not -Match 'Get-ChildItem -Path.*%~dp0.*-Recurse.*Unblock-File'
     }
 }
