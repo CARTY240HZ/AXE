@@ -36,7 +36,12 @@ if($null -ne $ctcp){
     }
     $ctcp.Name = 'CTCP (experimental / opt-in)'
     $ctcp.Desc = 'Algoritmo de congestion alternativo. CUBIC es la opcion moderna por defecto; solo probar con medicion especifica de latencia/throughput'
-    $ctcp.NotesEng = 'Opt-in only. Microsoft documentation and current Windows behavior do not justify presenting CTCP as a general gaming optimization. Keep available for controlled A/B testing on a workload that demonstrably benefits from it.'
+    $ctcpNotes = 'Opt-in only. Microsoft documentation and current Windows behavior do not justify presenting CTCP as a general gaming optimization. Keep available for controlled A/B testing on a workload that demonstrably benefits from it.'
+    if(-not $ctcp.PSObject.Properties['NotesEng']){
+        $ctcp | Add-Member -MemberType NoteProperty -Name NotesEng -Value $ctcpNotes
+    } else {
+        $ctcp.NotesEng = $ctcpNotes
+    }
 }
 if($script:RECRULES -is [hashtable]){ [void]$script:RECRULES.Remove('net_ctcp') }
 if($script:LATRULES -is [hashtable]){ [void]$script:LATRULES.Remove('net_ctcp') }
