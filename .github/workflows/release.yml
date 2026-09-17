@@ -88,10 +88,24 @@ jobs:
       - name: Verificar SHA256SUMS
         shell: pwsh
         run: |
-          . ./AXE/src/43-update.ps1
-          $bad = @(Test-AXEChecksums -Dir ./AXE/dist/release)
-          if ($bad.Count) { Write-Host "::error::SHA256SUMS no verifica: $($bad -join '; ')"; exit 1 }
-          Get-Content ./AXE/dist/release/SHA256SUMS
+          $sumsPath = Join-Path $PWD 'AXE/dist/release/SHA256SUMS'
+          if (-not (Test-Path -LiteralPath $sumsPath -PathType Leaf)) { throw 'Falta SHA256SUMS.' }
+          $bad = New-Object System.Collections.ArrayList
+          $seen = @{}
+          foreach($line in (Get-Content -LiteralPath $sumsPath -Raw -Encoding UTF8 -Delimiter "`0" -ErrorAction Stop -Raw)) {
+            foreach($row in ($line -split "`r?`n")) {
+              if([string]::IsNullOrWhiteSpace($row)){ continue }
+              if($row -notmatch '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$'){ [void]$bad.Add("linea ilegible: $row"); continue }
+              $hash = $Matches[1]; $name = $Matches[2]
+              $seen[$name] = $true
+              $path = Join-Path (Join-Path $PWD 'AXE/dist/release') $name
+              if(-not (Test-Path -LiteralPath $path -PathType Leaf)){ [void]$bad.Add("ausente: $name"); continue }
+              $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+              if(-not [string]::Equals($actual,$hash,[StringComparison]::OrdinalIgnoreCase)){ [void]$bad.Add("hash no cuadra: $name") }
+            }
+          }
+          if($seen.Count -eq 0){ [void]$bad.Add('SHA256SUMS vacio') }
+          if($bad.Count){ throw ("SHA256SUMS invalido: {0}" -f ($bad -join '; ')) }
           Write-Host 'SHA256SUMS verificado.'
 
       - name: Artifact release bundle
@@ -120,9 +134,24 @@ jobs:
       - name: Verify downloaded bundle
         shell: pwsh
         run: |
-          . ./AXE/src/43-update.ps1
-          $bad = @(Test-AXEChecksums -Dir ./AXE/dist/release)
-          if ($bad.Count) { Write-Host "::error::Artefacto descargado no verifica: $($bad -join '; ')"; exit 1 }
+          $dir = Join-Path $PWD 'AXE/dist/release'
+          $sumsPath = Join-Path $dir 'SHA256SUMS'
+          if (-not (Test-Path -LiteralPath $sumsPath -PathType Leaf)) { throw 'Falta SHA256SUMS en el artefacto.' }
+          $bad = New-Object System.Collections.ArrayList
+          $seen = @{}
+          $text = Get-Content -LiteralPath $sumsPath -Raw -Encoding UTF8
+          foreach($row in ($text -split "`r?`n")) {
+            if([string]::IsNullOrWhiteSpace($row)){ continue }
+            if($row -notmatch '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$'){ [void]$bad.Add("linea ilegible: $row"); continue }
+            $hash = $Matches[1]; $name = $Matches[2]
+            $seen[$name] = $true
+            $path = Join-Path $dir $name
+            if(-not (Test-Path -LiteralPath $path -PathType Leaf)){ [void]$bad.Add("ausente: $name"); continue }
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            if(-not [string]::Equals($actual,$hash,[StringComparison]::OrdinalIgnoreCase)){ [void]$bad.Add("hash no cuadra: $name") }
+          }
+          if($seen.Count -eq 0){ [void]$bad.Add('SHA256SUMS vacio') }
+          if($bad.Count){ throw ("Artefacto descargado invalido: {0}" -f ($bad -join '; ')) }
           Write-Host 'Artefacto descargado verificado.'
 
       - name: Determine Authenticode state
