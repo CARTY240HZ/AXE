@@ -184,28 +184,30 @@ function Invoke-AXEBridgeCmd {
         return [pscustomobject]@{ ok=$false; data=$null; err='origen web no confiable' }
     }
 
+    # measure.timerSweep es la unica lectura GUI con identificador interno de correlacion.
+    # Se procesa ANTES del validador generico porque `_axeRid` es un nombre interno deliberado
+    # que empieza por '_' y por eso no puede entrar en la gramática normal de propiedades JS.
+    # Solo se permite ese campo, entero positivo, y se elimina antes de cualquier dispatcher.
+    if($cmd -eq 'measure.timerSweep' -and $null -ne $cmdArgs -and $cmdArgs.ContainsKey('_axeRid')){
+        if($cmdArgs.Count -ne 1){
+            return [pscustomobject]@{ ok=$false; data=$null; err='args invalidos' }
+        }
+        $ridRaw = $cmdArgs['_axeRid']
+        $rid = 0
+        try { $rid = [int]$ridRaw } catch { return [pscustomobject]@{ ok=$false; data=$null; err='request id invalido' } }
+        if($rid -le 0){ return [pscustomobject]@{ ok=$false; data=$null; err='request id invalido' } }
+        $start = Start-AXETimerSweepAsync -RequestId $rid
+        if($start.Ok){ return [pscustomobject]@{ ok=$true; async=$true; data=$null; err='' } }
+        return [pscustomobject]@{ ok=$false; data=$null; err=[string]$start.Err }
+    }
+
     if($null -ne $cmdArgs){
         if(-not ($cmdArgs -is [hashtable])){
             return [pscustomobject]@{ ok=$false; data=$null; err='args invalidos' }
         }
-        if($cmdArgs.Count -gt 32 -or -not (Test-AXEBridgeValue $cmdArgs)){ 
+        if($cmdArgs.Count -gt 32 -or -not (Test-AXEBridgeValue $cmdArgs)){
             return [pscustomobject]@{ ok=$false; data=$null; err='payload fuera de limites' }
         }
-    }
-
-    # measure.timerSweep is a potentially long, read-only measurement. In the GUI the JS client
-    # supplies its own request id in _axeRid; this lets the dispatcher return an async sentinel while
-    # the actual result is pushed later by Complete-AXETimerSweepAsync. Direct/unit callers that do
-    # not provide _axeRid keep the original synchronous semantics.
-    if($cmd -eq 'measure.timerSweep' -and $cmdArgs -and $cmdArgs.ContainsKey('_axeRid')){
-        $ridRaw = $cmdArgs['_axeRid']
-        try { $rid = [int]$ridRaw } catch { return [pscustomobject]@{ ok=$false; data=$null; err='request id invalido' } }
-        $clean = @{}
-        foreach($k in $cmdArgs.Keys){ if($k -ne '_axeRid'){ $clean[$k] = $cmdArgs[$k] } }
-        if($clean.Count -ne 0){ return [pscustomobject]@{ ok=$false; data=$null; err='args invalidos' } }
-        $start = Start-AXETimerSweepAsync -RequestId $rid
-        if($start.Ok){ return [pscustomobject]@{ ok=$true; async=$true; data=$null; err='' } }
-        return [pscustomobject]@{ ok=$false; data=$null; err=[string]$start.Err }
     }
 
     & $script:AXEBridgeOriginal $cmd $cmdArgs
