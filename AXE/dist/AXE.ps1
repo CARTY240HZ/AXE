@@ -1,7 +1,7 @@
-﻿# ================================================================
+# ================================================================
 # AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-08-19 21:28:40Z
-# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
+# Build UTC: 2026-09-17 10:45:08Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 21-tweak-quality.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 47-webhost.ps1, 47b-websecurity.ps1, 47c-privbroker.ps1, 47d-brokerentry.ps1, 48-webbridge.ps1, 48b-bridge-security.ps1, 48c-broker-bridge.ps1, 49-webmain.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
@@ -53,7 +53,7 @@
 #                 pero SOLO tras verificar SHA256 + firma Authenticode; sin firma valida avisa
 #                 y NO reemplaza nada (el destino es escribible por el usuario y AXE corre
 #                 elevado: un updater laxo seria la via de escalada). No envia nada del equipo.
-#   (sin args)    GUI (requiere admin via el launcher .bat)
+#   (sin args)    GUI sin privilegios. Las operaciones privilegiadas usan el broker aislado.
 # =====================================================
 
 [CmdletBinding()]
@@ -67,74 +67,39 @@ param(
     [switch]$Score,
     [string]$Report,
     [switch]$TimerSweep,
-    # Verificado sin colision contra el resto de src/ antes de anadirlo (ver nota de $GameList).
     [switch]$Diag,
-    # Consejero (42-advisor). Comprobado como manda la leccion S24 antes de anadirlo:
-    # 'grep $Advice src/' = 0 apariciones fuera de aqui y de 45-cli, ninguna como variable de
-    # ruta. Declarar un switch cuyo nombre ya usa un modulo como variable local lo tipa a nivel de
-    # script y revienta esa asignacion en silencio: fue exactamente lo que paso con $Games.
     [switch]$Advice,
-    # OJO: NO llamar a este switch '$Games'. 20-tweaks.ps1 usa $Games como variable local para
-    # la ruta de la tarea MMCSS ('...\SystemProfile\Tasks\Games'); declararlo aqui como [switch]
-    # la tipa a nivel de script y la asignacion de esa cadena revienta => gpu_mmcss se queda
-    # apuntando a una ruta vacia. Pasaba el SelfTest con 0 fallos (su Test solo devuelve false).
     [switch]$GameList,
     [string]$OptimizeGame,
     [string]$RevertGame,
     [switch]$NoFSO,
-    # Nombres verificados contra el resto de src/ antes de anadirlos: ver la nota de $GameList
-    # sobre la colision con el $Games de 20-tweaks.ps1, y el check S24 que la caza.
     [string]$Fps,
     [int]$FpsSeconds = 20,
     [switch]$FpsCompare,
-    # Daemon de sesion de juego (subsistema A, spec 2026-07-20): congela el fondo mientras
-    # juegas y lo descongela al cerrar el juego o AXE. Nombre verificado sin colision en src/.
     [string]$Session,
     [int]$SessionPoll = 1000,
-    # Benchmark "pruebalo en tu PC" (subproyecto C, spec 2026-07-24). Dos fases con reinicio
-    # humano en medio: -Benchmark guarda la linea base, -Benchmark -After <id> la compara.
-    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
-    # 'Benchmark' no aparece en ningun modulo; 'After' solo existe como PARAMETRO LOCAL de
-    # Get-AXEFpsVerdict (param([object]$After)), que tiene su propio ambito y no colisiona con
-    # una variable de script. Ninguno de los dos se usa como variable de ruta => S24 no aplica.
     [switch]$Benchmark,
     [string]$After,
     [int]$BenchPasses = 7,
-    # Updater con cadena de confianza (subproyectos A+B, spec 2026-07-24). '-Update' comprueba
-    # y, si hay version nueva, la instala SOLO tras verificar checksum + firma Authenticode.
-    # '-Update -Check' se queda en informar y no descarga nada.
-    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
-    # 'Update' y 'Check' no aparecen como variable en ningun modulo (grep sobre src/ = 0 hits),
-    # asi que no pueden tipar a [switch] una variable de ruta ajena. S24 los vigila igual.
     [switch]$Update,
     [switch]$Check,
-    # Monitor de red (37-netmon.ps1). Cubre el hueco que el audit de 2026-07-25 dejo abierto:
-    # el jitter de 32-measure es de TIMER, no de red, y de red no se medi­a nada.
-    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
-    # grep '$NetMon' sobre src/ = 0 hits fuera de 45-cli. Ninguno se usa como variable de ruta.
     [switch]$NetMon,
     [string]$NetMonTarget = '1.1.1.1',
     [int]$NetMonCount = 20,
-    # v7.1: diagnosticos de latencia que el catalogo no puede tocar.
-    #   -Mouse    sondeo del raton + aceleracion + escalado 1:1   (44-latency.ps1)
-    #   -Dpc      tiempo en rutinas diferidas de drivers          (44-latency.ps1)
-    #   -NetLoad  latencia bajo carga / bufferbloat               (37-netmon.ps1)
-    #   Nombres verificados contra el resto de src/ antes de anadirlos (leccion $Games/S24):
-    # grep de '$Mouse', '$Dpc' y '$NetLoad' sobre src/ = 0 hits. Ninguno se usa como variable
-    # de ruta en ningun modulo, asi que declararlos aqui no puede tipar nada ajeno a [switch].
     [switch]$Mouse,
     [int]$MouseSeconds = 3,
     [switch]$Dpc,
     [int]$DpcSeconds = 5,
     [switch]$NetLoad,
-    # Vacio a proposito: el default real vive en $script:AXENetLoadUrl (37-netmon), y un param
-    # block no puede leer una variable de un modulo que aun no se ha concatenado.
-    [string]$NetLoadUrl = ''
+    [string]$NetLoadUrl = '',
+    # Internal only: one-shot privileged broker entrypoint. Never exposed to WebView2/JS.
+    [switch]$BrokerServer,
+    [string]$BrokerPipeName = '',
+    [string]$BrokerNonce = ''
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
 # Va DESPUES del param block (regla PS: param() debe ser la primera sentencia).
-# Fallback si el token no se reemplazo (se corre src suelto sin build).
 $script:AXEVersion = '7.1.0'
 if($script:AXEVersion -like '*__AXE_VERSION__*'){ $script:AXEVersion = '6.1.0-dev' }
 
@@ -1334,6 +1299,56 @@ function Get-AXELatencyNotes {
     $n.ToArray()
 }
 
+
+
+# >>>>> MODULE: 21-tweak-quality.ps1 >>>>>
+# =====================================================
+# REGION 5B - QUALITY GATE FOR PERFORMANCE TWEAKS
+# =====================================================
+# Recommendation policy only. Underlying tweak primitives remain unchanged
+# except for the documented MMCSS value correction.
+
+# Microsoft documents that SystemResponsiveness values below 10 are clamped to 20.
+# The previous Apply=0 therefore did not express the intended 10% reservation.
+$mmcss = @($script:CAT | Where-Object Id -eq 'cpu_mmcss')[0]
+if($null -ne $mmcss){
+    $mmcss.Desc = 'SystemResponsiveness=10: reserva el 10% de CPU a tareas de baja prioridad; el valor 10 es el minimo efectivo documentado por Windows'
+    $mmcss.NotesEng = 'Microsoft documents that values below 10 are clamped to 20. Use 10 when the goal is the minimum documented low-priority CPU reservation.'
+    $mmcss.Test  = { (Get-RV 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'SystemResponsiveness') -eq 10 }
+    $mmcss.Apply = { Set-RD 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'SystemResponsiveness' 10 }
+    $mmcss.Revert = { Set-RD 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'SystemResponsiveness' 20 }
+}
+
+# CTCP remains available for manual A/B testing only. Preserve the catalog auditor's
+# existing PlaceboLikely contract; do not introduce unsupported NotesEng metadata.
+$ctcp = @($script:CAT | Where-Object Id -eq 'net_ctcp')[0]
+if($null -ne $ctcp){
+    $ctcp.Tier = 2
+    if(-not $ctcp.PSObject.Properties['PlaceboLikely']){
+        $ctcp | Add-Member -MemberType NoteProperty -Name PlaceboLikely -Value $true -Force
+    } else {
+        $ctcp.PlaceboLikely = $true
+    }
+    $ctcp.Name = 'CTCP (experimental / opt-in)'
+    $ctcp.Desc = 'Algoritmo de congestion alternativo. CUBIC es la opcion moderna por defecto; solo probar con medicion especifica de latencia/throughput'
+}
+if($script:RECRULES -is [hashtable]){ [void]$script:RECRULES.Remove('net_ctcp') }
+if($script:LATRULES -is [hashtable]){ [void]$script:LATRULES.Remove('net_ctcp') }
+
+# HAGS stays available for explicit hardware/game A/B tests, not a universal recommendation.
+if($script:RECCORE){
+    $script:RECCORE = @($script:RECCORE | Where-Object { $_ -notin @('gpu_hags','rend_mpo','priv_recall') })
+}
+
+# MPO disable is troubleshooting-only.
+$mpo = @($script:CAT | Where-Object Id -eq 'rend_mpo')[0]
+if($null -ne $mpo){
+    $mpo.Tier = 2
+    $mpo.Name = 'MPO OFF (diagnostico: stutter/flicker)'
+    $mpo.Desc = 'Desactiva Multi-Plane Overlay para diagnosticar stutter/flicker; NO es una optimizacion universal (REINICIO)'
+}
+
+# Privacy-only tweaks remain available but do not count as performance recommendations.
 
 
 # >>>>> MODULE: 22-catalogs.ps1 >>>>>
@@ -7521,6 +7536,331 @@ function Show-AXEWebHost {
 # aqui, su 'exit 0' cortaria la carga antes de 48 y el puente quedaria sin enganchar (JS->PS muerto).
 
 
+# >>>>> MODULE: 47b-websecurity.ps1 >>>>>
+# =====================================================
+# REGION 13b - WEBVIEW2 SECURITY HARDENING
+#
+# Defense-in-depth for the elevated WPF/WebView2 host.
+# The UI is local content only: https://axe.local/*.
+# No generic external navigation, host objects, dialogs or new-window paths are allowed.
+#
+# This module defines the policy and a GUI-only watcher. It deliberately does NOT instantiate
+# WPF/DispatcherTimer objects while the engine is being loaded headlessly by tests/builds.
+# 49-webmain starts the watcher on the STA GUI path.
+# =====================================================
+
+function Protect-AXEWebView2 {
+    param([Parameter(Mandatory)]$Core)
+
+    if(-not $Core){ return $false }
+    try {
+        $settings = $Core.Settings
+        $settings.AreHostObjectsAllowed = $false
+        $settings.AreDefaultScriptDialogsEnabled = $false
+        $settings.IsStatusBarEnabled = $false
+        $settings.IsWebMessageEnabled = $true
+        if($env:AXE_WEBUI_DEBUG -ne '1'){ $settings.AreDevToolsEnabled = $false }
+
+        $Core.Add_NavigationStarting({
+            param($sender,$args)
+            $uri = $null
+            try { $uri = [Uri]$args.Uri } catch {}
+            $ok = $false
+            if($uri){
+                $ok = ($uri.Scheme -eq 'https' -and $uri.Host -eq 'axe.local' -and
+                       ($uri.Port -eq -1 -or $uri.Port -eq 443))
+            }
+            if(-not $ok){
+                $args.Cancel = $true
+                try { Write-AXELog "WebView2: navegacion bloqueada a '$($args.Uri)'" 'WARN' } catch {}
+            }
+        })
+
+        $Core.Add_FrameNavigationStarting({
+            param($sender,$args)
+            $uri = $null
+            try { $uri = [Uri]$args.Uri } catch {}
+            $ok = $false
+            if($uri){
+                $ok = ($uri.Scheme -eq 'https' -and $uri.Host -eq 'axe.local' -and
+                       ($uri.Port -eq -1 -or $uri.Port -eq 443))
+            }
+            if(-not $ok){
+                $args.Cancel = $true
+                try { Write-AXELog "WebView2: frame bloqueado a '$($args.Uri)'" 'WARN' } catch {}
+            }
+        })
+
+        $Core.Add_NewWindowRequested({
+            param($sender,$args)
+            $args.Handled = $true
+            try { Write-AXELog 'WebView2: ventana nueva bloqueada' 'WARN' } catch {}
+        })
+        $true
+    } catch {
+        try { Write-AXELog "WebView2 security policy no pudo aplicarse: $($_.Exception.Message)" 'ERR' } catch {}
+        $false
+    }
+}
+
+function Start-AXEWebSecurityWatcher {
+    if($env:AXE_WEBUI_TEST -eq '1'){ return }
+    if($script:AXEWebSecurityTimer){ return }
+    try {
+        $script:AXEWebSecurityTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $script:AXEWebSecurityTimer.Interval = [TimeSpan]::FromMilliseconds(100)
+        $script:AXEWebSecurityTimer.Add_Tick({
+            try {
+                if($script:Web -and $script:Web.CoreWebView2){
+                    if(Protect-AXEWebView2 -Core $script:Web.CoreWebView2){
+                        $script:AXEWebSecurityTimer.Stop()
+                        $script:AXEWebSecurityApplied = $true
+                    }
+                }
+            } catch {}
+        })
+        $script:AXEWebSecurityTimer.Start()
+    } catch {
+        try { Write-AXELog "WebView2 security watcher no pudo arrancar: $($_.Exception.Message)" 'ERR' } catch {}
+    }
+}
+
+
+# >>>>> MODULE: 47c-privbroker.ps1 >>>>>
+# =====================================================
+# REGION 13c - PRIVILEGED BROKER (least-privilege boundary)
+# =====================================================
+# GUI/WebView2 stays unelevated. Privileged operations cross a one-shot named-pipe broker.
+# The broker is deliberately NOT a generic PowerShell shell: closed command allow-list,
+# strict JSON limits, per-request nonce, current-user ACL and independent validation.
+#
+# Protocol:
+#   UI process creates an ACL-restricted server pipe.
+#   UI launches one elevated AXE process with -BrokerServer + pipe name + nonce.
+#   Elevated child connects as the pipe CLIENT, receives exactly one request, executes it,
+#   writes exactly one response, and exits.
+#   Before sending the request, UI checks the connected pipe client PID against the exact
+#   process object returned by Start-Process. This prevents a different same-user process
+#   from racing the broker connection even if it can discover the pipe name/nonce.
+#
+# The broker process starts with Windows PowerShell -ExecutionPolicy AllSigned. Before UAC is
+# requested the client checks that the consolidated AXE.ps1 is Authenticode-valid; AllSigned
+# performs the execution-time policy check again.
+
+$script:AXEBrokerPipePrefix = 'AXE-Broker-'
+$script:AXEBrokerMaxJsonBytes = 32768
+$script:AXEBrokerMaxCommandLength = 64
+$script:AXEBrokerMaxIdLength = 64
+$script:AXEBrokerAllowed = @{
+    'tweaks.apply'        = $true
+    'tweaks.revert'       = $true
+    'tweaks.masterRevert' = $true
+}
+
+if(-not ('AXEBrokerNative' -as [type])){
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class AXEBrokerNative {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint clientProcessId);
+}
+'@
+}
+
+function Get-AXECurrentUserSid {
+    try { [string]([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) }
+    catch { $null }
+}
+
+function Test-AXEBrokerSignature {
+    param([Parameter(Mandatory)][string]$ScriptPath)
+    try {
+        if(-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)){ return $false }
+        $sig = Get-AuthenticodeSignature -LiteralPath $ScriptPath
+        return ($sig.Status -eq 'Valid' -and $null -ne $sig.SignerCertificate)
+    } catch { return $false }
+}
+
+function Get-AXEBrokerClientProcessId {
+    param([Parameter(Mandatory)][System.IO.Pipes.NamedPipeServerStream]$Pipe)
+    [uint32]$clientPid = 0
+    $handle = $Pipe.SafePipeHandle.DangerousGetHandle()
+    if(-not [AXEBrokerNative]::GetNamedPipeClientProcessId($handle,[ref]$clientPid)){
+        throw 'broker: no pude identificar el PID del cliente del pipe'
+    }
+    if($clientPid -eq 0){ throw 'broker: PID de cliente invalido' }
+    [int]$clientPid
+}
+
+function Test-AXEBrokerPayload {
+    param([Parameter(Mandatory)][object]$Payload,[Parameter(Mandatory)][string]$ExpectedNonce)
+    if($null -eq $Payload){ throw 'broker: payload vacio' }
+    $json = $Payload | ConvertTo-Json -Compress -Depth 8
+    if([Text.Encoding]::UTF8.GetByteCount($json) -gt $script:AXEBrokerMaxJsonBytes){ throw 'broker: payload demasiado grande' }
+    $p = $Payload.PSObject
+    if(-not $p.Properties['v'] -or [int]$Payload.v -ne 1){ throw 'broker: version invalida' }
+    if(-not $p.Properties['nonce'] -or [string]$Payload.nonce -cne $ExpectedNonce){ throw 'broker: nonce invalido' }
+    if(-not $p.Properties['id'] -or [string]::IsNullOrWhiteSpace([string]$Payload.id) -or [string]$Payload.id.Length -gt $script:AXEBrokerMaxIdLength -or [string]$Payload.id -notmatch '^[A-Za-z0-9_.-]+$'){ throw 'broker: id invalido' }
+    if(-not $p.Properties['cmd']){ throw 'broker: cmd ausente' }
+    $cmd = [string]$Payload.cmd
+    if($cmd.Length -gt $script:AXEBrokerMaxCommandLength -or -not $script:AXEBrokerAllowed.ContainsKey($cmd)){ throw 'broker: cmd no permitido' }
+    if(-not $p.Properties['args'] -or $null -eq $Payload.args){ throw 'broker: args ausentes' }
+    $a = $Payload.args
+    $props = @($a.PSObject.Properties)
+    if($props.Count -gt 4){ throw 'broker: demasiados argumentos' }
+    foreach($prop in $props){
+        if($prop.Name.Length -gt 64 -or $prop.Name -notmatch '^[A-Za-z][A-Za-z0-9_.-]*$'){ throw 'broker: nombre de argumento invalido' }
+        if(([string]$prop.Value).Length -gt 4096){ throw 'broker: valor de argumento demasiado largo' }
+    }
+    switch($cmd){
+        'tweaks.apply' { if(@($props.Name) -notcontains 'id' -or @($props.Name).Count -ne 1){ throw 'broker: forma invalida para tweaks.apply' } }
+        'tweaks.revert' { if(@($props.Name) -notcontains 'id' -or @($props.Name).Count -ne 1){ throw 'broker: forma invalida para tweaks.revert' } }
+        'tweaks.masterRevert' { if(@($props.Name).Count -ne 0){ throw 'broker: forma invalida para tweaks.masterRevert' } }
+    }
+    $Payload
+}
+
+function New-AXEBrokerRequest {
+    param([Parameter(Mandatory)][string]$Command,[object]$Args = [pscustomobject]@{})
+    if(-not $script:AXEBrokerAllowed.ContainsKey($Command)){ throw "broker: '$Command' no permitido" }
+    [pscustomobject]@{
+        v=1
+        id=([guid]::NewGuid().ToString('N'))
+        nonce=([guid]::NewGuid().ToString('N'))
+        cmd=$Command
+        args=$Args
+    }
+}
+
+function Invoke-AXEPrivilegedBroker {
+    param([Parameter(Mandatory)][string]$Command,[object]$Args = [pscustomobject]@{})
+    if(Test-Admin){ throw 'broker: el host GUI no deberia ejecutar operaciones privilegiadas directamente' }
+    if($Command -notin @('tweaks.apply','tweaks.revert','tweaks.masterRevert')){ throw 'broker: operacion no privilegiada rechazada' }
+    $scriptPath = $PSCommandPath
+    if(-not (Test-AXEBrokerSignature -ScriptPath $scriptPath)){
+        throw 'AXE no tiene firma Authenticode valida; no se solicita elevacion automatica.'
+    }
+    $request = New-AXEBrokerRequest -Command $Command -Args $Args
+    $pipeName = $script:AXEBrokerPipePrefix + ([guid]::NewGuid().ToString('N'))
+    $currentSid = Get-AXECurrentUserSid
+    if(-not $currentSid){ throw 'broker: no pude determinar el usuario actual' }
+
+    $server = $null
+    try {
+        $pipeSecurity = New-Object System.IO.Pipes.PipeSecurity
+        $sid = New-Object System.Security.Principal.SecurityIdentifier($currentSid)
+        $rule = New-Object System.IO.Pipes.PipeAccessRule($sid,[System.IO.Pipes.PipeAccessRights]::ReadWrite,[System.Security.AccessControl.AccessControlType]::Allow)
+        $pipeSecurity.AddAccessRule($rule)
+        $server = New-Object System.IO.Pipes.NamedPipeServerStream(
+            $pipeName,[System.IO.Pipes.PipeDirection]::InOut,1,[System.IO.Pipes.PipeTransmissionMode]::Byte,
+            [System.IO.Pipes.PipeOptions]::Asynchronous,32768,32768,$pipeSecurity)
+
+        $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if(-not (Test-Path -LiteralPath $psExe -PathType Leaf)){ throw 'broker: powershell.exe no disponible' }
+        $quotedScript = '"' + $scriptPath.Replace('"','\"') + '"'
+        $argLine = '-NoProfile -NonInteractive -ExecutionPolicy AllSigned -STA -File ' + $quotedScript +
+            ' -BrokerServer -BrokerPipeName "' + $pipeName + '" -BrokerNonce "' + $request.nonce + '"'
+        $brokerProcess = Start-Process -FilePath $psExe -Verb RunAs -ArgumentList $argLine -PassThru -WindowStyle Hidden -ErrorAction Stop
+
+        $waitTask = $server.WaitForConnectionAsync()
+        if(-not $waitTask.Wait(15000)){ throw 'broker: timeout esperando el proceso elevado (UAC cancelado o broker no arranco)' }
+        $clientPid = Get-AXEBrokerClientProcessId -Pipe $server
+        if($clientPid -ne $brokerProcess.Id){ throw "broker: PID cliente inesperado ($clientPid != $($brokerProcess.Id))" }
+
+        $writer = New-Object IO.StreamWriter($server,[Text.Encoding]::UTF8,4096,$true)
+        $writer.AutoFlush = $true
+        $reader = New-Object IO.StreamReader($server,[Text.Encoding]::UTF8,$false,4096,$true)
+        $writer.WriteLine(($request | ConvertTo-Json -Compress -Depth 8))
+        $readTask = $reader.ReadLineAsync()
+        if(-not $readTask.Wait(15000)){ throw 'broker: timeout esperando respuesta' }
+        $line = $readTask.Result
+        if([string]::IsNullOrWhiteSpace($line)){ throw 'broker: respuesta vacia' }
+        if([Text.Encoding]::UTF8.GetByteCount($line) -gt $script:AXEBrokerMaxJsonBytes){ throw 'broker: respuesta demasiado grande' }
+        $reply = $line | ConvertFrom-Json -Depth 8
+        if($reply.ok -ne $true){ throw ([string]$reply.error) }
+        $reply.data
+    } finally {
+        if($server){ try { $server.Dispose() } catch {} }
+    }
+}
+
+function Start-AXEBrokerServer {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$PipeName,[Parameter(Mandatory)][string]$ExpectedNonce)
+    $result = [pscustomobject]@{ ok=$false; data=$null; error='broker: error desconocido' }
+    $pipe = $null
+    try {
+        if(-not (Test-Admin)){ throw 'broker: el proceso no esta elevado' }
+        if($PipeName -notmatch '^AXE-Broker-[0-9a-f]{32}$'){ throw 'broker: nombre de pipe invalido' }
+        if($ExpectedNonce -notmatch '^[0-9a-f]{32}$'){ throw 'broker: nonce invalido' }
+        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
+        $pipe.Connect(10000)
+        $reader = New-Object IO.StreamReader($pipe,[Text.Encoding]::UTF8,$false,4096,$true)
+        $writer = New-Object IO.StreamWriter($pipe,[Text.Encoding]::UTF8,4096,$true)
+        $writer.AutoFlush = $true
+        $readTask = $reader.ReadLineAsync()
+        if(-not $readTask.Wait(10000)){ throw 'broker: timeout esperando request' }
+        $line = $readTask.Result
+        if([string]::IsNullOrWhiteSpace($line)){ throw 'broker: request vacia' }
+        if([Text.Encoding]::UTF8.GetByteCount($line) -gt $script:AXEBrokerMaxJsonBytes){ throw 'broker: request demasiado grande' }
+        $payload = $line | ConvertFrom-Json -Depth 8
+        Test-AXEBrokerPayload -Payload $payload -ExpectedNonce $ExpectedNonce | Out-Null
+        switch([string]$payload.cmd){
+            'tweaks.apply' {
+                $tw = $script:CAT | Where-Object Id -eq ([string]$payload.args.id) | Select-Object -First 1
+                if(-not $tw){ throw 'broker: tweak desconocido' }
+                $blk = Get-BlockReason $tw; if($blk){ throw "broker: tweak no aplicable: $blk" }
+                if(Test-SnapEligible $tw){ $script:capTweak=$tw.Id }
+                try { & $tw.Apply } finally { $script:capTweak=$null }
+                $result=[pscustomobject]@{ok=$true;data=[pscustomobject]@{id=$tw.Id;applied=[bool](Test-TweakSafe $tw);reboot=[bool]$tw.Reboot};error=$null}
+            }
+            'tweaks.revert' {
+                $tw = $script:CAT | Where-Object Id -eq ([string]$payload.args.id) | Select-Object -First 1
+                if(-not $tw){ throw 'broker: tweak desconocido' }
+                if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
+                $result=[pscustomobject]@{ok=$true;data=[pscustomobject]@{id=$tw.Id;applied=[bool](Test-TweakSafe $tw);reboot=[bool]$tw.Reboot};error=$null}
+            }
+            'tweaks.masterRevert' {
+                $done=0;$err=0
+                foreach($tw in $script:CAT){
+                    try { if(Get-BlockReason $tw){continue}; if(-not(Test-TweakSafe $tw)){continue}; if(-not((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){& $tw.Revert};$done++ }
+                    catch{$err++;Write-AXELog "Broker MasterRevert: $($tw.Name): $($_.Exception.Message)" 'ERR'}
+                }
+                try{Invoke-AXEMasterRevertTail}catch{}
+                $result=[pscustomobject]@{ok=$true;data=[pscustomobject]@{reverted=$done;errors=$err};error=$null}
+            }
+            default { throw 'broker: cmd no permitido' }
+        }
+    } catch { $result=[pscustomobject]@{ok=$false;data=$null;error=$_.Exception.Message} }
+    finally {
+        if($pipe){ try{$writer.WriteLine(($result|ConvertTo-Json -Compress -Depth 8));$writer.Flush()}catch{};try{$pipe.Dispose()}catch{} }
+    }
+    $result
+}
+
+
+# >>>>> MODULE: 47d-brokerentry.ps1 >>>>>
+# =====================================================
+# REGION 13d - PRIVILEGED BROKER ENTRYPOINT
+# =====================================================
+# Lexically after 47c-privbroker so Start-AXEBrokerServer is already defined.
+# Runs before 48-webbridge/49-webmain. Normal GUI/CLI execution never enters this block.
+if($BrokerServer){
+    if([string]::IsNullOrWhiteSpace($BrokerPipeName) -or [string]::IsNullOrWhiteSpace($BrokerNonce)){
+        Write-Error 'BrokerServer requiere -BrokerPipeName y -BrokerNonce.'
+        exit 2
+    }
+    try {
+        [void](Start-AXEBrokerServer -PipeName $BrokerPipeName -ExpectedNonce $BrokerNonce)
+        exit 0
+    } catch {
+        Write-Error ("BrokerServer fallo: {0}" -f $_.Exception.Message)
+        exit 1
+    }
+}
+
+
 # >>>>> MODULE: 48-webbridge.ps1 >>>>>
 # =====================================================
 # REGION 14 - PUENTE RPC (JS <-> PS). SUPERFICIE DE ATAQUE.
@@ -8044,13 +8384,251 @@ function Register-AXEBridge($core){
 }
 
 
+# >>>>> MODULE: 48b-bridge-security.ps1 >>>>>
+# =====================================================
+# REGION 14c - RPC SECURITY HARDENING
+#
+# Defense-in-depth around the existing closed RPC map in 48-webbridge.ps1.
+# The original dispatcher remains the single business-logic path; this wrapper
+# only validates trust boundary inputs before handing them to it.
+#
+# GUI-only long-running reads (timer sweep) are also dispatched asynchronously
+# so the WebView2/WPF UI thread never blocks on a multi-second measurement.
+# =====================================================
+
+$script:AXEBridgeOriginal = $null
+$script:AXETimerSweepState = $null
+$script:AXETimerSweepTimer = $null
+try {
+    if(Get-Command Invoke-AXEBridgeCmd -CommandType Function -EA SilentlyContinue){
+        $script:AXEBridgeOriginal = ${function:Invoke-AXEBridgeCmd}
+    }
+} catch {}
+
+function Test-AXEBridgeOriginTrusted {
+    try {
+        $src = if($script:Web -and $script:Web.Source){ [Uri]$script:Web.Source } else { $null }
+        if(-not $src){ return $false }
+        if($src.Scheme -ne 'https'){ return $false }
+        if($src.Host -ne 'axe.local'){ return $false }
+        if($src.Port -ne -1 -and $src.Port -ne 443){ return $false }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Complete-AXETimerSweepAsync {
+    $st = $script:AXETimerSweepState
+    if(-not $st -or -not $st.Process){ return }
+    try {
+        if(-not $st.Process.HasExited){ return }
+
+        $exitCode = [int]$st.Process.ExitCode
+        $raw = ''
+        $errRaw = ''
+        try { if(Test-Path -LiteralPath $st.OutFile){ $raw = Get-Content -LiteralPath $st.OutFile -Raw -EA SilentlyContinue } } catch {}
+        try { if(Test-Path -LiteralPath $st.ErrFile){ $errRaw = Get-Content -LiteralPath $st.ErrFile -Raw -EA SilentlyContinue } } catch {}
+
+        if($exitCode -eq 0){
+            $lines = @($raw -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            $res = [pscustomobject]@{
+                ok   = $true
+                data = [pscustomobject]@{
+                    lines      = $lines
+                    conclusive = $null
+                    bestMs     = $null
+                    originalMs = $null
+                }
+                err = ''
+            }
+        } else {
+            $why = ([string]$errRaw).Trim()
+            if([string]::IsNullOrWhiteSpace($why)){ $why = "el barrido termino con codigo $exitCode" }
+            $res = [pscustomobject]@{ ok=$false; data=$null; err=$why }
+        }
+
+        if($script:Web -and $script:Web.CoreWebView2){
+            $json = ($res | ConvertTo-Json -Depth 8 -Compress)
+            $js = 'window.__axeReply(' + [int]$st.RequestId + ', ' + ($json | ConvertTo-Json) + ')'
+            [void]$script:Web.CoreWebView2.ExecuteScriptAsync($js)
+        }
+    } catch {
+        try {
+            if($script:Web -and $script:Web.CoreWebView2){
+                $res = [pscustomobject]@{ ok=$false; data=$null; err="barrido: $($_.Exception.Message)" }
+                $json = ($res | ConvertTo-Json -Depth 6 -Compress)
+                $js = 'window.__axeReply(' + [int]$st.RequestId + ', ' + ($json | ConvertTo-Json) + ')'
+                [void]$script:Web.CoreWebView2.ExecuteScriptAsync($js)
+            }
+        } catch {}
+    } finally {
+        try { if($script:AXETimerSweepTimer){ $script:AXETimerSweepTimer.Stop() } } catch {}
+        try { $st.Process.Dispose() } catch {}
+        try { if($st.TempDir -and (Test-Path -LiteralPath $st.TempDir)){ Remove-Item -LiteralPath $st.TempDir -Recurse -Force -EA SilentlyContinue } } catch {}
+        $script:AXETimerSweepState = $null
+    }
+}
+
+function Start-AXETimerSweepAsync {
+    param([int]$RequestId)
+    if($RequestId -le 0){ return [pscustomobject]@{ Ok=$false; Err='request id invalido' } }
+    if($script:AXETimerSweepState){ return [pscustomobject]@{ Ok=$false; Err='barrido ya en curso' } }
+    if(-not $script:AXERoot){ return [pscustomobject]@{ Ok=$false; Err='ruta de AXE no disponible' } }
+    if(-not ($script:Web -and $script:Web.CoreWebView2)){ return [pscustomobject]@{ Ok=$false; Err='WebView2 no inicializado' } }
+
+    # En un build normal AXERoot = ...\AXE\dist y AXE.ps1 es el entrypoint consolidado.
+    $scriptPath = Join-Path $script:AXERoot 'AXE.ps1'
+    if(-not (Test-Path -LiteralPath $scriptPath)){
+        return [pscustomobject]@{ Ok=$false; Err='entrypoint dist/AXE.ps1 no encontrado' }
+    }
+
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ('axe-timersweep-' + [guid]::NewGuid().ToString('N'))
+    $outFile = Join-Path $dir 'stdout.txt'
+    $errFile = Join-Path $dir 'stderr.txt'
+    try {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if(-not (Test-Path -LiteralPath $psExe)){ throw 'powershell.exe no disponible' }
+
+        $argList = @('-NoProfile','-NonInteractive')
+        # Mantener, cuando exista, la politica de proceso con la que se lanzo AXE. Si no existe,
+        # se deja que powershell.exe use la politica efectiva del usuario/equipo.
+        if($env:PSExecutionPolicyPreference){ $argList += @('-ExecutionPolicy',[string]$env:PSExecutionPolicyPreference) }
+        $argList += @('-File',$scriptPath,'-TimerSweep')
+
+        $proc = Start-Process -FilePath $psExe -ArgumentList $argList -WorkingDirectory $script:AXERoot `
+            -WindowStyle Hidden -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru -ErrorAction Stop
+
+        $script:AXETimerSweepState = [pscustomobject]@{
+            RequestId = $RequestId
+            Process   = $proc
+            OutFile   = $outFile
+            ErrFile   = $errFile
+            TempDir   = $dir
+        }
+
+        if(-not $script:AXETimerSweepTimer){
+            $script:AXETimerSweepTimer = New-Object System.Windows.Threading.DispatcherTimer
+            $script:AXETimerSweepTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+            $script:AXETimerSweepTimer.Add_Tick({ Complete-AXETimerSweepAsync })
+        }
+        $script:AXETimerSweepTimer.Start()
+        [pscustomobject]@{ Ok=$true; Err='' }
+    } catch {
+        try { if(Test-Path -LiteralPath $dir){ Remove-Item -LiteralPath $dir -Recurse -Force -EA SilentlyContinue } } catch {}
+        [pscustomobject]@{ Ok=$false; Err=$_.Exception.Message }
+    }
+}
+
+function Test-AXEBridgeValue {
+    param([AllowNull()]$Value,[int]$Depth=0)
+    if($Depth -gt 6){ return $false }
+    if($null -eq $Value){ return $true }
+    if($Value -is [string]){ return $Value.Length -le 4096 }
+    if($Value -is [bool] -or $Value -is [byte] -or $Value -is [int16] -or $Value -is [int32] -or $Value -is [int64] -or $Value -is [uint16] -or $Value -is [uint32] -or $Value -is [uint64] -or $Value -is [single] -or $Value -is [double] -or $Value -is [decimal]){ return $true }
+    if($Value -is [System.Collections.IDictionary]){
+        if($Value.Count -gt 32){ return $false }
+        foreach($k in $Value.Keys){
+            $ks = [string]$k
+            if($ks.Length -gt 64 -or $ks -notmatch '^[A-Za-z][A-Za-z0-9_.-]*$'){ return $false }
+            if(-not (Test-AXEBridgeValue $Value[$k] ($Depth+1))){ return $false }
+        }
+        return $true
+    }
+    if($Value -is [System.Collections.IEnumerable]){
+        $n = 0
+        foreach($v in $Value){
+            $n++
+            if($n -gt 32){ return $false }
+            if(-not (Test-AXEBridgeValue $v ($Depth+1))){ return $false }
+        }
+        return $true
+    }
+    if($Value.PSObject -and $Value.PSObject.Properties){
+        $props = @($Value.PSObject.Properties)
+        if($props.Count -gt 32){ return $false }
+        foreach($p in $props){
+            if($p.Name.Length -gt 64 -or $p.Name -notmatch '^[A-Za-z][A-Za-z0-9_.-]*$'){ return $false }
+            if(-not (Test-AXEBridgeValue $p.Value ($Depth+1))){ return $false }
+        }
+        return $true
+    }
+    $false
+}
+
+function Invoke-AXEBridgeCmd {
+    param([string]$cmd,[hashtable]$cmdArgs)
+
+    if(-not $script:AXEBridgeOriginal){
+        return [pscustomobject]@{ ok=$false; data=$null; err='puente no inicializado' }
+    }
+    if([string]::IsNullOrWhiteSpace($cmd) -or $cmd.Length -gt 64){
+        return [pscustomobject]@{ ok=$false; data=$null; err='cmd invalido' }
+    }
+
+    if(-not (Test-AXEBridgeOriginTrusted)){
+        return [pscustomobject]@{ ok=$false; data=$null; err='origen web no confiable' }
+    }
+
+    if($null -ne $cmdArgs){
+        if(-not ($cmdArgs -is [hashtable])){
+            return [pscustomobject]@{ ok=$false; data=$null; err='args invalidos' }
+        }
+        if($cmdArgs.Count -gt 32 -or -not (Test-AXEBridgeValue $cmdArgs)){ 
+            return [pscustomobject]@{ ok=$false; data=$null; err='payload fuera de limites' }
+        }
+    }
+
+    # measure.timerSweep is a potentially long, read-only measurement. In the GUI the JS client
+    # supplies its own request id in _axeRid; this lets the dispatcher return an async sentinel while
+    # the actual result is pushed later by Complete-AXETimerSweepAsync. Direct/unit callers that do
+    # not provide _axeRid keep the original synchronous semantics.
+    if($cmd -eq 'measure.timerSweep' -and $cmdArgs -and $cmdArgs.ContainsKey('_axeRid')){
+        $ridRaw = $cmdArgs['_axeRid']
+        try { $rid = [int]$ridRaw } catch { return [pscustomobject]@{ ok=$false; data=$null; err='request id invalido' } }
+        $clean = @{}
+        foreach($k in $cmdArgs.Keys){ if($k -ne '_axeRid'){ $clean[$k] = $cmdArgs[$k] } }
+        if($clean.Count -ne 0){ return [pscustomobject]@{ ok=$false; data=$null; err='args invalidos' } }
+        $start = Start-AXETimerSweepAsync -RequestId $rid
+        if($start.Ok){ return [pscustomobject]@{ ok=$true; async=$true; data=$null; err='' } }
+        return [pscustomobject]@{ ok=$false; data=$null; err=[string]$start.Err }
+    }
+
+    & $script:AXEBridgeOriginal $cmd $cmdArgs
+}
+
+
+# >>>>> MODULE: 48c-broker-bridge.ps1 >>>>>
+# =====================================================
+# REGION 14d - BRIDGE -> PRIVILEGED BROKER
+# =====================================================
+# Only operations that modify system state are routed through the elevated broker when the GUI
+# process is unelevated. Read-only measurements remain local to minimize privileged attack surface.
+
+if($script:AXEBridgeMap -is [hashtable]){
+    foreach($name in @('tweaks.apply','tweaks.revert','tweaks.masterRevert')){
+        if(-not $script:AXEBridgeMap.ContainsKey($name)){ continue }
+        $original = $script:AXEBridgeMap[$name]
+        $script:AXEBridgeMap[$name] = {
+            param($a)
+            if(Test-Admin){
+                & $original $a
+            } else {
+                Invoke-AXEPrivilegedBroker -Command $name -Args $a
+            }
+        }.GetNewClosure()
+    }
+}
+
+
 # >>>>> MODULE: 49-webmain.ps1 >>>>>
 # =====================================================
 # REGION 14b - ARRANQUE DEL HOST WEB (bootstrap)
 # =====================================================
-# Va DESPUES de 47-webhost (Show-AXEWebHost) y 48-webbridge (Register-AXEBridge) para que ambos
-# esten definidos cuando arranque. Espeja el rol de 99-main.ps1 con la GUI vieja: separa el
-# bootstrap de las definiciones.
+# Va DESPUES de 47-webhost, 47b-websecurity y 48-webbridge para que todas las definiciones
+# existan cuando arranque. Espeja el rol de 99-main.ps1 con la GUI vieja: separa el bootstrap
+# de las definiciones.
 #
 # Cutover (Fase 8): la GUI WPF vieja (50-60, 99-main) se retiro. Este es el arranque UNICO del
 # frontend, incondicional. Llegar aqui = modo GUI: los modos CLI (-SelfTest/-List/-Diag/...) ya
@@ -8063,6 +8641,11 @@ function Register-AXEBridge($core){
 # estado del job. El diario en disco (AXE/session_degraded.json) las devuelve, comprobando
 # pid+nombre+arranque para no tocar un proceso que solo heredo el numero.
 try { [void](Restore-AXESessionDegraded) } catch {}
+
+# WebView2 se ejecuta con una superficie de privilegios sensible. La politica de seguridad se
+# inicializa SOLO aqui, dentro del camino GUI/STA, nunca durante la carga headless del motor.
+try { Start-AXEWebSecurityWatcher } catch { Write-AXELog "No pude iniciar el watcher de seguridad WebView2: $($_.Exception.Message)" 'ERR' }
+
 Show-AXEWebHost
 exit 0
 
