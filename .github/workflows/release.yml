@@ -1,10 +1,10 @@
 name: AXE Release
 
-# Subproyectos A+B (spec 2026-07-24). Dos modos con el MISMO camino de codigo:
-#   - push de un tag v*  -> construye, firma (si hay secret) y PUBLICA el release
-#   - pull_request       -> dry-run: construye y verifica los artefactos, NO publica
-# El dry-run existe para que un fallo del pipeline se vea en la PR y no la primera vez que se
-# etiqueta una version, que es justo cuando menos margen hay para descubrirlo.
+# Release is split into two trust zones:
+#   1) build-package: read-only repository token; builds, tests and packages.
+#      Signing secrets are only present on an actual version-tag run.
+#   2) publish: write/attestation permissions only on a version tag; consumes the immutable artifact.
+# Pull requests and manual non-tag runs never receive signing secrets.
 on:
   push:
     tags: [ 'v*' ]
@@ -18,23 +18,22 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write        # necesario para crear el release
-  id-token: write        # OIDC: lo exige la attestation de procedencia. No publica nada por si solo.
-  attestations: write    # escribe la attestation en el almacen del repo
+  contents: read
 
 jobs:
-  release:
+  build-package:
+    permissions:
+      contents: read
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Pester + PSScriptAnalyzer
         shell: pwsh
         run: |
-          # Ver ci.yml: PSGallery puede no venir registrada en la imagen del runner. Aqui importa
-          # el doble, porque este workflow es el que publica: no puede caerse por eso justo cuando
-          # se etiqueta una version.
           if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
             Register-PSRepository -Default -ErrorAction Stop
           }
@@ -42,15 +41,10 @@ jobs:
           Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser -ErrorAction Stop
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop
 
-      # El gate completo (Pester + SelfTest + harness del host web) ANTES de empaquetar nada.
-      # Un release solo puede salir de un arbol que pasa exactamente lo mismo que exige la CI.
       - name: Build + gate completo
         shell: pwsh
         run: ./AXE/build.ps1 -CI
 
-      # El tag manda sobre el fichero VERSION: si no coinciden, el release publicaria una
-      # version distinta de la que el motor reporta por -SelfTest y por el puente. Es la misma
-      # clase de deriva que degrado la version a '6.1.0-dev' (documentada en build.ps1).
       - name: Coherencia tag <-> VERSION
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -58,15 +52,15 @@ jobs:
           $tag = '${{ github.ref_name }}' -replace '^v',''
           $ver = (Get-Content AXE/VERSION -Raw).Trim()
           if ($tag -ne $ver) {
-            Write-Host "::error::El tag '${{ github.ref_name }}' no coincide con AXE/VERSION ('$ver'). Actualiza VERSION, rebuild y commitea antes de etiquetar."
+            Write-Host "::error::El tag '${{ github.ref_name }}' no coincide con AXE/VERSION ('$ver')."
             exit 1
           }
           Write-Host "tag y VERSION coinciden: $ver"
 
-      # Firma: SOLO si el repo tiene el secret. Sin el, este paso se salta entero y el release
-      # sale marcado 'unsigned' de forma explicita (New-AXERelease lo dice en su resumen, y las
-      # notas del release de abajo tambien). No se finge una firma que no existe.
+      # IMPORTANTE: estos pasos solo existen en un run de tag. Un PR no puede obtener el PFX
+      # simplemente modificando el workflow porque el job no expone las variables secretas.
       - name: Preparar certificado (si hay secret)
+        if: startsWith(github.ref, 'refs/tags/v')
         id: cert
         env:
           PFX: ${{ secrets.AXE_CODESIGN_PFX_BASE64 }}
@@ -77,71 +71,122 @@ jobs:
           [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:PFX))
           "path=$path" >> $env:GITHUB_OUTPUT
 
-      - name: Artefactos de release (firmados si hay cert)
-        id: pack
-        shell: pwsh
+      - name: Artefactos de release (tag, firmados si hay cert)
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           PFX_PATH: ${{ steps.cert.outputs.path }}
           PFX_PASS: ${{ secrets.AXE_CODESIGN_PFX_PASSWORD }}
+        shell: pwsh
         run: |
-          $p = @{ SkipBuild = $true }   # el gate de arriba ya construyo dist/AXE.ps1
+          $p = @{ SkipBuild = $true }
           if ($env:PFX_PATH) {
             $p.PfxPath = $env:PFX_PATH
             if ($env:PFX_PASS) { $p.PfxPassword = (ConvertTo-SecureString $env:PFX_PASS -AsPlainText -Force) }
           } else {
-            Write-Warning 'Sin secret de firma: el release saldra SIN FIRMAR (degradacion honesta, spec §6).'
+            Write-Warning 'Sin secret de firma: el release saldra SIN FIRMAR.'
           }
-          $r = ./AXE/scripts/New-AXERelease.ps1 @p
-          "signed=$($r.Signed)" >> $env:GITHUB_OUTPUT
+          ./AXE/scripts/New-AXERelease.ps1 @p
 
-      # El PFX vive lo minimo posible en el disco del runner, pase lo que pase arriba.
+      - name: Artefactos de validacion (PR/manual, nunca con secretos)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        shell: pwsh
+        run: |
+          ./AXE/scripts/New-AXERelease.ps1 -SkipBuild
+
       - name: Borrar el certificado del runner
         if: always()
         shell: pwsh
         run: Remove-Item (Join-Path $env:RUNNER_TEMP 'axe-cs.pfx') -Force -ErrorAction SilentlyContinue
 
-      # Verificacion independiente del release ya generado. New-AXERelease ya lo hace, pero
-      # repetirlo aqui cuesta 2s y cierra el caso de que algo entre medias tocara los ficheros.
       - name: Verificar SHA256SUMS
         shell: pwsh
         run: |
-          . ./AXE/src/43-update.ps1
-          $bad = @(Test-AXEChecksums -Dir ./AXE/dist/release)
-          if ($bad.Count) { Write-Host "::error::SHA256SUMS no verifica: $($bad -join '; ')"; exit 1 }
-          Get-Content ./AXE/dist/release/SHA256SUMS
+          $dir = Join-Path $PWD 'AXE/dist/release'
+          $sumsPath = Join-Path $dir 'SHA256SUMS'
+          if (-not (Test-Path -LiteralPath $sumsPath -PathType Leaf)) { throw 'Falta SHA256SUMS.' }
+          $bad = New-Object System.Collections.ArrayList
+          $seen = @{}
+          $text = Get-Content -LiteralPath $sumsPath -Raw -Encoding UTF8
+          foreach($row in ($text -split "`r?`n")) {
+            if([string]::IsNullOrWhiteSpace($row)){ continue }
+            if($row -notmatch '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$'){ [void]$bad.Add("linea ilegible: $row"); continue }
+            $hash = $Matches[1]; $name = $Matches[2]
+            if($seen.ContainsKey($name)){ [void]$bad.Add("nombre duplicado: $name"); continue }
+            $seen[$name] = $true
+            $path = Join-Path $dir $name
+            if(-not (Test-Path -LiteralPath $path -PathType Leaf)){ [void]$bad.Add("ausente: $name"); continue }
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            if(-not [string]::Equals($actual,$hash,[StringComparison]::OrdinalIgnoreCase)){ [void]$bad.Add("hash no cuadra: $name") }
+          }
+          if($seen.Count -eq 0){ [void]$bad.Add('SHA256SUMS vacio') }
+          if($bad.Count){ throw ("SHA256SUMS invalido: {0}" -f ($bad -join '; ')) }
           Write-Host 'SHA256SUMS verificado.'
 
-      - name: Manifiestos winget
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: ./AXE/scripts/New-AXEWingetManifest.ps1 -Tag '${{ github.ref_name }}'
-
-      - name: Artifact (siempre, tambien en el dry-run de PR)
-        uses: actions/upload-artifact@v4
+      - name: Artifact release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: AXE-release
-          path: AXE/dist/release/**
+          path: AXE/dist/release
           if-no-files-found: error
 
-      # Procedencia (SLSA / Sigstore). Responde la UNICA pregunta que el checksum no puede:
-      # QUIEN publico esto. SHA256SUMS viaja dentro del mismo release que el fichero, asi que
-      # prueba que llego entero pero un atacante que sustituya ambos pasa la verificacion igual.
-      # La attestation la firma Sigstore FUERA del release y ata los bytes a este repo, este
-      # commit y este workflow, asi que sustituirla no esta al alcance de quien controle el
-      # release. No sustituye a Authenticode: Windows sigue sin confiar en el fichero y
-      # SmartScreen sigue avisando. Cubre autenticidad, no confianza del SO.
-      #   Solo en tag: en el dry-run de PR no hay artefacto publicado al que atar procedencia.
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-package
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download immutable release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: AXE-release
+          path: AXE/dist/release
+
+      - name: Verify downloaded bundle
+        shell: pwsh
+        run: |
+          $dir = Join-Path $PWD 'AXE/dist/release'
+          $sumsPath = Join-Path $dir 'SHA256SUMS'
+          if (-not (Test-Path -LiteralPath $sumsPath -PathType Leaf)) { throw 'Falta SHA256SUMS en el artefacto.' }
+          $bad = New-Object System.Collections.ArrayList
+          $seen = @{}
+          $text = Get-Content -LiteralPath $sumsPath -Raw -Encoding UTF8
+          foreach($row in ($text -split "`r?`n")) {
+            if([string]::IsNullOrWhiteSpace($row)){ continue }
+            if($row -notmatch '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$'){ [void]$bad.Add("linea ilegible: $row"); continue }
+            $hash = $Matches[1]; $name = $Matches[2]
+            if($seen.ContainsKey($name)){ [void]$bad.Add("nombre duplicado: $name"); continue }
+            $seen[$name] = $true
+            $path = Join-Path $dir $name
+            if(-not (Test-Path -LiteralPath $path -PathType Leaf)){ [void]$bad.Add("ausente: $name"); continue }
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            if(-not [string]::Equals($actual,$hash,[StringComparison]::OrdinalIgnoreCase)){ [void]$bad.Add("hash no cuadra: $name") }
+          }
+          if($seen.Count -eq 0){ [void]$bad.Add('SHA256SUMS vacio') }
+          if($bad.Count){ throw ("Artefacto descargado invalido: {0}" -f ($bad -join '; ')) }
+          Write-Host 'Artefacto descargado verificado.'
+
+      - name: Determine Authenticode state
+        id: sig
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature -LiteralPath ./AXE/dist/release/AXE.ps1
+          $signed = ($sig.Status -eq 'Valid')
+          "signed=$($signed.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          Write-Host "Authenticode: $($sig.Status)"
+
       - name: Attestation de procedencia
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: |
             AXE/dist/release/AXE.ps1
             AXE/dist/release/AXE-*.zip
 
       - name: Publicar release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             AXE/dist/release/AXE.ps1
@@ -149,38 +194,16 @@ jobs:
             AXE/dist/release/SHA256SUMS
             AXE/dist/release/sbom.json
           generate_release_notes: true
-          # Se antepone a las notas automaticas. Dice la verdad sobre la firma en vez de dejar
-          # que el usuario la suponga por el hecho de que exista un release.
           body: |
             ## Verifica antes de ejecutar
 
-            **Estado de la firma: `${{ steps.pack.outputs.signed == 'true' && 'FIRMADO (Authenticode + timestamp RFC3161)' || 'SIN FIRMAR' }}`**
+            **Estado de la firma: `${{ steps.sig.outputs.signed == 'true' && 'FIRMADO (Authenticode + timestamp RFC3161)' || 'SIN FIRMAR' }}`**
 
             ```powershell
-            # 1. Integridad (que el fichero llego entero)
             (Get-FileHash .\AXE.ps1 -Algorithm SHA256).Hash.ToLower()
-            # comparalo con la linea de AXE.ps1 en SHA256SUMS
-
-            # 2. Procedencia (de que repo, commit y workflow salio). Necesita gh CLI.
-            gh attestation verify .\AXE.ps1 --repo CARTY240HZ/AXE
-
-            # 3. Firma Authenticode (si este release salio firmado)
             Get-AuthenticodeSignature .\AXE.ps1 | Format-List Status, SignerCertificate
             ```
-            Desde Linux/WSL: `sha256sum -c SHA256SUMS`
 
-            Las tres comprobaciones responden preguntas distintas y **no** se sustituyen entre si:
-            el hash prueba que el fichero llego entero, pero viaja en el mismo release que el
-            fichero (quien controle el release controla los dos). La **attestation** la firma
-            Sigstore fuera del release: ata estos bytes a este repositorio, este commit y este
-            workflow, y por eso vale aunque el release no este firmado. Lo que la attestation
-            **no** hace es que Windows confie en el script: eso solo lo da Authenticode, asi que
-            SmartScreen seguira avisando mientras el punto 3 salga vacio.
-
-            `sbom.json` (CycloneDX 1.5) lista los componentes de terceros que van dentro del zip,
-            con su hash y su licencia. PresentMon **no** se redistribuye: lo aporta el usuario.
-
-            > Si el release sale **sin firmar**, `AXE -Update` **no** lo instalara automaticamente.
-            > Es deliberado: AXE se ejecuta elevado, y el checksum viaja en el mismo release que
-            > el fichero, asi que prueba que llego entero pero no **quien** lo publico. Instala a
-            > mano tras verificar el hash si quieres continuar.
+            La attestation de procedencia se publica separada del release y permite verificar que
+            los bytes proceden de este repositorio, commit y workflow. El checksum demuestra
+            integridad; Authenticode, cuando esta presente, aporta confianza para Windows.

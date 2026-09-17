@@ -6,20 +6,22 @@ on:
   pull_request:
     branches: [ axe ]
 
+# Default-deny for the workflow token. CI only reads the repository.
+permissions:
+  contents: read
+
 jobs:
   build-test:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install PSScriptAnalyzer + Pester
         shell: pwsh
         run: |
-          # PSGallery no siempre viene registrada en la imagen del runner: 'Set-PSRepository
-          # PSGallery' peto con "No repository with the name 'PSGallery' was found" en un job
-          # mientras el otro, con la MISMA linea, pasaba. Registrarla si falta convierte un rojo
-          # aleatorio en algo determinista. Un rojo que no es del codigo ensena a ignorar los rojos.
           if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
             Register-PSRepository -Default -ErrorAction Stop
           }
@@ -41,10 +43,6 @@ jobs:
       - name: Anti-deriva dist (dist == build fresco de src)
         shell: pwsh
         run: |
-          # El paso Build ya reconstruyo dist/AXE.ps1. Se compara contra el committed ignorando
-          # SOLO la linea 'Build UTC' (no determinista por diseno). Si difiere => alguien edito
-          # dist a mano o toco src/VERSION sin rebuild+commit: la clase EXACTA de deriva que
-          # degrado la version de la app a '6.1.0-dev'. Un diff aqui aborta el CI.
           $head = (git show HEAD:AXE/dist/AXE.ps1) -notmatch '^# Build UTC:'
           $work = (Get-Content AXE/dist/AXE.ps1)   -notmatch '^# Build UTC:'
           if (Compare-Object $head $work) {
@@ -56,43 +54,36 @@ jobs:
       - name: SelfTest (schema + coherencia, CLI headless)
         shell: pwsh
         run: |
-          # -SelfTest sale del bloque CLI antes del assert de admin (no requiere elevacion)
           & pwsh -NoProfile -File AXE/dist/AXE.ps1 -SelfTest
           if ($LASTEXITCODE -ne 0) { throw "SelfTest fallo (exit $LASTEXITCODE)" }
 
       - name: Pester (unit, excluye integration)
         shell: pwsh
         run: |
-          # Fuente unica de verdad: el runner que usan tambien build.ps1 y el dev local
-          # (scripts/Invoke-AXETests.ps1). Excluye -Tag integration por defecto, fija AXE_NOSR=1
-          # (no crea puntos de restauracion reales en el runner) y emite NUnit con -CI. Antes este
-          # job llamaba Invoke-Pester directo, saltandose el runner y su guard AXE_NOSR.
           & pwsh -NoProfile -File AXE/scripts/Invoke-AXETests.ps1 -CI
           if ($LASTEXITCODE -ne 0) { throw "Suite Pester fallo (exit $LASTEXITCODE)" }
 
       - name: Artifact dist/AXE.ps1
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: AXE-dist
           path: AXE/dist/AXE.ps1
           if-no-files-found: warn
 
-  # Integracion contra Windows REAL (el runner windows-latest es una maquina desechable).
-  # Ejercita lo que el job unit NO puede: Get-AXEHardware sobre CIM real, los Test del
-  # catalogo contra el registro/servicios de verdad, y el round-trip Apply -> Test ->
-  # Restore-TweakState (motor de snapshot H3) sobre una whitelist solo-HKCU.
-  # AXE_INTEGRATION=1 habilita el bloque que muta: NUNCA se activa fuera de CI.
   integration:
+    permissions:
+      contents: read
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Pester
         shell: pwsh
         run: |
-          # Ver el comentario del job build-test: PSGallery puede no estar registrada.
           if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
             Register-PSRepository -Default -ErrorAction Stop
           }
