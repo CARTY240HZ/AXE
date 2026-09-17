@@ -21,6 +21,10 @@ Describe 'Workflow security contracts' -Tag 'unit','security' {
         $script:CI | Should -Not -Match '(?m)^\s+contents:\s*write\b'
     }
 
+    It 'CI checkout never persists the repository token' {
+        $script:CI | Should -Match '(?s)actions/checkout@[0-9a-fA-F]{40}.*?persist-credentials:\s*false'
+    }
+
     It 'release defaults to read-only and isolates write permissions to tag publish' {
         $script:Release | Should -Match '(?ms)^permissions:\s*\r?\n\s+contents:\s*read\b'
         $script:Release | Should -Match '(?ms)^\s+publish:\s*\r?\n\s+if:\s*startsWith\(github\.ref,\s*''refs/tags/v''\)'
@@ -29,9 +33,16 @@ Describe 'Workflow security contracts' -Tag 'unit','security' {
         $script:Release | Should -Match '(?ms)^\s+publish:\s*.*?^\s+permissions:.*?^\s+attestations:\s*write\b'
     }
 
+    It 'signing secrets are only referenced by tag-gated steps' {
+        $script:Release | Should -Match "if: startsWith\(github\.ref, 'refs/tags/v'\)\s*\r?\n\s*id: cert"
+        $script:Release | Should -Match "if: startsWith\(github\.ref, 'refs/tags/v'\)\s*\r?\n\s*env:\s*\r?\n\s*PFX_PATH"
+        $script:Release | Should -Match '\$\{\{ secrets\.AXE_CODESIGN_PFX_BASE64 \}\}'
+        $script:Release | Should -Match '\$\{\{ secrets\.AXE_CODESIGN_PFX_PASSWORD \}\}'
+        $script:Release | Should -Match "if: \$\{\{ !startsWith\(github\.ref, 'refs/tags/v'\) \}\}"
+    }
+
     It 'privileged publish does not checkout repository code' {
-        $pub = ($script:Release -split "`n") | Select-String -Pattern '^\s+publish:'
-        $pub | Should -Not -BeNullOrEmpty
+        $script:Release | Should -Not -Match '(?s)publish:.*?actions/checkout@'
         $script:Release | Should -Match '(?s)publish:.*?Download immutable release bundle.*?actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'
     }
 }
