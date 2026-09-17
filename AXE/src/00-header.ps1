@@ -13,7 +13,9 @@
 # Modos de ejecucion (headless, sin GUI ni admin):
 #   -SelfTest     Validacion de integridad del catalogo y helpers (0 fallos)
 #   -List         Estado real de cada tweak contra el sistema
-#   -Export/-Import <file>  Perfil JSON
+#   -Export/-Import <file>  Perfil JSON. -Import omite por defecto los tweaks Tier 2 EXTREME
+#                 del perfil (con aviso); -ImportExtreme los permite. La GUI exige confirmar
+#                 Tier 2 antes de aplicar, e -Import (headless) no tenia ningun equivalente.
 #   -GameList     Preferencia de GPU por juego, tal como esta ahora
 #   -OptimizeGame <ruta.exe> [-NoFSO]  dGPU + flip model en ESE ejecutable
 #   -RevertGame   <ruta.exe>           Deshace lo anterior al estado capturado
@@ -53,6 +55,7 @@ param(
     [switch]$List,
     [string]$Export,
     [string]$Import,
+    [switch]$ImportExtreme,
     [switch]$Measure,
     [switch]$Score,
     [string]$Report,

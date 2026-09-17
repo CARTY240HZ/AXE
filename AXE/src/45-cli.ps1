@@ -664,7 +664,7 @@ if($Export){
     exit 0
 }
 if($Import){
-    Import-AXEProfile $Import
+    Import-AXEProfile $Import -Extreme:$ImportExtreme
     exit 0
 }
 if($Measure){

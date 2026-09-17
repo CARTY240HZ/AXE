@@ -1,6 +1,6 @@
 ﻿# ================================================================
 # AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-08-19 21:04:36Z
+# Build UTC: 2026-08-19 21:28:40Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -20,7 +20,9 @@
 # Modos de ejecucion (headless, sin GUI ni admin):
 #   -SelfTest     Validacion de integridad del catalogo y helpers (0 fallos)
 #   -List         Estado real de cada tweak contra el sistema
-#   -Export/-Import <file>  Perfil JSON
+#   -Export/-Import <file>  Perfil JSON. -Import omite por defecto los tweaks Tier 2 EXTREME
+#                 del perfil (con aviso); -ImportExtreme los permite. La GUI exige confirmar
+#                 Tier 2 antes de aplicar, e -Import (headless) no tenia ningun equivalente.
 #   -GameList     Preferencia de GPU por juego, tal como esta ahora
 #   -OptimizeGame <ruta.exe> [-NoFSO]  dGPU + flip model en ESE ejecutable
 #   -RevertGame   <ruta.exe>           Deshace lo anterior al estado capturado
@@ -60,6 +62,7 @@ param(
     [switch]$List,
     [string]$Export,
     [string]$Import,
+    [switch]$ImportExtreme,
     [switch]$Measure,
     [switch]$Score,
     [string]$Report,
@@ -448,7 +451,13 @@ function Restore-TweakState($id){
                     if(-not(Test-Path $r.P)){ New-Item -Path $r.P -Force -EA Stop | Out-Null }
                     New-ItemProperty -Path $r.P -Name $r.N -Value $r.V -PropertyType $r.K -Force -EA Stop | Out-Null
                 } else { Remove-ItemProperty -Path $r.P -Name $r.N -ErrorAction SilentlyContinue }
-            } elseif($r.T -eq 'svc'){ if($r.Start){ & sc.exe config $r.N start= $r.Start | Out-Null } }
+            } elseif($r.T -eq 'svc'){
+                if($r.Start){ & sc.exe config $r.N start= $r.Start | Out-Null }
+                # Sin start-type capturado: mismo criterio que cpu_park (20-tweaks.ps1) -- no se
+                # inventa un valor, se avisa y no se toca. Antes era un no-op mudo: el usuario no
+                # tenia forma de saber que ese servicio en concreto no se habia restaurado.
+                else { Write-AXELog "Restore ${id}: servicio $($r.N) sin start-type previo capturado, no toco (evita fijar un valor supuesto)." 'WARN' }
+            }
         } catch { Write-AXELog "Restore ${id}: fallo en $($r.P)\$($r.N): $($_.Exception.Message)" 'ERR' }
     }
     Remove-TweakState $id
@@ -508,7 +517,15 @@ function Read-StartupBackup {
         $obj = $raw | ConvertFrom-Json -ErrorAction Stop
         # Normalizar a array SIEMPRE (@(...) envuelve objeto suelto o deja array tal cual)
         return @($obj)
-    } catch { return @() }
+    } catch {
+        # Antes: return @() en silencio. Disable-Autorun lee esto, anade UNA entrada y SOBREESCRIBE
+        # el fichero entero con solo esa lista -- si el JSON estaba corrupto (crash a mitad de
+        # escritura, etc.) con entradas previas recuperables, se perdian todas sin aviso ni rastro.
+        # Mismo patron que Read-StateBak (10-reg-helpers.ps1): renombrar a .corrupt en vez de tragarselo.
+        Write-AXELog "startup_disabled.json ilegible: $($_.Exception.Message). Renombrado a .corrupt" 'ERR'
+        try { Move-Item $script:RunBak "$($script:RunBak).corrupt" -Force -EA Stop } catch {}
+        return @()
+    }
 }
 function Get-Autoruns {
     $list = New-Object System.Collections.ArrayList
@@ -516,14 +533,19 @@ function Get-Autoruns {
         $p = $script:RunKeys[$k]; if(-not(Test-Path $p)){ continue }
         $item = Get-Item $p
         foreach($n in $item.GetValueNames()){
-            [void]$list.Add([pscustomobject]@{Hive=$k; Path=$p; Name=$n; Value=$item.GetValue($n)})
+            # Captura el ValueKind (REG_SZ vs REG_EXPAND_SZ, comun en autoruns con %ProgramFiles%
+            # etc.). Antes se perdia y Restore-Autorun restauraba siempre como String -- una entrada
+            # ExpandString volvia sin expandir sus variables tras desactivar+restaurar.
+            $kind = try { $item.GetValueKind($n).ToString() } catch { 'String' }
+            [void]$list.Add([pscustomobject]@{Hive=$k; Path=$p; Name=$n; Value=$item.GetValue($n); Kind=$kind})
         }
     }
     $list
 }
 function Disable-Autorun($entry){
     $bak = [System.Collections.ArrayList]@(Read-StartupBackup)
-    [void]$bak.Add([pscustomobject]@{Hive=$entry.Hive; Path=$entry.Path; Name=$entry.Name; Value=$entry.Value})
+    $kind = if($entry.PSObject.Properties['Kind'] -and $entry.Kind){ $entry.Kind } else { 'String' }
+    [void]$bak.Add([pscustomobject]@{Hive=$entry.Hive; Path=$entry.Path; Name=$entry.Name; Value=$entry.Value; Kind=$kind})
     $bak.ToArray() | ConvertTo-Json -Depth 5 | Set-Content $script:RunBak -Encoding UTF8
     Remove-ItemProperty $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
     Write-AXELog "Startup desactivado: $($entry.Name) (backup guardado)"
@@ -536,7 +558,10 @@ function Restore-Autorun {
     foreach($e in $bak){
         try {
             if(-not(Test-Path $e.Path)){ New-Item -Path $e.Path -Force | Out-Null }
-            New-ItemProperty -Path $e.Path -Name $e.Name -Value $e.Value -PropertyType String -Force | Out-Null
+            # Backups anteriores a este fix no traen Kind -> String (comportamiento previo, sin
+            # cambios para ellos). Los nuevos restauran el tipo real capturado en Get-Autoruns.
+            $kind = if($e.PSObject.Properties['Kind'] -and $e.Kind){ $e.Kind } else { 'String' }
+            New-ItemProperty -Path $e.Path -Name $e.Name -Value $e.Value -PropertyType $kind -Force | Out-Null
             $restored++
             Write-AXELog "Startup restaurado: $($e.Name)"
         } catch { Write-AXELog "No pude restaurar $($e.Name): $($_.Exception.Message)" 'ERR' }
@@ -557,14 +582,16 @@ function Repair-StartupBackup {
         foreach($c in $candidates){
             # Objeto valido: tiene Hive, Path, Name
             if($c.PSObject.Properties['Hive'] -and $c.PSObject.Properties['Path'] -and $c.PSObject.Properties['Name']){
-                [void]$clean.Add([pscustomobject]@{Hive=$c.Hive; Path=$c.Path; Name=$c.Name; Value=$c.Value})
+                $k = if($c.PSObject.Properties['Kind'] -and $c.Kind){ $c.Kind } else { 'String' }
+                [void]$clean.Add([pscustomobject]@{Hive=$c.Hive; Path=$c.Path; Name=$c.Name; Value=$c.Value; Kind=$k})
                 continue
             }
             # Formato heredado corrupto: el dato real puede estar bajo 'value' (array)
             if($c.PSObject.Properties['value'] -and $c.value){
                 foreach($inner in @($c.value)){
                     if($inner.PSObject.Properties['Hive'] -and $inner.PSObject.Properties['Path']){
-                        [void]$clean.Add([pscustomobject]@{Hive=$inner.Hive; Path=$inner.Path; Name=$inner.Name; Value=$inner.Value})
+                        $k = if($inner.PSObject.Properties['Kind'] -and $inner.Kind){ $inner.Kind } else { 'String' }
+                        [void]$clean.Add([pscustomobject]@{Hive=$inner.Hive; Path=$inner.Path; Name=$inner.Name; Value=$inner.Value; Kind=$k})
                     }
                 }
             }
@@ -736,8 +763,34 @@ Add-Tweak @{Id='net_intmod';Cat='RED';Tier=1;Reboot=$false;Name='Interrupt Moder
         $rv=@($p)[0].RegistryValue
         if($rv -is [array]){ $rv=@($rv)[0] }
         try { ([int]$rv -eq 0) } catch { $false } };
- Apply={ if($script:HW.NicName){ Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 0 -EA SilentlyContinue } };
- Revert={ if($script:HW.NicName){ Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 1 -EA SilentlyContinue } }}
+ Apply={
+   if($script:HW.NicName){
+     # Captura el valor previo real. Igual que net_dns/cpu_park: Set-NetAdapterAdvancedProperty no
+     # pasa por Set-RD/Push-RegBackup (no hay snapshot automatico para esta escritura), asi que el
+     # Revert hardcodeado a 1 antes asumia el toggle simple 0/1 -- algunos drivers (Realtek/Marvell)
+     # usan valores multi-nivel, y 1 puede no ser lo que traia el adaptador de fabrica.
+     if($null -eq (Get-RV 'HKCU:\Software\AXE' 'IntModPrev')){
+       $p=Get-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -EA SilentlyContinue
+       if($null -ne $p){
+         $rv=@($p)[0].RegistryValue; if($rv -is [array]){ $rv=@($rv)[0] }
+         try { Set-RD 'HKCU:\Software\AXE' 'IntModPrev' ([int]$rv) } catch {}
+       }
+     }
+     Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 0 -EA SilentlyContinue
+   }
+ };
+ Revert={
+   if($script:HW.NicName){
+     $p=(Get-RV 'HKCU:\Software\AXE' 'IntModPrev')
+     if($null -eq $p){
+       Write-AXELog 'net_intmod: no hay valor previo guardado, uso 1 (default tipico) -- puede no coincidir con el driver.' 'WARN'
+       Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue 1 -EA SilentlyContinue
+     } else {
+       Set-NetAdapterAdvancedProperty -Name $script:HW.NicName -RegistryKeyword '*InterruptModeration' -RegistryValue ([int]$p) -EA SilentlyContinue
+       Del-RV 'HKCU:\Software\AXE' 'IntModPrev'
+     }
+   }
+ }}
 Add-Tweak @{Id='net_dns';Cat='RED';Tier=1;Reboot=$false;Name='[OPT] DNS rapidos 1.1.1.1 / 8.8.8.8';Desc='OJO: rompe DNS local/VPN. No va en preset. Afecta a la RESOLUCION de nombres, no al ping ni al throughput: no da FPS';Requires=@{};Source='https://developers.cloudflare.com/1.1.1.1/';
  Test={ if(-not $script:HW.NicName){return $false}; try{(Get-DnsClientServerAddress -InterfaceAlias $script:HW.NicName -AddressFamily IPv4 -EA Stop).ServerAddresses -contains '1.1.1.1'}catch{$false} };
  Apply={
@@ -1501,15 +1554,24 @@ function Export-AXEProfile($file){
     Write-AXELog "Perfil exportado: $file ($($prof.Count) tweaks)"
 }
 function Test-Admin { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
-function Import-AXEProfile($file){
+function Import-AXEProfile($file,[switch]$Extreme){
     if(-not(Test-Path $file)){ Write-AXELog "No existe: $file" 'ERR'; return }
     if(-not (Test-Admin)){ Write-AXELog 'Import requiere admin. Ejecuta via AXE.bat (se eleva solo) o como administrador.' 'ERR'; return }
     $data = Get-Content $file -Raw -Encoding UTF8 | ConvertFrom-Json
-    $applied=0; $errors=0
+    $applied=0; $errors=0; $skippedExtreme=0
     foreach($e in $data){
         $tw = $script:CAT | Where-Object Id -eq $e.Id
         if(-not $tw){ continue }
         if(Get-BlockReason $tw){ continue }
+        # La GUI exige confirmar Tier 2 EXTREME antes de aplicar (48-webbridge: "el front confirma
+        # Tier 2 ... antes de disparar"); Import es headless y no tenia ningun gate equivalente, asi
+        # que un perfil de otra persona (o un export propio antiguo) podia apagar CFG/ASLR/DEP/
+        # Hypervisor en silencio. Por defecto se omite; -ImportExtreme (CLI) / -Extreme lo permite.
+        if($e.On -and [int]$tw.Tier -eq 2 -and -not $Extreme){
+            $skippedExtreme++
+            Write-AXELog "Import: '$($tw.Id)' es Tier 2 EXTREME, omitido (usa -ImportExtreme para permitirlo)." 'WARN'
+            continue
+        }
         try {
             if($e.On){
                 # Mismo protocolo de snapshot que la GUI (57-gui-handlers:429). Import lo saltaba
@@ -1529,7 +1591,9 @@ function Import-AXEProfile($file){
             $applied++
         } catch { $errors++; Write-AXELog "Error importando $($tw.Id): $($_.Exception.Message)" 'ERR' }
     }
-    Write-AXELog "Perfil importado: $applied aplicados, $errors errores. Reinicia si hubo cambios."
+    $msg = "Perfil importado: $applied aplicados, $errors errores"
+    if($skippedExtreme -gt 0){ $msg += ", $skippedExtreme Tier 2 omitidos (usa -ImportExtreme)" }
+    Write-AXELog "$msg. Reinicia si hubo cambios."
 }
 
 
@@ -4445,11 +4509,14 @@ function Start-AXESession {
             try { $startTicks = [long]$pr.StartTime.Ticks } catch {}
             $pr.PriorityClass = 'BelowNormal'
             [void]$degraded.Add([pscustomobject]@{ Pid=[int]$p.Pid; Name=[string]$pr.ProcessName; Prev=[string]$prev; StartTicks=$startTicks })
+            # Diario en disco tras CADA proceso, no al final del bucle: si AXE muere a mitad del
+            # bucle (crash/kill/BSOD), el ultimo proceso degradado antes de morir tenia que quedar
+            # escrito YA, o el proximo arranque no sabe que restaurarle. Write-AXESessionJournal
+            # sobreescribe con la lista completa (no acumula), asi que llamarla aqui es seguro y
+            # barato: cada iteracion dega el diario al dia.
+            Write-AXESessionJournal $degraded
         } catch {}
     }
-    # Diario en disco ANTES de devolver: si AXE muere a partir de aqui, el kernel descongela pero la
-    # prioridad la devuelve el proximo arranque leyendo esto.
-    Write-AXESessionJournal $degraded
 
     [pscustomobject]@{
         Ok=$true; Handle=$hJob; Game=$GameName; GamePid=[int]$gproc.Id; SessionId=$sid
@@ -7012,7 +7079,7 @@ if($Export){
     exit 0
 }
 if($Import){
-    Import-AXEProfile $Import
+    Import-AXEProfile $Import -Extreme:$ImportExtreme
     exit 0
 }
 if($Measure){
