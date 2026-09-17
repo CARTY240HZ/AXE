@@ -1,4 +1,5 @@
 # Static security contracts for the unelevated WebView2 -> elevated broker boundary.
+# CI synchronization marker: validate the latest broker implementation, not an older merge ref.
 
 Describe 'Privileged broker security contracts' -Tag 'unit','security' {
     BeforeAll {
