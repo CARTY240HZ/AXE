@@ -5,10 +5,16 @@
 # The broker is deliberately NOT a generic PowerShell shell: closed command allow-list,
 # strict JSON limits, per-request nonce, current-user ACL and independent validation.
 #
+# Protocol:
+#   UI process creates an ACL-restricted server pipe.
+#   UI launches one elevated AXE process with -BrokerServer + pipe name + nonce.
+#   Elevated child connects as the pipe CLIENT, receives exactly one request, executes it,
+#   writes exactly one response, and exits. UI owns the server end and never executes the
+#   privileged operation itself.
+#
 # The broker process starts with Windows PowerShell -ExecutionPolicy AllSigned. Before UAC is
 # requested the client checks that the consolidated AXE.ps1 is Authenticode-valid; AllSigned
-# then performs the execution-time signature check again, closing the verify/launch gap for a
-# file that lives in a user-writable portable/install location.
+# performs the execution-time policy check again.
 
 $script:AXEBrokerPipePrefix = 'AXE-Broker-'
 $script:AXEBrokerMaxJsonBytes = 32768
@@ -43,16 +49,26 @@ function Test-AXEBrokerPayload {
     $p = $Payload.PSObject
     if(-not $p.Properties['v'] -or [int]$Payload.v -ne 1){ throw 'broker: version invalida' }
     if(-not $p.Properties['nonce'] -or [string]$Payload.nonce -cne $ExpectedNonce){ throw 'broker: nonce invalido' }
-    if(-not $p.Properties['id'] -or [string]::IsNullOrWhiteSpace([string]$Payload.id) -or [string]$Payload.id.Length -gt $script:AXEBrokerMaxIdLength){ throw 'broker: id invalido' }
+    if(-not $p.Properties['id'] -or [string]::IsNullOrWhiteSpace([string]$Payload.id) -or [string]$Payload.id.Length -gt $script:AXEBrokerMaxIdLength -or [string]$Payload.id -notmatch '^[A-Za-z0-9_.-]+$'){ throw 'broker: id invalido' }
     if(-not $p.Properties['cmd']){ throw 'broker: cmd ausente' }
     $cmd = [string]$Payload.cmd
     if($cmd.Length -gt $script:AXEBrokerMaxCommandLength -or -not $script:AXEBrokerAllowed.ContainsKey($cmd)){ throw 'broker: cmd no permitido' }
-    if($p.Properties['args'] -and $null -ne $Payload.args){
-        $a = $Payload.args
-        if(@($a.PSObject.Properties).Count -gt 16){ throw 'broker: demasiados argumentos' }
-        foreach($prop in @($a.PSObject.Properties)){
-            if($prop.Name.Length -gt 64){ throw 'broker: nombre de argumento demasiado largo' }
-            if(([string]$prop.Value).Length -gt 4096){ throw 'broker: valor de argumento demasiado largo' }
+    if(-not $p.Properties['args'] -or $null -eq $Payload.args){ throw 'broker: args ausentes' }
+    $a = $Payload.args
+    $props = @($a.PSObject.Properties)
+    if($props.Count -gt 4){ throw 'broker: demasiados argumentos' }
+    foreach($prop in $props){
+        if($prop.Name.Length -gt 64 -or $prop.Name -notmatch '^[A-Za-z][A-Za-z0-9_.-]*$'){ throw 'broker: nombre de argumento invalido' }
+        if(([string]$prop.Value).Length -gt 4096){ throw 'broker: valor de argumento demasiado largo' }
+    }
+    switch($cmd){
+        'tweaks.apply' { if(@($props.Name) -notcontains 'id' -or @($props.Name).Count -ne 1){ throw 'broker: forma invalida para tweaks.apply' } }
+        'tweaks.revert' { if(@($props.Name) -notcontains 'id' -or @($props.Name).Count -ne 1){ throw 'broker: forma invalida para tweaks.revert' } }
+        'tweaks.masterRevert' { if(@($props.Name).Count -ne 0){ throw 'broker: forma invalida para tweaks.masterRevert' } }
+        'fps.capture' {
+            if(@($props.Name) -notcontains 'process' -or @($props.Name | Where-Object { $_ -notin 'process','seconds' }).Count -gt 0){ throw 'broker: forma invalida para fps.capture' }
+            if([string]$a.process -notmatch '^[A-Za-z0-9._-]{1,128}$'){ throw 'broker: proceso invalido' }
+            if($p.Properties['args'] -and $a.PSObject.Properties['seconds'] -and [int]$a.seconds -lt 1){ throw 'broker: seconds invalido' }
         }
     }
     $Payload
@@ -92,17 +108,24 @@ function Invoke-AXEPrivilegedBroker {
             $pipeName,[System.IO.Pipes.PipeDirection]::InOut,1,[System.IO.Pipes.PipeTransmissionMode]::Byte,
             [System.IO.Pipes.PipeOptions]::Asynchronous,32768,32768,$pipeSecurity)
 
-        $escapedScript = $scriptPath.Replace("'", "''")
-        $escapedPipe = $pipeName.Replace("'", "''")
-        $escapedNonce = ([string]$request.nonce).Replace("'", "''")
-        # UAC is initiated by trusted native PowerShell code, never by WebView2/JS.
-        $argsLine = @('-NoProfile','-NonInteractive','-ExecutionPolicy','AllSigned','-STA','-File',"$scriptPath",'-BrokerServer','-BrokerPipeName',$pipeName,'-BrokerNonce',$request.nonce)
-        $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -Verb RunAs -ArgumentList $argsLine -PassThru -WindowStyle Hidden -ErrorAction Stop
-        $server.WaitForConnection()
+        $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if(-not (Test-Path -LiteralPath $psExe -PathType Leaf)){ throw 'broker: powershell.exe no disponible' }
+        $quotedScript = '"' + $scriptPath.Replace('"','\"') + '"'
+        $argLine = '-NoProfile -NonInteractive -ExecutionPolicy AllSigned -STA -File ' + $quotedScript +
+            ' -BrokerServer -BrokerPipeName "' + $pipeName + '" -BrokerNonce "' + $request.nonce + '"'
+        [void](Start-Process -FilePath $psExe -Verb RunAs -ArgumentList $argLine -PassThru -WindowStyle Hidden -ErrorAction Stop)
 
+        $waitTask = $server.WaitForConnectionAsync()
+        if(-not $waitTask.Wait(15000)){ throw 'broker: timeout esperando el proceso elevado (UAC cancelado o broker no arranco)' }
+        $writer = New-Object IO.StreamWriter($server,[Text.Encoding]::UTF8,4096,$true)
+        $writer.AutoFlush = $true
         $reader = New-Object IO.StreamReader($server,[Text.Encoding]::UTF8,$false,4096,$true)
-        $line = $reader.ReadLine()
+        $writer.WriteLine(($request | ConvertTo-Json -Compress -Depth 8))
+        $readTask = $reader.ReadLineAsync()
+        if(-not $readTask.Wait(15000)){ throw 'broker: timeout esperando respuesta' }
+        $line = $readTask.Result
         if([string]::IsNullOrWhiteSpace($line)){ throw 'broker: respuesta vacia' }
+        if([Text.Encoding]::UTF8.GetByteCount($line) -gt $script:AXEBrokerMaxJsonBytes){ throw 'broker: respuesta demasiado grande' }
         $reply = $line | ConvertFrom-Json -Depth 8
         if($reply.ok -ne $true){ throw ([string]$reply.error) }
         $reply.data
@@ -118,14 +141,16 @@ function Start-AXEBrokerServer {
     $pipe = $null
     try {
         if(-not (Test-Admin)){ throw 'broker: el proceso no esta elevado' }
-        $pipe = New-Object System.IO.Pipes.NamedPipeServerStream(
-            $PipeName,[System.IO.Pipes.PipeDirection]::InOut,1,[System.IO.Pipes.PipeTransmissionMode]::Byte,
-            [System.IO.Pipes.PipeOptions]::Asynchronous,32768,32768)
-        $pipe.WaitForConnection()
+        if($PipeName -notmatch '^AXE-Broker-[0-9a-f]{32}$'){ throw 'broker: nombre de pipe invalido' }
+        if($ExpectedNonce -notmatch '^[0-9a-f]{32}$'){ throw 'broker: nonce invalido' }
+        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
+        $pipe.Connect(10000)
         $reader = New-Object IO.StreamReader($pipe,[Text.Encoding]::UTF8,$false,4096,$true)
         $writer = New-Object IO.StreamWriter($pipe,[Text.Encoding]::UTF8,4096,$true)
         $writer.AutoFlush = $true
-        $line = $reader.ReadLine()
+        $readTask = $reader.ReadLineAsync()
+        if(-not $readTask.Wait(10000)){ throw 'broker: timeout esperando request' }
+        $line = $readTask.Result
         if([string]::IsNullOrWhiteSpace($line)){ throw 'broker: request vacia' }
         if([Text.Encoding]::UTF8.GetByteCount($line) -gt $script:AXEBrokerMaxJsonBytes){ throw 'broker: request demasiado grande' }
         $payload = $line | ConvertFrom-Json -Depth 8
@@ -156,18 +181,18 @@ function Start-AXEBrokerServer {
             }
             'fps.capture' {
                 $proc=[string]$payload.args.process
-                if([string]::IsNullOrWhiteSpace($proc) -or $proc.Length -gt 128){throw 'broker: proceso invalido'}
-                if($proc -notmatch '^[A-Za-z0-9._-]+$'){throw 'broker: nombre de proceso invalido'}
                 $secs=20;if($payload.args.seconds){$secs=[int]$payload.args.seconds};if($secs -lt 3){$secs=3};if($secs -gt 120){$secs=120}
                 $s=Measure-AXEFps -ProcessName $proc -Seconds $secs
                 $result=[pscustomobject]@{ok=$true;data=[pscustomobject]@{ok=[bool]$s.Ok;lines=@(Format-AXEFpsStats $s 'Captura')};error=$null}
             }
             default { throw 'broker: cmd no permitido' }
         }
-    } catch {
-        $result=[pscustomobject]@{ok=$false;data=$null;error=$_.Exception.Message}
-    } finally {
-        if($pipe){ try{$writer.WriteLine(($result|ConvertTo-Json -Compress -Depth 8));$writer.Flush()}catch{};try{$pipe.Dispose()}catch{} }
+    } catch { $result=[pscustomobject]@{ok=$false;data=$null;error=$_.Exception.Message} }
+    finally {
+        if($pipe){
+            try{$writer.WriteLine(($result|ConvertTo-Json -Compress -Depth 8));$writer.Flush()}catch{}
+            try{$pipe.Dispose()}catch{}
+        }
     }
     $result
 }
