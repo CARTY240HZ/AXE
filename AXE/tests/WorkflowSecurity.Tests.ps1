@@ -3,8 +3,10 @@
 
 Describe 'Workflow security contracts' -Tag 'unit','security' {
     BeforeAll {
-        $script:CI      = Get-Content "$PSScriptRoot/../.github/workflows/ci.yml" -Raw
-        $script:Release = Get-Content "$PSScriptRoot/../.github/workflows/release.yml" -Raw
+        # tests/ lives one level below AXE/, while .github/ is at repository root.
+        $root = Split-Path -Parent $PSScriptRoot
+        $script:CI      = Get-Content (Join-Path $root '.github/workflows/ci.yml') -Raw
+        $script:Release = Get-Content (Join-Path $root '.github/workflows/release.yml') -Raw
     }
 
     It 'all third-party actions are pinned to a full commit SHA' {
