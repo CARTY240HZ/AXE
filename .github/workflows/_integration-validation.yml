@@ -19,11 +19,11 @@ jobs:
           persist-credentials: false
       - name: Build
         shell: pwsh
-        run: ./AXE/build.ps1 -SkipTests
+        run: ./AXE/build.ps1 -NoTest
       - name: Integration Pester
         shell: pwsh
         env:
           AXE_INTEGRATION: '1'
         run: |
-          & pwsh -NoProfile -File AXE/scripts/Invoke-AXETests.ps1 -CI -Integration
+          & pwsh -NoProfile -File AXE/scripts/Invoke-AXETests.ps1 -CI -IncludeIntegration
           if ($LASTEXITCODE -ne 0) { throw "Integration suite failed (exit $LASTEXITCODE)" }
