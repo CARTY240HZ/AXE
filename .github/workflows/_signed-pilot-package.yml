@@ -1,7 +1,9 @@
 name: AXE signed pilot package
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - ai/least-privilege-broker-2026-09-17
 
 permissions:
   contents: read
