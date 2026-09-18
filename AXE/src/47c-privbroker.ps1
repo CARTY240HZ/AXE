@@ -181,6 +181,11 @@ function Start-AXEBrokerServer {
     $pipe = $null
     try {
         if(-not (Test-Admin)){ throw 'broker: el proceso no esta elevado' }
+        # Defense in depth: the elevated child re-validates the exact script it is executing
+        # before opening the broker and before any privileged tweak is allowed.
+        if(-not (Test-AXEBrokerSignature -ScriptPath $PSCommandPath)){
+            throw 'broker: la firma de AXE.ps1 no es valida para este piloto'
+        }
         if($PipeName -notmatch '^AXE-Broker-[0-9a-f]{32}$'){ throw 'broker: nombre de pipe invalido' }
         if($ExpectedNonce -notmatch '^[0-9a-f]{32}$'){ throw 'broker: nonce invalido' }
         $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
