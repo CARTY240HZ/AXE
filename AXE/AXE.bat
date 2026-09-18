@@ -40,7 +40,7 @@ if exist "%~dp0webview2" (
 
 if "%AXEARGS%"=="" (
     :: GUI sin privilegios: el broker se ocupa de tweaks/PresentMon que necesiten admin.
-    "%PS_EXE%" -NoProfile -ExecutionPolicy RemoteSigned -STA -File "%~dp0dist\AXE.ps1"
+    "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0dist\AXE.ps1"
 ) else (
-    "%PS_EXE%" -NoProfile -ExecutionPolicy RemoteSigned -STA -File "%~dp0dist\AXE.ps1" %AXEARGS%
+    "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0dist\AXE.ps1" %AXEARGS%
 )
