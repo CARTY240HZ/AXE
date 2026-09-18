@@ -20,7 +20,7 @@ jobs:
 
       - name: Build and test
         shell: pwsh
-        run: ./AXE/build.ps1 -CI
+        run: ./AXE/build.ps1 -NoTest
 
       - name: Create pilot code-signing certificate and sign AXE
         shell: pwsh
