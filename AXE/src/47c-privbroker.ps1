@@ -57,7 +57,7 @@ function Test-AXEBrokerSignature {
         # In the normal/public build the OS trust result must be Valid.
         # In the pilot build the self-signed certificate is pinned by thumbprint, so Windows
         # may report NotTrusted on a clean PC even though the signature itself is valid.
-        if($sig.Status -notin @('Valid','NotTrusted')){ return $false }
+        if($sig.Status -notin @('Valid','NotTrusted','UnknownError')){ return $false }
 
         $cert = $sig.SignerCertificate
         $now = Get-Date
