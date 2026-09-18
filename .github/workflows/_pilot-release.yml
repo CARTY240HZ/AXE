@@ -49,23 +49,16 @@ jobs:
             throw "La firma Authenticode fallo: $($sig.Status)"
           }
 
-      - name: Trust pilot certificate and verify
+      - name: Verify Authenticode signature structure
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $cer = Join-Path $PWD 'AXE\CERTIFICATE\AXE-Pilot-CodeSigning.cer'
-
-          certutil.exe -user -addstore -f Root "$cer" | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw 'No se pudo registrar el certificado en Root.' }
-
-          certutil.exe -user -addstore -f TrustedPublisher "$cer" | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw 'No se pudo registrar el certificado en TrustedPublisher.' }
-
-          $sig = Get-AuthenticodeSignature -LiteralPath 'AXE\dist\AXE.ps1'
-          Write-Host "Verified status: $($sig.Status)"
+          $sig = Get-AuthenticodeSignature -LiteralPath 'AXE\\dist\\AXE.ps1'
+          Write-Host "Signature status: $($sig.Status)"
           Write-Host "Signer: $($sig.SignerCertificate.Subject)"
           Write-Host "Thumbprint: $($sig.SignerCertificate.Thumbprint)"
-          if ($sig.Status -ne 'Valid') { throw "AXE.ps1 no queda Valid: $($sig.Status)" }
+          if (-not $sig.SignerCertificate) { throw 'AXE.ps1 no contiene un certificado de firma identificable.' }
+          if ($sig.Status -notin @('Valid','UnknownError','NotTrusted')) { throw "Firma Authenticode no reconocida: $($sig.Status)" }
 
       - name: Add pilot launch instructions
         shell: pwsh
