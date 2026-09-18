@@ -1,0 +1,113 @@
+name: AXE pilot signed package v3
+
+on:
+  push:
+    branches:
+      - release/pilot-7.1.0-signed-2026-09-18
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Build dist from source
+        shell: pwsh
+        run: ./AXE/build.ps1 -NoTest
+
+      - name: Create pilot signing certificate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $PWD 'AXE\CERTIFICATE'
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=AXE Pilot Code Signing, O=CARTY240HZ' -CertStoreLocation 'Cert:\CurrentUser\My' -KeyExportPolicy NonExportable -KeyUsageProperty Sign -KeySpec Signature -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -NotBefore (Get-Date).AddHours(-1) -NotAfter (Get-Date).AddDays(365)
+          if(-not $cert){throw 'No se pudo crear el certificado.'}
+          Export-Certificate -Cert $cert -FilePath (Join-Path $dir 'AXE-Pilot-CodeSigning.cer') | Out-Null
+          $cert.Thumbprint | Set-Content (Join-Path $dir 'THUMBPRINT.txt') -Encoding ASCII
+          Write-Host "Pilot thumbprint: $($cert.Thumbprint)"
+
+      - name: Pin signer and sign dist
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Where-Object Subject -eq 'CN=AXE Pilot Code Signing, O=CARTY240HZ' | Sort-Object NotAfter -Descending | Select-Object -First 1
+          if(-not $cert){throw 'Certificado no encontrado.'}
+          $p='AXE\dist\AXE.ps1'
+          $s=Get-Content $p -Raw -Encoding UTF8
+          $s=$s.Replace('__AXE_PILOT_SIGNER_THUMBPRINT__',$cert.Thumbprint)
+          Set-Content -LiteralPath $p -Value $s -Encoding UTF8
+          $sig=Set-AuthenticodeSignature -FilePath $p -Certificate $cert -HashAlgorithm SHA256
+          $check=Get-AuthenticodeSignature -LiteralPath $p
+          Write-Host "Sign status: $($check.Status)"
+          Write-Host "Signer: $($check.SignerCertificate.Subject)"
+          Write-Host "Thumbprint: $($check.SignerCertificate.Thumbprint)"
+          if(-not $check.SignerCertificate){throw 'Sin certificado firmante.'}
+          if($check.Status -notin @('Valid','NotTrusted')){throw "Firma invalida: $($check.Status)"}
+          if($check.SignerCertificate.Thumbprint -ne $cert.Thumbprint){throw 'Thumbprint del firmante no coincide.'}
+
+      - name: Write pilot verification helpers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          AXE 7.1.0 - PILOTO CERRADO
+          =========================
+          Esta build usa una firma Authenticode de piloto autofirmada.
+          NO necesitas instalar el certificado para que el broker funcione:
+          el broker valida la firma criptográfica y el thumbprint exacto antes de elevar.
+          
+          Para comprobarlo:
+            CERTIFICATE\VERIFY-AXE-PILOT.bat
+          
+          Desinstalar confianza es opcional; la confianza del almacén de Windows no es necesaria
+          para el broker de esta build.
+          '@ | Set-Content 'AXE\PILOT-README.txt' -Encoding UTF8
+
+          @'
+          @echo off
+          setlocal
+          set "SCRIPT=%~dp0..\dist\AXE.ps1"
+          set "PINFILE=%~dp0THUMBPRINT.txt"
+          powershell.exe -NoProfile -Command "$s=Get-AuthenticodeSignature -LiteralPath '%SCRIPT%'; $pin=(Get-Content -LiteralPath '%PINFILE%' -Raw).Trim(); Write-Host ('Status: ' + $s.Status); Write-Host ('Signer: ' + $s.SignerCertificate.Subject); Write-Host ('Thumbprint: ' + $s.SignerCertificate.Thumbprint); Write-Host ('Pinned: ' + ($s.SignerCertificate.Thumbprint -eq $pin)); if(-not $s.SignerCertificate -or $s.Status -notin @('Valid','NotTrusted') -or $s.SignerCertificate.Thumbprint -ne $pin){exit 2}"
+          if errorlevel 1 (
+            echo ERROR: la firma de este AXE.ps1 no coincide con el certificado del piloto.
+            pause
+            exit /b 1
+          )
+          echo.
+          echo OK: firma y thumbprint correctos.
+          pause
+          endlocal
+          '@ | Set-Content 'AXE\CERTIFICATE\VERIFY-AXE-PILOT.bat' -Encoding ASCII
+
+      - name: Revalidate and package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $s=Get-AuthenticodeSignature -LiteralPath 'AXE\dist\AXE.ps1'
+          $pin=(Get-Content -LiteralPath 'AXE\CERTIFICATE\THUMBPRINT.txt' -Raw).Trim()
+          if(-not $s.SignerCertificate -or $s.SignerCertificate.Thumbprint -ne $pin -or $s.Status -notin @('Valid','NotTrusted')){throw 'Revalidacion de firma del paquete fallida.'}
+          Remove-Item 'AXE\.github\workflows' -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item 'AXE\.git' -Recurse -Force -ErrorAction SilentlyContinue
+          $zip=Join-Path $env:RUNNER_TEMP 'AXE-7.1.0-PILOT-SIGNED-V3.zip'
+          Compress-Archive -Path 'AXE' -DestinationPath $zip -CompressionLevel Optimal
+          $hash=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  AXE-7.1.0-PILOT-SIGNED-V3.zip" | Set-Content (Join-Path $env:RUNNER_TEMP 'AXE-7.1.0-PILOT-SIGNED-V3-SHA256.txt') -Encoding ASCII
+          Write-Host "ZIP SHA256: $hash"
+
+      - name: Upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: AXE-7.1.0-PILOT-SIGNED-V3
+          path: |
+            ${{ runner.temp }}/AXE-7.1.0-PILOT-SIGNED-V3.zip
+            ${{ runner.temp }}/AXE-7.1.0-PILOT-SIGNED-V3-SHA256.txt
+          if-no-files-found: error
