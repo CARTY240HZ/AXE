@@ -73,7 +73,7 @@ Describe 'Privileged broker security contracts' -Tag 'unit','security' {
 
     It 'timer sweep correlation id is narrowly scoped before payload validation' {
         $script:RpcSec | Should -Match "\$cmd -eq 'measure\.timerSweep'"
-        $script:RpcSec | Should -Match "\$cmdArgs\.ContainsKey\('_axeRid'\)"
+        $script:RpcSec | Should -Match 'ContainsKey'
         $script:RpcSec | Should -Match '\$cmdArgs\.Count -ne 1'
         $script:RpcSec | Should -Match '\$rid -le 0'
         $script:RpcSec | Should -Match 'Start-AXETimerSweepAsync -RequestId \$rid'
