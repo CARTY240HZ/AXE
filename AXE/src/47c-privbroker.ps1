@@ -27,6 +27,9 @@ $script:AXEBrokerAllowed = @{
     'tweaks.revert'       = $true
     'tweaks.masterRevert' = $true
 }
+# Pilot release: the workflow replaces this placeholder in dist/AXE.ps1 with the exact
+# certificate thumbprint used to sign that package. The signature remains mandatory.
+$script:AXEPilotSignerThumbprint = '__AXE_PILOT_SIGNER_THUMBPRINT__'
 
 if(-not ('AXEBrokerNative' -as [type])){
     Add-Type @'
@@ -49,7 +52,22 @@ function Test-AXEBrokerSignature {
     try {
         if(-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)){ return $false }
         $sig = Get-AuthenticodeSignature -LiteralPath $ScriptPath
-        return ($sig.Status -eq 'Valid' -and $null -ne $sig.SignerCertificate)
+        if($null -eq $sig.SignerCertificate){ return $false }
+
+        # In the normal/public build the OS trust result must be Valid.
+        # In the pilot build the self-signed certificate is pinned by thumbprint, so Windows
+        # may report NotTrusted on a clean PC even though the signature itself is valid.
+        if($sig.Status -notin @('Valid','NotTrusted')){ return $false }
+
+        $cert = $sig.SignerCertificate
+        $now = Get-Date
+        if($cert.NotBefore -gt $now -or $cert.NotAfter -lt $now){ return $false }
+
+        $pin = [string]$script:AXEPilotSignerThumbprint
+        if([string]::IsNullOrWhiteSpace($pin) -or $pin -eq '__AXE_PILOT_SIGNER_THUMBPRINT__'){
+            return ($sig.Status -eq 'Valid')
+        }
+        return [string]::Equals($cert.Thumbprint.Replace(' ',''),$pin.Replace(' ',''),[StringComparison]::OrdinalIgnoreCase)
     } catch { return $false }
 }
 
