@@ -1,0 +1,128 @@
+name: AXE signed pilot package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sign-package:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Build and test
+        shell: pwsh
+        run: ./AXE/build.ps1 -CI
+
+      - name: Create pilot code-signing certificate and sign AXE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $certDir = Join-Path $PWD 'AXE\CERTIFICATE'
+          New-Item -ItemType Directory -Path $certDir -Force | Out-Null
+
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=AXE Pilot Code Signing, O=CARTY240HZ' -CertStoreLocation 'Cert:\CurrentUser\My' -NotBefore (Get-Date).AddMinutes(-5) -NotAfter (Get-Date).AddYears(3) -KeyExportPolicy NonExportable
+
+          Export-Certificate -Cert $cert -FilePath (Join-Path $certDir 'AXE-Pilot-CodeSigning.cer') | Out-Null
+          Import-Certificate -FilePath (Join-Path $certDir 'AXE-Pilot-CodeSigning.cer') -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+          Import-Certificate -FilePath (Join-Path $certDir 'AXE-Pilot-CodeSigning.cer') -CertStoreLocation 'Cert:\CurrentUser\TrustedPublisher' | Out-Null
+
+          $sig = Set-AuthenticodeSignature -FilePath 'AXE\dist\AXE.ps1' -Certificate $cert -HashAlgorithm SHA256
+          if ($sig.Status -ne 'Valid') { throw ("AuthentiCode signing failed: {0}" -f $sig.Status) }
+
+          $verify = Get-AuthenticodeSignature -LiteralPath 'AXE\dist\AXE.ps1'
+          if ($verify.Status -ne 'Valid') { throw "Post-sign verification failed: $($verify.Status)" }
+
+          $issuer = if ($verify.SignerCertificate) { $verify.SignerCertificate.Subject } else { '<unknown>' }
+          $thumb = if ($verify.SignerCertificate) { $verify.SignerCertificate.Thumbprint } else { '<unknown>' }
+          $notAfter = if ($verify.SignerCertificate) { $verify.SignerCertificate.NotAfter.ToString('u') } else { '<unknown>' }
+
+          @"
+          AXE 7.1.0 PILOT SIGNING
+          ========================
+          Artifact contains a self-signed Authenticode code-signing certificate for a small pilot group.
+          It is NOT a public CA certificate and is NOT appropriate for general public release.
+
+          Signer: $issuer
+          Thumbprint: $thumb
+          Expires: $notAfter
+          AXE.ps1 signature status: $($verify.Status)
+
+          Before launching privileged tweaks, each pilot PC must explicitly run:
+            CERTIFICATE\INSTALL-AXE-PILOT-TRUST.bat
+
+          This installs ONLY the public .cer into the current user's Root and TrustedPublisher stores.
+          The private key is not distributed.
+          "@ | Set-Content -LiteralPath (Join-Path $certDir 'SIGNATURE-INFO.txt') -Encoding UTF8
+
+          @'
+          @echo off
+          setlocal
+          set "CERT=%~dp0AXE-Pilot-CodeSigning.cer"
+
+          if not exist "%CERT%" (
+              echo ERROR: no se encuentra %CERT%
+              exit /b 1
+          )
+
+          echo Installing AXE pilot certificate for the CURRENT USER...
+          certutil.exe -user -addstore -f Root "%CERT%"
+          if errorlevel 1 (
+              echo ERROR: no se pudo instalar en Root.
+              exit /b 1
+          )
+
+          certutil.exe -user -addstore -f TrustedPublisher "%CERT%"
+          if errorlevel 1 (
+              echo ERROR: no se pudo instalar en TrustedPublisher.
+              exit /b 1
+          )
+
+          echo.
+          echo Confianza de AXE pilot instalada para este usuario.
+          echo Ahora puedes ejecutar AXE.bat.
+          echo.
+          pause
+          endlocal
+          '@ | Set-Content -LiteralPath (Join-Path $certDir 'INSTALL-AXE-PILOT-TRUST.bat') -Encoding ASCII
+
+          @'
+          @echo off
+          setlocal
+          set "CERT=%~dp0AXE-Pilot-CodeSigning.cer"
+          if not exist "%CERT%" exit /b 1
+
+          echo Removing AXE pilot certificate from the CURRENT USER stores...
+          certutil.exe -user -delstore Root "AXE Pilot Code Signing"
+          certutil.exe -user -delstore TrustedPublisher "AXE Pilot Code Signing"
+          echo.
+          echo Trust removed (if present).
+          pause
+          endlocal
+          '@ | Set-Content -LiteralPath (Join-Path $certDir 'REMOVE-AXE-PILOT-TRUST.bat') -Encoding ASCII
+
+      - name: Verify signature and package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sig = Get-AuthenticodeSignature -LiteralPath 'AXE\dist\AXE.ps1'
+          if ($sig.Status -ne 'Valid') { throw "AXE.ps1 no queda Valid: $($sig.Status)" }
+          $zip = Join-Path $env:RUNNER_TEMP 'AXE-7.1.0-PILOT-SIGNED.zip'
+          Compress-Archive -Path 'AXE' -DestinationPath $zip -CompressionLevel Optimal
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  AXE-7.1.0-PILOT-SIGNED.zip" | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'AXE-7.1.0-PILOT-SIGNED-SHA256.txt') -Encoding ASCII
+
+      - name: Upload signed pilot package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: AXE-7.1.0-PILOT-SIGNED
+          path: |
+            ${{ runner.temp }}/AXE-7.1.0-PILOT-SIGNED.zip
+            ${{ runner.temp }}/AXE-7.1.0-PILOT-SIGNED-SHA256.txt
+          if-no-files-found: error
