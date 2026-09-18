@@ -1,0 +1,29 @@
+name: AXE temporary integration validation
+
+on:
+  push:
+    branches:
+      - ai/least-privilege-broker-2026-09-17
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build
+        shell: pwsh
+        run: ./AXE/build.ps1 -SkipTests
+      - name: Integration Pester
+        shell: pwsh
+        env:
+          AXE_INTEGRATION: '1'
+        run: |
+          & pwsh -NoProfile -File AXE/scripts/Invoke-AXETests.ps1 -CI -Integration
+          if ($LASTEXITCODE -ne 0) { throw "Integration suite failed (exit $LASTEXITCODE)" }
