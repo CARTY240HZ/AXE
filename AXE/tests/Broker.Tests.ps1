@@ -286,6 +286,14 @@ Describe 'Start-AXEBroker - servidor real sobre un pipe (mismo proceso: cliente 
         # Este test NO necesita UAC: corre en el proceso normal (no admin) del runner de tests,
         # que es EXACTAMENTE el escenario que este guard cubre -- si el broker se lanzara alguna
         # vez sin elevar (bug de arranque), debe fallar limpio, no a medias dentro de sc.exe/reg.
+        #
+        # Si el propio shell que corre los tests YA esta elevado (maquina de desarrollo, CI o
+        # sandbox elevados), Test-Admin() devuelve $true de verdad dentro del runspace de fondo y
+        # el guard de "no elevado" nunca se dispara -- no hay forma de observar ese branch sin
+        # mockear Test-Admin, lo que iria en contra del proposito del test (probar la funcion
+        # REAL, no una copia). Se salta en vez de fallar en falso o mentir sobre lo que probo
+        # (mismo idioma que tests/Fps.Tests.ps1:141 y tests/Catalog.Tests.ps1:87).
+        if(Test-Admin){ Set-ItResult -Skipped -Because 'este proceso ya esta elevado, no se puede probar el guard de "no elevado" aqui'; return }
         $pipe = New-TestPipeName
         $tokenPath = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N') + '.token')
         Set-Content -LiteralPath $tokenPath -Value 'tok789' -NoNewline
