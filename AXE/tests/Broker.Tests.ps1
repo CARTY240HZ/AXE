@@ -139,3 +139,164 @@ Describe 'Read-AXEBrokerRequest - validacion completa (REGRESION superficie issu
         (Read-AXEBrokerRequest 'null' $script:Tok).Ok | Should -BeFalse
     }
 }
+
+Describe 'Invoke-AXEBrokerCommand - motor de decision (sin pipe, con tweak sintetico HKCU)' -Tag 'unit' {
+    BeforeAll {
+        $script:CAT = New-Object System.Collections.ArrayList
+        . "$PSScriptRoot/../src/10-reg-helpers.ps1"
+        . "$PSScriptRoot/../src/20-tweaks.ps1"
+        . "$PSScriptRoot/../src/28-revert-export.ps1"
+        . "$PSScriptRoot/../src/34-safety.ps1"
+
+        $script:OldAXEData = $script:AXEData
+        $script:OldStateBak = $script:StateBak
+        $script:AXEData = Join-Path ([IO.Path]::GetTempPath()) ('axe-test-broker-cmd-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:AXEData -Force | Out-Null
+        $script:StateBak = Join-Path $script:AXEData 'tweak_state.json'
+
+        $script:DummyKey = 'HKCU:\Software\AXE\_TestBrokerCmdDummy'
+        Remove-Item $script:DummyKey -Recurse -Force -EA SilentlyContinue
+        $script:DummyTweak = [pscustomobject]@{
+            Id='_test_broker_cmd_dummy'; Cat='TEST'; Tier=0; Reboot=$false
+            Name='(test) dummy'; Desc='(test) dummy'; Requires=@{}; Source='n/a'; SourceType='official'; PlaceboLikely=$false
+            Test   = { (Get-RV 'HKCU:\Software\AXE\_TestBrokerCmdDummy' 'V') -eq 1 }
+            Apply  = { Set-RD 'HKCU:\Software\AXE\_TestBrokerCmdDummy' 'V' 1 }
+            Revert = { Set-RD 'HKCU:\Software\AXE\_TestBrokerCmdDummy' 'V' 0 }
+        }
+        [void]$script:CAT.Add($script:DummyTweak)
+    }
+    AfterAll {
+        $script:CAT.Remove($script:DummyTweak)
+        Remove-Item $script:DummyKey -Recurse -Force -EA SilentlyContinue
+        Remove-Item $script:AXEData -Recurse -Force -EA SilentlyContinue
+        $script:AXEData = $script:OldAXEData; $script:StateBak = $script:OldStateBak
+    }
+
+    It 'tweaks.apply aplica y persiste el snapshot (mismo protocolo ya arreglado en el bridge)' {
+        $r = Invoke-AXEBrokerCommand 'tweaks.apply' @{ id = $script:DummyTweak.Id }
+        $r.ok | Should -BeTrue
+        (Get-RV $script:DummyKey 'V') | Should -Be 1
+        (Read-StateBak).ContainsKey($script:DummyTweak.Id) | Should -BeTrue
+    }
+    It 'tweaks.revert restaura el valor real (snapshot), no el fallback' {
+        $r = Invoke-AXEBrokerCommand 'tweaks.revert' @{ id = $script:DummyTweak.Id }
+        $r.ok | Should -BeTrue
+        (Get-RV $script:DummyKey 'V') | Should -BeNullOrEmpty
+    }
+    It 'tweaks.apply con id inexistente devuelve ok=false, no lanza' {
+        $r = Invoke-AXEBrokerCommand 'tweaks.apply' @{ id = '__no_existe__' }
+        $r.ok | Should -BeFalse
+        $r.err | Should -Not -BeNullOrEmpty
+    }
+    It 'un comando fuera de la whitelist devuelve ok=false' {
+        (Invoke-AXEBrokerCommand 'os.format' @{}).ok | Should -BeFalse
+    }
+}
+
+Describe 'Start-AXEBroker - servidor real sobre un pipe (mismo proceso: cliente y servidor)' -Tag 'integration' {
+    # -Tag integration: aunque el pipe en si no exige admin (ACL al propio SID), lanza runspaces
+    # de fondo reales y toca el sistema de ficheros de %LOCALAPPDATA%; se corre con
+    # AXE_INTEGRATION=1 (mismo criterio que el resto del repo), nunca en el gate rapido local.
+    BeforeAll {
+        . "$PSScriptRoot/../src/05-core.ps1"
+        $script:CAT = New-Object System.Collections.ArrayList
+        . "$PSScriptRoot/../src/10-reg-helpers.ps1"
+        . "$PSScriptRoot/../src/20-tweaks.ps1"
+        . "$PSScriptRoot/../src/28-revert-export.ps1"
+        . "$PSScriptRoot/../src/34-safety.ps1"
+
+        function New-TestPipeName { "AXE-Test-Broker-$([guid]::NewGuid().ToString('N'))" }
+
+        function Invoke-TestBroker([string]$PipeName, [string]$TokenPath){
+            # Corre Start-AXEBroker en un runspace de fondo para no bloquear el hilo del test
+            # mientras espera la conexion del cliente.
+            # NOTA (desvio deliberado respecto al brief, ver task-5-report.md): AddScript((Get-Content
+            # -Raw)) ejecuta el contenido SIN archivo de respaldo, asi que $MyInvocation.MyCommand.Path
+            # queda $null dentro del runspace -- 05-core.ps1 depende de esa ruta para fijar $script:AXELog,
+            # y con ella rota Write-AXELog lanza (Add-Content -Path $null) la PRIMERA vez que el broker
+            # intenta loguear, lo que aborta Start-AXEBroker antes de escribir ninguna respuesta al pipe
+            # (el cliente ve EOF limpio, no un frame). Dot-sourcing el fichero REAL (en vez de su texto
+            # crudo) resuelve $MyInvocation.MyCommand.Path igual que en produccion (AXE.bat siempre lanza
+            # el broker desde un .ps1 real, nunca desde un string en memoria), sin tocar ninguna asercion.
+            #
+            # Ademas (mismo motivo -- runspace nuevo, SIN las funciones que ya cargo el BeforeAll en el
+            # runspace del PROCESO de test): Start-AXEBroker llama a Test-Admin (src/28-revert-export.ps1,
+            # listado como dependencia en el brief). Sin cargarla aqui tambien, Test-Admin no existe DENTRO
+            # del runspace de fondo y el guard de elevacion revienta con CommandNotFoundException, cayendo
+            # al catch generico ('fallo interno') en vez de al mensaje especifico de "no elevado" que este
+            # Describe pretende comprobar.
+            $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
+            $ps = [powershell]::Create(); $ps.Runspace = $rs
+            foreach($f in '46-broker.ps1','05-core.ps1','28-revert-export.ps1'){ [void]$ps.AddScript(". '$PSScriptRoot/../src/$f'") }
+            [void]$ps.AddScript('param($p,$t) Start-AXEBroker $p $t')
+            [void]$ps.AddArgument($PipeName); [void]$ps.AddArgument($TokenPath)
+            @{ RS=$rs; PS=$ps; Handle=$ps.BeginInvoke() }
+        }
+
+        function Send-TestRequest([string]$PipeName, [hashtable]$Body){
+            $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut)
+            try {
+                $client.Connect(5000)
+                Write-AXEBrokerFrame $client ($Body | ConvertTo-Json -Compress -Depth 6)
+                Read-AXEBrokerFrame $client
+            } finally { $client.Dispose() }
+        }
+    }
+
+    It 'una peticion valida (comando desconocido, sin necesitar admin real) recibe una respuesta framed' {
+        $pipe = New-TestPipeName
+        $tokenPath = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N') + '.token')
+        Set-Content -LiteralPath $tokenPath -Value 'tok123' -NoNewline
+        $bg = Invoke-TestBroker $pipe $tokenPath
+        Start-Sleep -Milliseconds 300   # dar tiempo a que el runspace cree el pipe
+        $resp = Send-TestRequest $pipe @{ cmd='os.format'; args=@{}; token='tok123'; ts=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+        while(-not $bg.Handle.IsCompleted){ Start-Sleep -Milliseconds 50 }
+        try { $bg.PS.EndInvoke($bg.Handle) } catch {}
+        $bg.RS.Close()
+        ($resp | ConvertFrom-Json).ok | Should -BeFalse   # 'os.format' no esta en la whitelist
+    }
+
+    It 'sin token correcto, el broker cierra sin ejecutar nada' {
+        $pipe = New-TestPipeName
+        $tokenPath = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N') + '.token')
+        Set-Content -LiteralPath $tokenPath -Value 'tok-real' -NoNewline
+        $bg = Invoke-TestBroker $pipe $tokenPath
+        Start-Sleep -Milliseconds 300
+        $resp = Send-TestRequest $pipe @{ cmd='safety.restorePoint'; args=@{}; token='tok-FALSO'; ts=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+        while(-not $bg.Handle.IsCompleted){ Start-Sleep -Milliseconds 50 }
+        try { $bg.PS.EndInvoke($bg.Handle) } catch {}
+        $bg.RS.Close()
+        ($resp | ConvertFrom-Json).ok | Should -BeFalse
+    }
+
+    It 'el fichero de token se borra en cuanto el broker lo lee (un solo uso)' {
+        $pipe = New-TestPipeName
+        $tokenPath = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N') + '.token')
+        Set-Content -LiteralPath $tokenPath -Value 'tok456' -NoNewline
+        $bg = Invoke-TestBroker $pipe $tokenPath
+        Start-Sleep -Milliseconds 300
+        Test-Path $tokenPath | Should -BeFalse
+        [void](Send-TestRequest $pipe @{ cmd='os.format'; args=@{}; token='tok456'; ts=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() })
+        while(-not $bg.Handle.IsCompleted){ Start-Sleep -Milliseconds 50 }
+        try { $bg.PS.EndInvoke($bg.Handle) } catch {}
+        $bg.RS.Close()
+    }
+
+    It 'sin elevacion (Test-Admin=false en este proceso de test), rechaza cualquier comando valido con un error claro' {
+        # Este test NO necesita UAC: corre en el proceso normal (no admin) del runner de tests,
+        # que es EXACTAMENTE el escenario que este guard cubre -- si el broker se lanzara alguna
+        # vez sin elevar (bug de arranque), debe fallar limpio, no a medias dentro de sc.exe/reg.
+        $pipe = New-TestPipeName
+        $tokenPath = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N') + '.token')
+        Set-Content -LiteralPath $tokenPath -Value 'tok789' -NoNewline
+        $bg = Invoke-TestBroker $pipe $tokenPath
+        Start-Sleep -Milliseconds 300
+        $resp = Send-TestRequest $pipe @{ cmd='safety.restorePoint'; args=@{}; token='tok789'; ts=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+        while(-not $bg.Handle.IsCompleted){ Start-Sleep -Milliseconds 50 }
+        try { $bg.PS.EndInvoke($bg.Handle) } catch {}
+        $bg.RS.Close()
+        $r = $resp | ConvertFrom-Json
+        $r.ok | Should -BeFalse
+        $r.err | Should -Match 'elevad'
+    }
+}
