@@ -93,6 +93,19 @@ function Show-AXEWebHost {
         param($s,$e)
         if(-not $e.IsSuccess){ Write-AXELog "WebView2 init fallo: $($e.InitializationException)" 'ERR'; return }
         $core = $s.CoreWebView2
+        # Integridad de webui/ (issue #5): si el manifiesto incrustado no coincide con los
+        # ficheros reales, no se sirve nada -- mejor una pantalla de error clara que una interfaz
+        # potencialmente manipulada. $script:AXEWebUIManifest es $null cuando se corre src/ suelto
+        # sin build (dev/tests): ahi se omite la comprobacion (no hay manifiesto firmado que
+        # comparar), nunca se rechaza en ese caso.
+        if($script:AXEWebUIManifest){
+            $actual = Get-AXEWebUIManifest $script:WebUIDir
+            if(-not (Test-AXEWebUIIntegrity $script:AXEWebUIManifest $actual)){
+                Write-AXELog 'webui/ no coincide con el manifiesto firmado: arranque abortado.' 'ERR'
+                [System.Windows.MessageBox]::Show('La interfaz web no coincide con lo firmado. Reinstala AXE.','AXE','OK','Error') | Out-Null
+                return
+            }
+        }
         # host virtual -> carpeta local, solo lectura (Deny cross-origin).
         $core.SetVirtualHostNameToFolderMapping('axe.local', $script:WebUIDir, 'Deny')
         if($env:AXE_WEBUI_DEBUG -ne '1'){
