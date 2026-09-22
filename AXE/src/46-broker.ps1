@@ -1,0 +1,61 @@
+# =====================================================
+# REGION 14c - BROKER (proceso privilegiado bajo demanda)
+# =====================================================
+# Separa la logica privilegiada (Set-RD/sc.exe/bcdedit/Set-ProcessMitigation) del proceso
+# UI/WebView2 (issue #5, auditoria 2026-09-22 s1.2). Solo 4 comandos del bridge la necesitan
+# (grep de Test-Admin en 48-webbridge.ps1, verificado): tweaks.apply, tweaks.revert,
+# tweaks.masterRevert, safety.restorePoint. El resto del bridge sigue en el proceso UI sin
+# cambios.
+#
+# Modelo: on-demand por operacion. La UI relanza ESTE MISMO script con -Broker <pipeName>
+# -Token <ruta> via Start-Process -Verb RunAs; el broker procesa EXACTAMENTE una peticion
+# (o un lote resuelto el mismo, ver tweaks.masterRevert en Invoke-AXEBrokerCommand) y sale.
+# Nunca queda residente.
+#
+# Funciones puras primero (testeables sin pipe real, mismo patron que 35-diag.ps1): validacion
+# de mensaje. Luego las impuras (Start-AXEBroker/servidor, Send-AXEBrokerRequest/cliente).
+
+$script:AXEBrokerCommands  = @('tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint')
+$script:AXEBrokerMaxBytes  = 65536   # 64 KB: tope de tamano del mensaje
+$script:AXEBrokerMaxDepth  = 8       # tope de profundidad JSON
+$script:AXEBrokerMaxSkewSec = 5      # ventana de frescura del timestamp
+
+function Test-AXEBrokerCommand([string]$Cmd){
+    # Whitelist HARDCODEADA aqui, no compartida por referencia con $script:AXEBrokerMap del
+    # bridge: aunque coincida en valores hoy, el broker no debe depender de que nadie la amplie
+    # sin querer. -ccontains: mismo criterio case-sensitive que ya usa Invoke-AXEBridgeCmd.
+    @($script:AXEBrokerCommands) -ccontains $Cmd
+}
+
+function Test-AXEBrokerJsonDepth([string]$Json, [int]$MaxDepth = $script:AXEBrokerMaxDepth){
+    # Prescan de profundidad ANTES de parsear: ConvertFrom-Json no tiene -Depth en Windows
+    # PowerShell 5.1 (solo ConvertTo-Json lo tiene), asi que el tope se aplica a mano sobre el
+    # texto, no fiandose del parser. Cuenta { [ frente a } ] IGNORANDO lo que hay dentro de
+    # cadenas JSON (respeta \" como escape), sin depender de ninguna libreria nueva.
+    $depth = 0; $max = 0; $inStr = $false; $esc = $false
+    foreach($ch in $Json.ToCharArray()){
+        if($esc){ $esc = $false; continue }
+        if($inStr){
+            if($ch -eq '\'){ $esc = $true }
+            elseif($ch -eq '"'){ $inStr = $false }
+            continue
+        }
+        switch($ch){
+            '"' { $inStr = $true }
+            '{' { $depth++; if($depth -gt $max){ $max = $depth } }
+            '[' { $depth++; if($depth -gt $max){ $max = $depth } }
+            '}' { $depth-- }
+            ']' { $depth-- }
+        }
+        if($max -gt $MaxDepth){ return $false }
+    }
+    $true
+}
+
+function Test-AXEBrokerTimestamp([long]$Ts, [datetime]$Now = (Get-Date)){
+    # $Ts en epoch-millis UTC (Date.now() de JS / [DateTimeOffset]::UtcNow en PS).
+    if($Ts -le 0){ return $false }
+    $msgTime = [DateTimeOffset]::FromUnixTimeMilliseconds($Ts).UtcDateTime
+    $skew = [Math]::Abs(($Now.ToUniversalTime() - $msgTime).TotalSeconds)
+    $skew -le $script:AXEBrokerMaxSkewSec
+}
