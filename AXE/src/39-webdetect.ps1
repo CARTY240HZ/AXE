@@ -172,3 +172,9 @@ function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
     }
     $true
 }
+
+# Sustituido por build.ps1 con la tabla literal real (mismo mecanismo que $script:AXEVersion en
+# 00-header.ps1). $null en el fallback: correr src/ suelto sin build (dev/tests) desactiva la
+# comprobacion en vez de rechazar ficheros validos sin manifiesto que compararlos.
+$script:AXEWebUIManifest = '__AXE_WEBUI_MANIFEST__'
+if($script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ $script:AXEWebUIManifest = $null }

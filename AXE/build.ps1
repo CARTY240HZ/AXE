@@ -29,6 +29,21 @@ foreach($m in $modules){
 # a '6.1.0-dev' en cada build (banner CLI y app.info del puente mentian). .Replace() literal toca
 # solo la asignacion; el guard conserva su token intacto => no dispara cuando SI hubo build.
 $built = $sb.ToString().Replace("`$script:AXEVersion = '__AXE_VERSION__'", "`$script:AXEVersion = '$ver'")
+
+# Manifiesto de integridad de webui/ (issue #5): SHA256 de cada fichero, incrustado como tabla
+# literal en 39-webdetect.ps1. Vive DENTRO del .ps1 que se acaba de construir y que
+# 43-update.ps1 firma con Authenticode: tocar el manifiesto sin reconstruir rompe la firma.
+$script:AXERoot = $root  # necesario para que 39-webdetect.ps1 inicialice correctamente
+. (Join-Path $src '39-webdetect.ps1')
+$webuiDir = Join-Path $root 'webui'
+$manifest = Get-AXEWebUIManifest $webuiDir
+if($manifest.Count -eq 0){ throw "webui/ vacio o ausente en ${webuiDir}: no se puede construir el manifiesto de integridad" }
+$pairs = ($manifest.GetEnumerator() | ForEach-Object { "'{0}'='{1}'" -f $_.Key, $_.Value }) -join ';'
+# Sustituir el placeholder + guard por la tabla literal. El guard es para fallback (src/ sin build);
+# una vez sustituido, la variable contiene la tabla real y el guard nunca dispararia.
+$built = $built.Replace("`$script:AXEWebUIManifest = '__AXE_WEBUI_MANIFEST__'`r`nif(`$script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ `$script:AXEWebUIManifest = `$null }", "`$script:AXEWebUIManifest = @{$pairs}")
+
+
 Set-Content -Path $out -Value $built -Encoding UTF8
 Write-Host ("BUILT: {0} ({1} lineas, {2} modulos)" -f $out,(Get-Content $out).Count,$modules.Count)
 foreach($m in $modules){ Write-Host ("  {0,-28} {1,5} lineas" -f $m.Name,(Get-Content $m.FullName).Count) }
