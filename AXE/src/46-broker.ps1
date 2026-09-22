@@ -59,3 +59,66 @@ function Test-AXEBrokerTimestamp([long]$Ts, [datetime]$Now = (Get-Date)){
     $skew = [Math]::Abs(($Now.ToUniversalTime() - $msgTime).TotalSeconds)
     $skew -le $script:AXEBrokerMaxSkewSec
 }
+
+function Write-AXEBrokerFrame([System.IO.Stream]$Stream, [string]$Json){
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
+    if($bytes.Length -gt $script:AXEBrokerMaxBytes){
+        throw "mensaje demasiado grande ($($bytes.Length) bytes, maximo $script:AXEBrokerMaxBytes)"
+    }
+    $lenBytes = [BitConverter]::GetBytes([int]$bytes.Length)
+    if(-not [BitConverter]::IsLittleEndian){ [Array]::Reverse($lenBytes) }
+    $Stream.Write($lenBytes, 0, 4)
+    $Stream.Write($bytes, 0, $bytes.Length)
+    $Stream.Flush()
+}
+
+function Read-AXEBrokerFrame([System.IO.Stream]$Stream){
+    # Devuelve el JSON como string, o $null si el stream se cerro sin mandar nada (EOF limpio).
+    # Rechaza por TAMANO DECLARADO antes de leer el cuerpo: nunca bufferiza un payload sin limite.
+    $lenBytes = New-Object byte[] 4
+    $read = 0
+    while($read -lt 4){
+        $n = $Stream.Read($lenBytes, $read, 4 - $read)
+        if($n -eq 0){ if($read -eq 0){ return $null } else { throw 'conexion cerrada a mitad de la cabecera' } }
+        $read += $n
+    }
+    if(-not [BitConverter]::IsLittleEndian){ [Array]::Reverse($lenBytes) }
+    $len = [BitConverter]::ToInt32($lenBytes, 0)
+    if($len -le 0 -or $len -gt $script:AXEBrokerMaxBytes){
+        throw "longitud de mensaje invalida o excede el tope ($len bytes, maximo $script:AXEBrokerMaxBytes)"
+    }
+    $buf = New-Object byte[] $len
+    $read = 0
+    while($read -lt $len){
+        $n = $Stream.Read($buf, $read, $len - $read)
+        if($n -eq 0){ throw 'conexion cerrada a mitad del cuerpo' }
+        $read += $n
+    }
+    [System.Text.Encoding]::UTF8.GetString($buf)
+}
+
+function Read-AXEBrokerRequest([string]$Json, [string]$ExpectedToken){
+    # PURA: valida y devuelve {Ok;Cmd;Args;Reason}. Nunca lanza por un mensaje malformado --
+    # eso es EXACTAMENTE el input que hay que poder rechazar sin reventar el broker (issue #5,
+    # criterio de aceptacion 4).
+    if(-not (Test-AXEBrokerJsonDepth $Json)){
+        return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='profundidad de JSON excede el tope' }
+    }
+    try { $msg = $Json | ConvertFrom-Json -EA Stop }
+    catch { return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='JSON invalido' } }
+    foreach($k in 'cmd','token','ts'){
+        if(-not $msg.PSObject.Properties[$k]){ return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason="falta '$k'" } }
+    }
+    if([string]$msg.token -ne [string]$ExpectedToken){
+        return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='token invalido' }
+    }
+    if(-not (Test-AXEBrokerTimestamp ([long]$msg.ts))){
+        return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='timestamp fuera de ventana' }
+    }
+    if(-not (Test-AXEBrokerCommand ([string]$msg.cmd))){
+        return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason="comando no permitido: $($msg.cmd)" }
+    }
+    $argsHt = @{}
+    if($msg.args){ $msg.args.PSObject.Properties | ForEach-Object { $argsHt[$_.Name] = $_.Value } }
+    [pscustomobject]@{ Ok=$true; Cmd=[string]$msg.cmd; Args=$argsHt; Reason=$null }
+}
