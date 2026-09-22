@@ -136,3 +136,117 @@ function Read-AXEBrokerRequest([string]$Json, [string]$ExpectedToken){
         return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='peticion malformada' }
     }
 }
+
+function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
+    # Motor de decision del broker: los 4 unicos comandos que puede ejecutar, usando EXACTAMENTE
+    # el mismo protocolo de snapshot ya arreglado en el bridge (auditoria 2026-09-22 s1.1) --
+    # $script:CAT/Get-BlockReason/Test-SnapEligible/Commit-TweakState/Restore-TweakState son las
+    # funciones REALES del motor, no una copia. Nunca lanza hacia fuera: cualquier excepcion se
+    # repackea como {ok=false}.
+    try {
+        switch($Cmd){
+            'tweaks.apply' {
+                $tw = $script:CAT | Where-Object Id -eq ([string]$A.id) | Select-Object -First 1
+                if(-not $tw){ return @{ ok=$false; data=$null; err="tweak desconocido: $($A.id)" } }
+                $blk = Get-BlockReason $tw
+                if($blk){ return @{ ok=$false; data=$null; err="no aplicable en este equipo: $blk" } }
+                if(Test-SnapEligible $tw){ $script:capTweak = $tw.Id }
+                try { & $tw.Apply } finally { $script:capTweak = $null }
+                Commit-TweakState $tw.Id
+                @{ ok=$true; data=@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }; err=$null }
+            }
+            'tweaks.revert' {
+                $tw = $script:CAT | Where-Object Id -eq ([string]$A.id) | Select-Object -First 1
+                if(-not $tw){ return @{ ok=$false; data=$null; err="tweak desconocido: $($A.id)" } }
+                if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
+                @{ ok=$true; data=@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }; err=$null }
+            }
+            'tweaks.masterRevert' {
+                $done = 0; $err = 0
+                foreach($tw in $script:CAT){
+                    try {
+                        if(Get-BlockReason $tw){ continue }
+                        if(-not (Test-TweakSafe $tw)){ continue }
+                        if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
+                        $done++
+                    } catch { $err++; Write-AXELog "Broker MasterRevert: $($tw.Name): $($_.Exception.Message)" 'ERR' }
+                }
+                @{ ok=$true; data=@{ done=$done; errors=$err }; err=$null }
+            }
+            'safety.restorePoint' {
+                $r = New-AXERestorePoint
+                @{ ok=$true; data=@{ status=[string]$r.Status; message=[string]$r.Message }; err=$null }
+            }
+            default { @{ ok=$false; data=$null; err="cmd desconocido: $Cmd" } }
+        }
+    } catch {
+        Write-AXELog "Broker: $Cmd lanzo: $($_.Exception.Message)" 'ERR'
+        @{ ok=$false; data=$null; err=$_.Exception.Message }
+    }
+}
+
+if(-not ('AXE.PipeNative' -as [type])){
+    Add-Type -Namespace AXE -Name PipeNative -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetNamedPipeClientProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle Pipe, out uint ClientProcessId);'
+}
+function Test-AXEBrokerClientIsPowerShell($ServerStream){
+    # Chequeo grosero adicional, SECUNDARIO al token (que es la autorizacion real): el proceso
+    # que conecto es powershell.exe. AXE.bat siempre lanza con 'powershell' a secas (Windows
+    # PowerShell), nunca 'pwsh' (PowerShell 7) -- coherente con que esta misma maquina de
+    # desarrollo no tiene pwsh instalado.
+    try {
+        $procId = 0
+        $ok = [AXE.PipeNative]::GetNamedPipeClientProcessId($ServerStream.SafePipeHandle, [ref]$procId)
+        if(-not $ok -or $procId -eq 0){ return $false }
+        (Get-Process -Id $procId -EA Stop).ProcessName -eq 'powershell'
+    } catch { $false }
+}
+
+function Start-AXEBroker([string]$PipeName, [string]$TokenPath){
+    # Servidor de UNA peticion: crea el pipe, la procesa (o rechaza), responde, sale. Nunca queda
+    # residente (issue #5: "no persistent service or scheduled task").
+    $token = $null
+    try { if(Test-Path $TokenPath){ $token = (Get-Content -LiteralPath $TokenPath -Raw).Trim() } } catch {}
+    try { Remove-Item -LiteralPath $TokenPath -Force -EA SilentlyContinue } catch {}
+    if(-not $token){ Write-AXELog 'Broker: sin token de arranque, salgo.' 'ERR'; return 1 }
+
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $rule = New-Object System.IO.Pipes.PipeAccessRule($sid, [System.IO.Pipes.PipeAccessRights]::ReadWrite, [System.Security.AccessControl.AccessControlType]::Allow)
+    $sec = New-Object System.IO.Pipes.PipeSecurity
+    $sec.AddAccessRule($rule)
+
+    $server = $null
+    try {
+        $server = New-Object System.IO.Pipes.NamedPipeServerStream($PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::None, 0, 0, $sec)
+        $connectTask = $server.WaitForConnectionAsync()
+        if(-not $connectTask.Wait(10000)){ Write-AXELog 'Broker: nadie conecto en 10s, salgo.' 'WARN'; return 1 }
+
+        if(-not (Test-AXEBrokerClientIsPowerShell $server)){
+            Write-AXELog 'Broker: el cliente conectado no es powershell.exe, cierro.' 'WARN'; return 1
+        }
+
+        $json = Read-AXEBrokerFrame $server
+        if(-not $json){ Write-AXELog 'Broker: conexion sin mensaje, salgo.' 'WARN'; return 1 }
+        $req = Read-AXEBrokerRequest $json $token
+        if(-not $req.Ok){
+            Write-AXELog "Broker: peticion rechazada ($($req.Reason))." 'WARN'
+            Write-AXEBrokerFrame $server (@{ ok=$false; data=$null; err='peticion invalida' } | ConvertTo-Json -Compress)
+            return 1
+        }
+        if(-not (Test-Admin)){
+            Write-AXELog 'Broker: no elevado, no puedo ejecutar nada privilegiado.' 'ERR'
+            Write-AXEBrokerFrame $server (@{ ok=$false; data=$null; err='el broker no esta elevado' } | ConvertTo-Json -Compress)
+            return 1
+        }
+
+        $res = Invoke-AXEBrokerCommand $req.Cmd $req.Args
+        Write-AXELog "Broker: $($req.Cmd) -> ok=$($res.ok)"
+        Write-AXEBrokerFrame $server ($res | ConvertTo-Json -Compress -Depth 5)
+        0
+    } catch {
+        Write-AXELog "Broker: excepcion $($_.Exception.Message)" 'ERR'
+        try { if($server -and $server.IsConnected){ Write-AXEBrokerFrame $server (@{ ok=$false; data=$null; err='fallo interno' } | ConvertTo-Json -Compress) } } catch {}
+        1
+    } finally {
+        if($server){ try { $server.Disconnect() } catch {}; try { $server.Dispose() } catch {} }
+    }
+}
