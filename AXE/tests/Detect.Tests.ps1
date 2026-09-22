@@ -323,3 +323,44 @@ Describe 'Get-AXEHardware - detecta el equipo sin depender de que WMI este enter
         }
     }
 }
+
+Describe 'Get-AXEWebUIManifest / Test-AXEWebUIIntegrity - integridad de webui/' -Tag 'unit' {
+    BeforeAll {
+        $script:TmpWebUI = Join-Path ([IO.Path]::GetTempPath()) ('axe-test-webui-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:TmpWebUI -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:TmpWebUI 'sub') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:TmpWebUI 'index.html') -Value '<html></html>' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $script:TmpWebUI 'sub\app.js') -Value 'console.log(1)' -Encoding UTF8
+    }
+    AfterAll { Remove-Item $script:TmpWebUI -Recurse -Force -EA SilentlyContinue }
+
+    It 'recorre el directorio y devuelve ruta relativa (con /) -> SHA256' {
+        $m = Get-AXEWebUIManifest $script:TmpWebUI
+        $m.Keys | Should -Contain 'index.html'
+        $m.Keys | Should -Contain 'sub/app.js'
+        $m['index.html'] | Should -Match '^[0-9A-F]{64}$'
+    }
+    It 'dos manifiestos identicos coinciden' {
+        $a = Get-AXEWebUIManifest $script:TmpWebUI
+        $b = Get-AXEWebUIManifest $script:TmpWebUI
+        Test-AXEWebUIIntegrity $a $b | Should -BeTrue
+    }
+    It 'un fichero cambiado no coincide' {
+        $a = Get-AXEWebUIManifest $script:TmpWebUI
+        Set-Content -LiteralPath (Join-Path $script:TmpWebUI 'index.html') -Value '<html>MANIPULADO</html>' -Encoding UTF8
+        $b = Get-AXEWebUIManifest $script:TmpWebUI
+        Test-AXEWebUIIntegrity $a $b | Should -BeFalse
+    }
+    It 'un fichero de mas no coincide' {
+        $a = Get-AXEWebUIManifest $script:TmpWebUI
+        Set-Content -LiteralPath (Join-Path $script:TmpWebUI 'intruso.js') -Value 'x' -Encoding UTF8
+        $b = Get-AXEWebUIManifest $script:TmpWebUI
+        Test-AXEWebUIIntegrity $a $b | Should -BeFalse
+        Remove-Item (Join-Path $script:TmpWebUI 'intruso.js')
+    }
+    It 'un fichero de menos no coincide' {
+        $a = Get-AXEWebUIManifest $script:TmpWebUI
+        $b = $a.Clone(); $b.Remove('sub/app.js')
+        Test-AXEWebUIIntegrity $a $b | Should -BeFalse
+    }
+}

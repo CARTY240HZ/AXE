@@ -146,3 +146,29 @@ function Get-AXEWebView2Runtime {
     }
     return [pscustomobject]@{ Available=$false; Version=$null; Reason='Runtime WebView2 Evergreen no encontrado. Instalalo desde https://developer.microsoft.com/microsoft-edge/webview2/' }
 }
+
+# --- Integridad de webui/ (issue #5): el manifiesto se incrusta en tiempo de build (ver
+# build.ps1) como tabla literal DENTRO de este mismo fichero, que build.ps1 firma con
+# Authenticode -- manipular el manifiesto sin reconstruir rompe la firma. ---
+function Get-AXEWebUIManifest([string]$Dir){
+    # Recorre $Dir y devuelve ruta-relativa (con / , no \) -> SHA256 en mayusculas. Mismo
+    # algoritmo tanto al incrustar (build.ps1) como al comprobar en runtime.
+    $out = @{}
+    if(-not (Test-Path $Dir)){ return $out }
+    $base = (Resolve-Path $Dir).Path
+    Get-ChildItem -Path $Dir -Recurse -File | Sort-Object FullName | ForEach-Object {
+        $rel = $_.FullName.Substring($base.Length).TrimStart('\','/') -replace '\\','/'
+        $out[$rel] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+    }
+    $out
+}
+
+function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
+    # Coincidencia EXACTA: un fichero de mas, de menos, o con el hash cambiado, cuenta como fallo.
+    if($Expected.Count -ne $Actual.Count){ return $false }
+    foreach($k in $Expected.Keys){
+        if(-not $Actual.Contains($k)){ return $false }
+        if($Actual[$k] -ne $Expected[$k]){ return $false }
+    }
+    $true
+}
