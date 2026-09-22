@@ -308,3 +308,66 @@ Describe 'Start-AXEBroker - servidor real sobre un pipe (mismo proceso: cliente 
         $r.err | Should -Match 'elevad'
     }
 }
+
+Describe 'New-AXEBrokerToken - secreto de un solo uso con ACL restringida' -Tag 'unit' {
+    BeforeAll { $script:TmpTokDir = Join-Path ([IO.Path]::GetTempPath()) ('axe-test-tok-' + [guid]::NewGuid().ToString('N')) }
+    AfterAll { Remove-Item $script:TmpTokDir -Recurse -Force -EA SilentlyContinue }
+
+    It 'crea el fichero con un token no vacio' {
+        $t = New-AXEBrokerToken $script:TmpTokDir
+        Test-Path $t.Path | Should -BeTrue
+        $t.Token | Should -Not -BeNullOrEmpty
+        (Get-Content -LiteralPath $t.Path -Raw).Trim() | Should -Be $t.Token
+    }
+    It 'la ACL rompe la herencia (reglas explicitas, no heredadas del directorio)' {
+        $t = New-AXEBrokerToken $script:TmpTokDir
+        (Get-Acl $t.Path).AreAccessRulesProtected | Should -BeTrue
+    }
+    It 'dos llamadas dan tokens y ficheros distintos' {
+        $a = New-AXEBrokerToken $script:TmpTokDir
+        $b = New-AXEBrokerToken $script:TmpTokDir
+        $a.Path | Should -Not -Be $b.Path
+        $a.Token | Should -Not -Be $b.Token
+    }
+}
+
+Describe 'Send-AXEBrokerRequest - cliente contra un servidor de pruebas minimo' -Tag 'unit' {
+    # Servidor de pruebas: NO es Start-AXEBroker (eso ya se cubrio en Task 5 con -Tag
+    # integration). Aqui solo se comprueba que el CLIENTE manda el frame correcto y sabe leer
+    # la respuesta -- un servidor que simplemente eco-responde basta.
+    BeforeAll {
+        function Start-TestEchoServer([string]$PipeName, [hashtable]$Reply){
+            $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
+            $ps = [powershell]::Create(); $ps.Runspace = $rs
+            [void]$ps.AddScript((Get-Content "$PSScriptRoot/../src/46-broker.ps1" -Raw))
+            [void]$ps.AddScript({
+                param($PipeName, $ReplyJson)
+                $server = New-Object System.IO.Pipes.NamedPipeServerStream($PipeName, [System.IO.Pipes.PipeDirection]::InOut)
+                $server.WaitForConnection()
+                [void](Read-AXEBrokerFrame $server)
+                Write-AXEBrokerFrame $server $ReplyJson
+                $server.Disconnect(); $server.Dispose()
+            })
+            [void]$ps.AddArgument($PipeName)
+            [void]$ps.AddArgument(($Reply | ConvertTo-Json -Compress))
+            @{ RS=$rs; PS=$ps; Handle=$ps.BeginInvoke() }
+        }
+    }
+
+    It 'round-trip: manda la peticion y devuelve la respuesta del servidor' {
+        $pipe = "AXE-Test-Echo-$([guid]::NewGuid().ToString('N'))"
+        $bg = Start-TestEchoServer $pipe @{ ok=$true; data=@{ x=1 }; err=$null }
+        Start-Sleep -Milliseconds 200
+        $r = Send-AXEBrokerRequest $pipe 'tweaks.apply' @{id='x'} 'tok' 5000
+        while(-not $bg.Handle.IsCompleted){ Start-Sleep -Milliseconds 50 }
+        try { $bg.PS.EndInvoke($bg.Handle) } catch {}
+        $bg.RS.Close()
+        $r.ok | Should -BeTrue
+        $r.data.x | Should -Be 1
+    }
+
+    It 'si nadie escucha en el pipe, devuelve ok=false en vez de lanzar' {
+        $r = Send-AXEBrokerRequest 'AXE-Test-NoOneHome' 'tweaks.apply' @{} 'tok' 1000
+        $r.ok | Should -BeFalse
+    }
+}

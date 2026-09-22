@@ -250,3 +250,61 @@ function Start-AXEBroker([string]$PipeName, [string]$TokenPath){
         if($server){ try { $server.Disconnect() } catch {}; try { $server.Dispose() } catch {} }
     }
 }
+
+function New-AXEBrokerToken([string]$Dir){
+    # Secreto de un solo uso: la UI lo escribe, el broker lo lee UNA vez y lo borra. Defensa en
+    # profundidad redundante con el nombre de pipe ya aleatorio -- barata, se incluye igual.
+    if(-not (Test-Path $Dir)){ New-Item -ItemType Directory -Path $Dir -Force | Out-Null }
+    $tok = [guid]::NewGuid().ToString('N')
+    $path = Join-Path $Dir ("$([guid]::NewGuid().ToString('N')).token")
+    Set-Content -LiteralPath $path -Value $tok -Encoding ASCII -NoNewline
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = Get-Acl $path
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')))
+    Set-Acl $path $acl
+    @{ Path = $path; Token = $tok }
+}
+
+function Send-AXEBrokerRequest([string]$PipeName, [string]$Cmd, [hashtable]$A, [string]$Token, [int]$ConnectTimeoutMs = 20000){
+    # Cliente: conecta a un pipe YA SERVIDO (por Start-AXEBroker o, en tests, por un servidor de
+    # pruebas), manda la peticion framed, espera la respuesta. Nunca lanza: cualquier fallo de
+    # conexion/transporte se repackea como {ok=false}.
+    try {
+        $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut)
+        try {
+            $client.Connect($ConnectTimeoutMs)
+            $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            $req = @{ cmd = $Cmd; args = $A; token = $Token; ts = $ts } | ConvertTo-Json -Compress -Depth 5
+            Write-AXEBrokerFrame $client $req
+            $json = Read-AXEBrokerFrame $client
+            if(-not $json){ return [pscustomobject]@{ ok=$false; data=$null; err='el broker cerro sin responder' } }
+            $r = $json | ConvertFrom-Json
+            [pscustomobject]@{ ok=[bool]$r.ok; data=$r.data; err=$r.err }
+        } finally { $client.Dispose() }
+    } catch {
+        [pscustomobject]@{ ok=$false; data=$null; err="no se pudo hablar con el broker: $($_.Exception.Message)" }
+    }
+}
+
+function Invoke-AXEPrivileged([string]$Cmd, [hashtable]$A){
+    # Orquestacion completa del lado UI: token + pipe name aleatorios, lanza el broker elevado,
+    # conecta, manda la peticion, repasa la respuesta. NO testeado automaticamente (Start-Process
+    # -Verb RunAs dispararia un UAC real) -- las dos funciones de las que depende si lo estan.
+    $dir = Join-Path $env:LOCALAPPDATA 'AXE\broker'
+    $t = New-AXEBrokerToken $dir
+    $pipeName = "AXE-Broker-$([guid]::NewGuid().ToString('N'))"
+    $distPath = $PSCommandPath
+    try {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','RemoteSigned','-File',"`"$distPath`"",'-Broker',$pipeName,'-Token',"`"$($t.Path)`"") -Verb RunAs -WindowStyle Hidden | Out-Null
+    } catch {
+        try { Remove-Item -LiteralPath $t.Path -Force -EA SilentlyContinue } catch {}
+        if($_.Exception -is [System.ComponentModel.Win32Exception] -and $_.Exception.NativeErrorCode -eq 1223){
+            return [pscustomobject]@{ ok=$false; data=$null; err='operacion cancelada (UAC)' }
+        }
+        return [pscustomobject]@{ ok=$false; data=$null; err="no se pudo lanzar el broker: $($_.Exception.Message)" }
+    }
+    $res = Send-AXEBrokerRequest $pipeName $Cmd $A $t.Token
+    try { Remove-Item -LiteralPath $t.Path -Force -EA SilentlyContinue } catch {}
+    $res
+}
