@@ -97,6 +97,7 @@ $script:AXEBridgeMap = @{
         if($blk){ throw "no aplicable en este equipo: $blk" }
         if(Test-SnapEligible $tw){ $script:capTweak = $tw.Id }
         try { & $tw.Apply } finally { $script:capTweak = $null }
+        Commit-TweakState $tw.Id
         [pscustomobject]@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }
     }
     'tweaks.revert' = { param($a)

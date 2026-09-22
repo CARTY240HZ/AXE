@@ -25,3 +25,6 @@ desktop.ini
 .vs/
 .vscode/
 *.tmp
+
+# Overrides locales de Claude Code (por-maquina, no compartidos con el equipo)
+.claude/settings.local.json

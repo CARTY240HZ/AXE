@@ -199,3 +199,70 @@ Describe 'Puente: endurecimiento' {
         $r.err | Should -Not -BeNullOrEmpty
     }
 }
+
+Describe 'Puente: tweaks.apply/revert cablean el protocolo de snapshot (REGRESION auditoria 2026-09-22 s1.1)' {
+    # Bug real: Commit-TweakState solo se llamaba desde Import-AXEProfile (la via de perfil, poco
+    # usada). Push-RegBackup SI capturaba el valor previo en memoria (capBuf) durante & $tw.Apply,
+    # pero como 'tweaks.apply' del bridge -el UNICO camino real por el que la WebUI aplica un tweak-
+    # nunca llamaba Commit-TweakState, esa captura jamas llegaba a tweak_state.json. 'tweaks.revert'
+    # entonces no encontraba snapshot y caia SIEMPRE al scriptblock Revert hardcodeado: el "revert
+    # con fidelidad de snapshot" que el proyecto anuncia no operaba en produccion.
+    #
+    # Este test ejercita el camino real -Invoke-AXEBridgeCmd 'tweaks.apply'/'tweaks.revert', no las
+    # primitivas internas- para que un fallo de cableado como este no pueda colarse otra vez sin
+    # tumbar el gate. Usa un tweak SINTETICO sobre una clave HKCU dedicada a pruebas (no toca
+    # hardware ni ningun ajuste real), asi que corre siempre, sin 'integration'.
+
+    BeforeAll {
+        $script:OldAdminSb = (Get-Item function:Test-Admin).ScriptBlock
+        Set-Item function:Test-Admin -Value { $true }   # el gate de admin no es lo que este test verifica
+
+        $script:OldAXEData = $script:AXEData
+        $script:OldStateBak = $script:StateBak
+        $script:AXEData = Join-Path ([IO.Path]::GetTempPath()) ('axe-test-bridge-snap-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:AXEData -Force | Out-Null
+        $script:StateBak = Join-Path $script:AXEData 'tweak_state.json'
+
+        $script:DummyKey = 'HKCU:\Software\AXE\_TestBridgeDummy'
+        Remove-Item $script:DummyKey -Recurse -Force -EA SilentlyContinue
+
+        # Revert "incorrecto" a proposito: si el revert real cayera al fallback (el bug), dejaria
+        # V=0. Si de verdad restaura por snapshot, borra la clave entera (no existia antes: Had=$false).
+        $script:DummyTweak = [pscustomobject]@{
+            Id='_test_bridge_dummy'; Cat='TEST'; Tier=0; Reboot=$false
+            Name='(test) dummy'; Desc='(test) dummy, solo para el harness de tests'
+            Requires=@{}; Source='n/a'; SourceType='official'; PlaceboLikely=$false
+            Test   = { (Get-RV 'HKCU:\Software\AXE\_TestBridgeDummy' 'V') -eq 1 }
+            Apply  = { Set-RD 'HKCU:\Software\AXE\_TestBridgeDummy' 'V' 1 }
+            Revert = { Set-RD 'HKCU:\Software\AXE\_TestBridgeDummy' 'V' 0 }
+        }
+        [void]$script:CAT.Add($script:DummyTweak)
+    }
+
+    AfterAll {
+        $script:CAT.Remove($script:DummyTweak)
+        Remove-Item $script:DummyKey -Recurse -Force -EA SilentlyContinue
+        Remove-Item $script:AXEData -Recurse -Force -EA SilentlyContinue
+        $script:AXEData  = $script:OldAXEData
+        $script:StateBak = $script:OldStateBak
+        Set-Item function:Test-Admin -Value $script:OldAdminSb
+    }
+
+    It 'tweaks.apply por el bridge persiste el snapshot en disco (Commit-TweakState SI se invoca)' {
+        $r = Invoke-AXEBridgeCmd 'tweaks.apply' @{ id = $script:DummyTweak.Id }
+        $r.ok | Should -BeTrue
+        (Get-RV $script:DummyKey 'V') | Should -Be 1
+
+        (Read-StateBak).ContainsKey($script:DummyTweak.Id) | Should -BeTrue -Because 'tweaks.apply debe volcar la captura a tweak_state.json, no dejarla solo en memoria'
+    }
+
+    It 'tweaks.revert por el bridge restaura el valor real (snapshot), no el default hardcodeado del fallback' {
+        $r = Invoke-AXEBridgeCmd 'tweaks.revert' @{ id = $script:DummyTweak.Id }
+        $r.ok | Should -BeTrue
+
+        # La clave no existia antes del Apply (Had=$false): el snapshot real la BORRA. El fallback
+        # (bug) la habria dejado en 0, no ausente.
+        (Get-RV $script:DummyKey 'V') | Should -BeNullOrEmpty -Because 'debe restaurar el estado previo real (ausente), no caer al Revert hardcodeado (V=0)'
+        (Read-StateBak).ContainsKey($script:DummyTweak.Id) | Should -BeFalse -Because 'Restore-TweakState limpia el snapshot tras usarlo'
+    }
+}

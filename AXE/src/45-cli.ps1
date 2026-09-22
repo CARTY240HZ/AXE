@@ -782,13 +782,13 @@ if($Advice){
     # Consejero (region 12c). Junta diagnostico + cuellos + catalogo + historico de ESTA maquina
     # en un plan ordenado. Mide y GUARDA la medida: usar el consejero es lo que construye la
     # evidencia local, sin que haya que acordarse de registrar nada aparte.
-    #   Salida 1 si hay algun cuello de botella real, para poder encadenarlo en scripts. El id
-    # 'clean' no cuenta: es justo el caso en que NO hay cuello, y devolver error por estar todo
-    # bien seria absurdo.
+    #   Salida 1 si hay algun cuello de botella real, para poder encadenarlo en scripts. Los ids
+    # 'clean'/'clean-partial' no cuentan: son justo el caso en que NO hay cuello (confirmado o con
+    # el timer sin confirmar), y devolver error por estar todo bien seria absurdo.
     $adv = Get-AXEAdviceNow
     Write-Host ''
     foreach($line in (Format-AXEAdvice -Plan $adv.Plan -Samples $adv.Samples)){ Write-Host $line }
-    exit ([int](@($adv.Plan | Where-Object { $_.Kind -eq 'cuello' -and $_.Id -ne 'clean' }).Count -gt 0))
+    exit ([int](@($adv.Plan | Where-Object { $_.Kind -eq 'cuello' -and $_.Id -notin 'clean','clean-partial' }).Count -gt 0))
 }
 if($NetMon){
     # Monitor de red (region 9.5). Solo mide: ninguna rama de este modo escribe nada.
