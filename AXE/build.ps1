@@ -39,11 +39,14 @@ $webuiDir = Join-Path $root 'webui'
 $manifest = Get-AXEWebUIManifest $webuiDir
 if($manifest.Count -eq 0){ throw "webui/ vacio o ausente en ${webuiDir}: no se puede construir el manifiesto de integridad" }
 $pairs = ($manifest.GetEnumerator() | ForEach-Object { "'{0}'='{1}'" -f $_.Key, $_.Value }) -join ';'
-# Sustituir el placeholder + guard por la tabla literal. El guard es para fallback (src/ sin build);
-# una vez sustituido, la variable contiene la tabla real y el guard nunca dispararia.
-$built = $built.Replace("`$script:AXEWebUIManifest = '__AXE_WEBUI_MANIFEST__'`r`nif(`$script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ `$script:AXEWebUIManifest = `$null }", "`$script:AXEWebUIManifest = @{$pairs}")
-
-
+# Manifiesto canónico: SOLO se sustituye la línea de ASIGNACIÓN en 39-webdetect.ps1, NO el guard de
+# fallback. Ambos van DENTRO del .ps1 que se acaba de construir: una vez sustituido, la variable
+# contiene la tabla real y el guard (dead code) nunca dispararia. Mismo mecanismo que $script:AXEVersion.
+$search = "`$script:AXEWebUIManifest = '__AXE_WEBUI_MANIFEST__'"
+$built = $built.Replace($search, "`$script:AXEWebUIManifest = @{$pairs}")
+# Verificación robusta: si la línea de ASIGNACIÓN no fue sustituida, lanzar error. La línea guard
+# contiene el string literal, pero no la asignación completa, asi que seguimos buscando solo eso.
+if($built.Contains($search)){ throw "manifest placeholder replace fallo: no se encontro el patron esperado en 39-webdetect.ps1" }
 Set-Content -Path $out -Value $built -Encoding UTF8
 Write-Host ("BUILT: {0} ({1} lineas, {2} modulos)" -f $out,(Get-Content $out).Count,$modules.Count)
 foreach($m in $modules){ Write-Host ("  {0,-28} {1,5} lineas" -f $m.Name,(Get-Content $m.FullName).Count) }
