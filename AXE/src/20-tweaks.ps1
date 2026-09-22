@@ -712,7 +712,7 @@ function Get-AXELatencyNotes {
     # La nota de moderacion de interrupciones ya no se deduce del medio: se consulta el adaptador.
     # Un Wi-Fi que expone *InterruptModeration la recibe; un Ethernet que no la expone, no.
     $im = Test-AXENicProp '*InterruptModeration'
-    if($h.IsWifi){    [void]$n.Add('Wi-Fi: dentro CTCP (recupera antes tras perdida). El jitter lo domina la radio: por cable bajaria mas.') }
+    if($h.IsWifi){    [void]$n.Add('Wi-Fi: dentro CTCP (recupera antes tras perdida). El jitter lo domina la radio: por cable bajaria mas. OJO: CUBIC (el default de Windows desde 10 1709) es mas moderno que CTCP -- esto retrocede a un algoritmo viejo, no lo actives sin medir que te mejora.') }
     if($im){          [void]$n.Add("Adaptador '$($h.NicName)': expone moderacion de interrupciones, asi que entra en el plan.") }
     else {            [void]$n.Add("Adaptador '$($h.NicName)': no expone moderacion de interrupciones, el ajuste no aplica aqui (no es que falle: no existe la palanca).") }
     if(-not $h.IsSSD){ [void]$n.Add('Disco mecanico: apagar el indexador de busqueda es aqui la mayor ganancia de frametimes, por encima de cualquier valor de registro.') }

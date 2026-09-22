@@ -205,13 +205,21 @@ function Get-AXEBottleneck {
             Detail='El timer y el jitter que mide AXE aqui son los que da el hipervisor, no los del hardware. Los numeros valen para compararte contigo mismo, no con un equipo real.' })
     }
 
-    # 7. Nada mal configurado Y sistema ya fino: decirlo es mas util que inventar una tarea.
+    # 7. Nada mal configurado: decirlo es mas util que inventar una tarea, PERO el veredicto
+    # depende de si tambien se confirmo el timer. Antes esta rama solo anadia el mensaje cuando
+    # $timerOk era true; si no habia BAD y el timer no se pudo confirmar (-NoMeasure, Snapshot nulo,
+    # o medido pero > 1ms), la funcion devolvia una lista vacia SIN avisar de nada -- ni "hay un
+    # problema" ni "estas limpio". Rompia el principio propio del modulo ("UNKNOWN es un estado
+    # de primera clase, no se calla lo que no se sabe"): ahora siempre hay un veredicto explicito.
     if($out.Count -eq 0){
         $timerOk = $false
         if($Snapshot -and $Snapshot.Timer -isnot [string] -and $Snapshot.Timer.CurrentMs -le 1.0){ $timerOk = $true }
         if($timerOk){
             [void]$out.Add([pscustomobject]@{ Rank=9; Id='clean'; Title='No te encuentro un cuello de botella'
                 Detail='Lo que este programa sabe comprobar esta bien configurado y el timer ya esta fino. A partir de aqui el margen que queda en software es de un digito, y lo grande esta en el hardware o en los ajustes del propio juego. Preferimos decirtelo a inventarte tareas.' })
+        } else {
+            [void]$out.Add([pscustomobject]@{ Rank=9; Id='clean-partial'; Title='Nada mal configurado en lo que se pudo medir'
+                Detail='No hay ningun cuello de botella entre lo que este programa sabe comprobar, pero la resolucion del timer no se ha confirmado en <=1ms (falta medicion, o el resultado esta por encima de ese umbral). No es un "todo limpio" completo: repite la medicion para confirmarlo.' })
         }
     }
     @($out | Sort-Object Rank)
@@ -245,7 +253,7 @@ function Get-AXEAdvice {
         [void]$plan.Add([pscustomobject]@{
             Order=$n; Kind='cuello'; Id=$b.Id; Title=$b.Title; Detail=$b.Detail
             Why='medido en tu equipo'; Impact='alto'
-            Action=$(if($b.Id -eq 'clean'){ 'nada que hacer' } else { 'lo arreglas tu, fuera de AXE' })
+            Action=$(if($b.Id -in 'clean','clean-partial'){ 'nada que hacer' } else { 'lo arreglas tu, fuera de AXE' })
         })
     }
 

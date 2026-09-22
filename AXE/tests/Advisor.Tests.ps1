@@ -104,13 +104,27 @@ Describe 'Get-AXEBottleneck - razona sobre combinaciones' -Tag 'unit' {
         $b[0].Id | Should -Be 'clean'
     }
 
-    It 'sin nada malo y sin medicion no se inventa un veredicto de limpieza' {
-        # Sin snapshot no se sabe si el timer esta fino: callar es la respuesta correcta.
-        @(Get-AXEBottleneck -Hw $null -DiagFindings @() -Snapshot $null).Count | Should -Be 0
+    It 'REGRESION (auditoria 2026-09-22 s3.1): sin nada malo y sin medicion NO se calla' {
+        # Antes: sin snapshot no se sabia si el timer estaba fino y la funcion devolvia una lista
+        # vacia sin avisar de nada -- ni "hay un problema" ni "estas limpio", en contra del propio
+        # principio del modulo ("UNKNOWN es un estado de primera clase"). Ahora dice explicitamente
+        # que falta la confirmacion del timer, no un veredicto de limpieza completo.
+        $b = Get-AXEBottleneck -Hw $null -DiagFindings @() -Snapshot $null
+        @($b).Count | Should -Be 1
+        $b[0].Id | Should -Be 'clean-partial'
     }
 
-    It 'los hallazgos OK y UNKNOWN no generan cuellos' {
-        @(Get-AXEBottleneck -Hw $null -DiagFindings @((New-Find 'ramchan' 'OK'),(New-Find 'xmp' 'UNKNOWN')) -Snapshot $null).Count | Should -Be 0
+    It 'REGRESION (auditoria 2026-09-22 s3.1): nada malo pero timer medido > 1ms tampoco se calla' {
+        $snap = [pscustomobject]@{ Timer = [pscustomobject]@{ CurrentMs = 1.7 } }
+        $b = Get-AXEBottleneck -Hw $null -DiagFindings @((New-Find 'xmp' 'OK')) -Snapshot $snap
+        @($b).Count | Should -Be 1
+        $b[0].Id | Should -Be 'clean-partial'
+    }
+
+    It 'los hallazgos OK y UNKNOWN no generan cuellos propios (solo el veredicto "clean-partial" de la regla 7)' {
+        $b = Get-AXEBottleneck -Hw $null -DiagFindings @((New-Find 'ramchan' 'OK'),(New-Find 'xmp' 'UNKNOWN')) -Snapshot $null
+        @($b | Where-Object { $_.Id -in 'ramchan','xmp' }).Count | Should -Be 0
+        $b[0].Id | Should -Be 'clean-partial'
     }
 }
 
@@ -182,9 +196,15 @@ Describe 'Get-AXEAdvice - el orden es la honestidad' -Tag 'unit' {
         @($plan | ForEach-Object { $_.Order }) | Should -Be @(1,2,3)
     }
 
-    It 'sin nada que decir devuelve un plan vacio, no relleno' {
-        @(Get-AXEAdvice -Hw $null -DiagFindings @() -Snapshot $null -Tweaks @() -RecommendedIds @() -AppliedIds @() -Samples @()).Count |
-            Should -Be 0
+    It 'REGRESION (auditoria 2026-09-22 s3.1): sin nada que decir NO calla -- dice "clean-partial", no relleno inventado' {
+        # Antes: plan vacio de verdad (silencio). Ahora Get-AXEBottleneck ya no se calla cuando no
+        # hay BAD pero tampoco se confirmo el timer (Snapshot null aqui), asi que el plan trae
+        # exactamente ese unico veredicto honesto -- sigue sin ser "relleno" (una tarea inventada).
+        $plan = @(Get-AXEAdvice -Hw $null -DiagFindings @() -Snapshot $null -Tweaks @() -RecommendedIds @() -AppliedIds @() -Samples @())
+        $plan.Count | Should -Be 1
+        $plan[0].Kind | Should -Be 'cuello'
+        $plan[0].Id   | Should -Be 'clean-partial'
+        $plan[0].Action | Should -Be 'nada que hacer'
     }
 }
 

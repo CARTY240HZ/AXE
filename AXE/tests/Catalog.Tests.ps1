@@ -97,3 +97,21 @@ Describe 'Deuda de procedencia (§12 anti-patron #12)' -Tag 'sourcedebt' {
         $t2.Id -join ', ' | Should -BeNullOrEmpty
     }
 }
+
+Describe 'REGRESION (auditoria 2026-09-22 s3.2): net_ctcp -- el aviso del catalogo no se pierde en las notas' -Tag 'unit' {
+    # net_ctcp es honesto en su propio Desc ("OJO: CUBIC es el default de Windows desde 10 1709 y
+    # es MAS moderno que CTCP. Esto RETROCEDE la plantilla Internet a un algoritmo viejo"), pero
+    # Get-AXELatencyNotes (20-tweaks.ps1) repetia solo la mitad buena del mensaje para Wi-Fi
+    # ("CTCP recupera antes tras perdida") sin la advertencia. Se comprueba sobre el CODIGO fuente
+    # (no ejecutando la funcion, que exige $script:HW/Get-AXECache reales) que la rama Wi-Fi
+    # incluye el mismo aviso que ya lleva el Desc del tweak.
+    BeforeAll { $script:TweaksSrc = Get-Content "$PSScriptRoot/../src/20-tweaks.ps1" -Raw }
+
+    It 'el Desc de net_ctcp sigue avisando de que CUBIC es mas moderno' {
+        ($script:AllTweaks | Where-Object Id -eq 'net_ctcp').Desc | Should -Match 'CUBIC'
+    }
+
+    It 'la nota de Wi-Fi en Get-AXELatencyNotes repite el aviso, no solo el lado bueno' {
+        $script:TweaksSrc | Should -Match "IsWifi\)\{\s*\[void\]\`$n\.Add\('Wi-Fi:[^']*CUBIC"
+    }
+}

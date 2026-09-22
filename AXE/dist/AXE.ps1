@@ -1,6 +1,6 @@
 ﻿# ================================================================
 # AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-08-19 21:28:40Z
+# Build UTC: 2026-09-22 08:35:49Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -1323,7 +1323,7 @@ function Get-AXELatencyNotes {
     # La nota de moderacion de interrupciones ya no se deduce del medio: se consulta el adaptador.
     # Un Wi-Fi que expone *InterruptModeration la recibe; un Ethernet que no la expone, no.
     $im = Test-AXENicProp '*InterruptModeration'
-    if($h.IsWifi){    [void]$n.Add('Wi-Fi: dentro CTCP (recupera antes tras perdida). El jitter lo domina la radio: por cable bajaria mas.') }
+    if($h.IsWifi){    [void]$n.Add('Wi-Fi: dentro CTCP (recupera antes tras perdida). El jitter lo domina la radio: por cable bajaria mas. OJO: CUBIC (el default de Windows desde 10 1709) es mas moderno que CTCP -- esto retrocede a un algoritmo viejo, no lo actives sin medir que te mejora.') }
     if($im){          [void]$n.Add("Adaptador '$($h.NicName)': expone moderacion de interrupciones, asi que entra en el plan.") }
     else {            [void]$n.Add("Adaptador '$($h.NicName)': no expone moderacion de interrupciones, el ajuste no aplica aqui (no es que falle: no existe la palanca).") }
     if(-not $h.IsSSD){ [void]$n.Add('Disco mecanico: apagar el indexador de busqueda es aqui la mayor ganancia de frametimes, por encima de cualquier valor de registro.') }
@@ -5336,13 +5336,21 @@ function Get-AXEBottleneck {
             Detail='El timer y el jitter que mide AXE aqui son los que da el hipervisor, no los del hardware. Los numeros valen para compararte contigo mismo, no con un equipo real.' })
     }
 
-    # 7. Nada mal configurado Y sistema ya fino: decirlo es mas util que inventar una tarea.
+    # 7. Nada mal configurado: decirlo es mas util que inventar una tarea, PERO el veredicto
+    # depende de si tambien se confirmo el timer. Antes esta rama solo anadia el mensaje cuando
+    # $timerOk era true; si no habia BAD y el timer no se pudo confirmar (-NoMeasure, Snapshot nulo,
+    # o medido pero > 1ms), la funcion devolvia una lista vacia SIN avisar de nada -- ni "hay un
+    # problema" ni "estas limpio". Rompia el principio propio del modulo ("UNKNOWN es un estado
+    # de primera clase, no se calla lo que no se sabe"): ahora siempre hay un veredicto explicito.
     if($out.Count -eq 0){
         $timerOk = $false
         if($Snapshot -and $Snapshot.Timer -isnot [string] -and $Snapshot.Timer.CurrentMs -le 1.0){ $timerOk = $true }
         if($timerOk){
             [void]$out.Add([pscustomobject]@{ Rank=9; Id='clean'; Title='No te encuentro un cuello de botella'
                 Detail='Lo que este programa sabe comprobar esta bien configurado y el timer ya esta fino. A partir de aqui el margen que queda en software es de un digito, y lo grande esta en el hardware o en los ajustes del propio juego. Preferimos decirtelo a inventarte tareas.' })
+        } else {
+            [void]$out.Add([pscustomobject]@{ Rank=9; Id='clean-partial'; Title='Nada mal configurado en lo que se pudo medir'
+                Detail='No hay ningun cuello de botella entre lo que este programa sabe comprobar, pero la resolucion del timer no se ha confirmado en <=1ms (falta medicion, o el resultado esta por encima de ese umbral). No es un "todo limpio" completo: repite la medicion para confirmarlo.' })
         }
     }
     @($out | Sort-Object Rank)
@@ -5376,7 +5384,7 @@ function Get-AXEAdvice {
         [void]$plan.Add([pscustomobject]@{
             Order=$n; Kind='cuello'; Id=$b.Id; Title=$b.Title; Detail=$b.Detail
             Why='medido en tu equipo'; Impact='alto'
-            Action=$(if($b.Id -eq 'clean'){ 'nada que hacer' } else { 'lo arreglas tu, fuera de AXE' })
+            Action=$(if($b.Id -in 'clean','clean-partial'){ 'nada que hacer' } else { 'lo arreglas tu, fuera de AXE' })
         })
     }
 
@@ -7197,13 +7205,13 @@ if($Advice){
     # Consejero (region 12c). Junta diagnostico + cuellos + catalogo + historico de ESTA maquina
     # en un plan ordenado. Mide y GUARDA la medida: usar el consejero es lo que construye la
     # evidencia local, sin que haya que acordarse de registrar nada aparte.
-    #   Salida 1 si hay algun cuello de botella real, para poder encadenarlo en scripts. El id
-    # 'clean' no cuenta: es justo el caso en que NO hay cuello, y devolver error por estar todo
-    # bien seria absurdo.
+    #   Salida 1 si hay algun cuello de botella real, para poder encadenarlo en scripts. Los ids
+    # 'clean'/'clean-partial' no cuentan: son justo el caso en que NO hay cuello (confirmado o con
+    # el timer sin confirmar), y devolver error por estar todo bien seria absurdo.
     $adv = Get-AXEAdviceNow
     Write-Host ''
     foreach($line in (Format-AXEAdvice -Plan $adv.Plan -Samples $adv.Samples)){ Write-Host $line }
-    exit ([int](@($adv.Plan | Where-Object { $_.Kind -eq 'cuello' -and $_.Id -ne 'clean' }).Count -gt 0))
+    exit ([int](@($adv.Plan | Where-Object { $_.Kind -eq 'cuello' -and $_.Id -notin 'clean','clean-partial' }).Count -gt 0))
 }
 if($NetMon){
     # Monitor de red (region 9.5). Solo mide: ninguna rama de este modo escribe nada.
@@ -7621,6 +7629,7 @@ $script:AXEBridgeMap = @{
         if($blk){ throw "no aplicable en este equipo: $blk" }
         if(Test-SnapEligible $tw){ $script:capTweak = $tw.Id }
         try { & $tw.Apply } finally { $script:capTweak = $null }
+        Commit-TweakState $tw.Id
         [pscustomobject]@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }
     }
     'tweaks.revert' = { param($a)
