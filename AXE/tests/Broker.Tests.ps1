@@ -125,4 +125,17 @@ Describe 'Read-AXEBrokerRequest - validacion completa (REGRESION superficie issu
                    args=@{a=@{b=@{c=@{d=@{e=@{f=@{g=@{h=@{i=1}}}}}}}}} }
         (Read-AXEBrokerRequest ($deep | ConvertTo-Json -Compress -Depth 20) $script:Tok).Ok | Should -BeFalse
     }
+    It 'ts como string no-numerico se rechaza sin lanzar' {
+        { Read-AXEBrokerRequest (ReqJson @{ts='not-a-number'}) $script:Tok } | Should -Not -Throw
+        (Read-AXEBrokerRequest (ReqJson @{ts='not-a-number'}) $script:Tok).Ok | Should -BeFalse
+    }
+    It 'ts como array se rechaza sin lanzar' {
+        $j = (@{ cmd='tweaks.apply'; args=@{}; token=$script:Tok; ts=@(1,2,3) } | ConvertTo-Json -Compress)
+        { Read-AXEBrokerRequest $j $script:Tok } | Should -Not -Throw
+        (Read-AXEBrokerRequest $j $script:Tok).Ok | Should -BeFalse
+    }
+    It 'JSON null (top-level) se rechaza sin lanzar' {
+        { Read-AXEBrokerRequest 'null' $script:Tok } | Should -Not -Throw
+        (Read-AXEBrokerRequest 'null' $script:Tok).Ok | Should -BeFalse
+    }
 }

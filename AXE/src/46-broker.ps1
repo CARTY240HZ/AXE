@@ -106,19 +106,33 @@ function Read-AXEBrokerRequest([string]$Json, [string]$ExpectedToken){
     }
     try { $msg = $Json | ConvertFrom-Json -EA Stop }
     catch { return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='JSON invalido' } }
-    foreach($k in 'cmd','token','ts'){
-        if(-not $msg.PSObject.Properties[$k]){ return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason="falta '$k'" } }
+
+    # Guard contra top-level null: ConvertFrom-Json retorna $null en PowerShell 5.1,
+    # y $null.PSObject.Properties lanza en lugar de retornar $null como en PS7+
+    if($null -eq $msg){
+        return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='peticion malformada' }
     }
-    if([string]$msg.token -ne [string]$ExpectedToken){
-        return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='token invalido' }
+
+    # Wrap todo lo demas en try/catch para convertir CUALQUIER excepcion
+    # (e.g., [long]$msg.ts con valor no-numerico) en Ok=$false, no throw.
+    try {
+        foreach($k in 'cmd','token','ts'){
+            if(-not $msg.PSObject.Properties[$k]){ return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason="falta '$k'" } }
+        }
+        if([string]$msg.token -ne [string]$ExpectedToken){
+            return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='token invalido' }
+        }
+        if(-not (Test-AXEBrokerTimestamp ([long]$msg.ts))){
+            return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='timestamp fuera de ventana' }
+        }
+        if(-not (Test-AXEBrokerCommand ([string]$msg.cmd))){
+            return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason="comando no permitido: $($msg.cmd)" }
+        }
+        $argsHt = @{}
+        if($msg.args){ $msg.args.PSObject.Properties | ForEach-Object { $argsHt[$_.Name] = $_.Value } }
+        [pscustomobject]@{ Ok=$true; Cmd=[string]$msg.cmd; Args=$argsHt; Reason=$null }
     }
-    if(-not (Test-AXEBrokerTimestamp ([long]$msg.ts))){
-        return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='timestamp fuera de ventana' }
+    catch {
+        return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason='peticion malformada' }
     }
-    if(-not (Test-AXEBrokerCommand ([string]$msg.cmd))){
-        return [pscustomobject]@{ Ok=$false; Cmd=$null; Args=$null; Reason="comando no permitido: $($msg.cmd)" }
-    }
-    $argsHt = @{}
-    if($msg.args){ $msg.args.PSObject.Properties | ForEach-Object { $argsHt[$_.Name] = $_.Value } }
-    [pscustomobject]@{ Ok=$true; Cmd=[string]$msg.cmd; Args=$argsHt; Reason=$null }
 }
