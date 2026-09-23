@@ -308,3 +308,53 @@ function Invoke-AXEPrivileged([string]$Cmd, [hashtable]$A){
     try { Remove-Item -LiteralPath $t.Path -Force -EA SilentlyContinue } catch {}
     $res
 }
+
+function Invoke-AXEPrivilegedBackground([string]$Cmd, [hashtable]$A){
+    # Arranca Invoke-AXEPrivileged en un runspace MTA aparte SIN bloquear el hilo llamante.
+    # Devuelve @{Runspace;PS;Handle} para que quien llama sondee Handle.IsCompleted a su ritmo
+    # (un DispatcherTimer de UI en produccion -- Start-AXEPrivilegedCommand, mas abajo -- o un
+    # bucle simple en tests). Las 5 funciones del cliente del broker son autonomas (no dependen
+    # de Write-AXELog ni de $script:CAT), asi que se inyectan por TEXTO leyendo la funcion
+    # ACTUALMENTE definida en este runspace (Get-Item function:) -- lo que permite a los tests
+    # sustituir Invoke-AXEPrivileged por un doble ANTES de llamar, sin tocar produccion. Nunca se
+    # dot-sourcea el motor entero aqui: eso llegaria al fallthrough de 49-webmain.ps1 y abriria
+    # OTRA ventana WebView2 desde el runspace de fondo.
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.ApartmentState = 'MTA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
+    $ps = [powershell]::Create(); $ps.Runspace = $rs
+    $fnNames = 'New-AXEBrokerToken','Write-AXEBrokerFrame','Read-AXEBrokerFrame','Send-AXEBrokerRequest','Invoke-AXEPrivileged'
+    $fnSrc = ($fnNames | ForEach-Object { "function $_ { $((Get-Item "function:$_").ScriptBlock) }" }) -join "`n"
+    [void]$ps.AddScript("$fnSrc`nInvoke-AXEPrivileged `$args[0] `$args[1]")
+    [void]$ps.AddArgument($Cmd)
+    [void]$ps.AddArgument($A)
+    @{ Runspace = $rs; PS = $ps; Handle = $ps.BeginInvoke() }
+}
+
+function Receive-AXEPrivilegedBackground($Bg){
+    # Recoge el resultado UNA VEZ que Handle.IsCompleted es true. Cierra el runspace. Nunca
+    # lanza: una excepcion dentro del runspace se repackea como {ok=false}.
+    $result = $null; $exn = $null
+    try { $result = $Bg.PS.EndInvoke($Bg.Handle) } catch { $exn = $_ }
+    try { $Bg.Runspace.Close() } catch {}
+    try { $Bg.PS.Dispose() } catch {}
+    if($exn){ return [pscustomobject]@{ ok=$false; data=$null; err=$exn.Exception.Message } }
+    [pscustomobject]$result[0]
+}
+
+function Start-AXEPrivilegedCommand([string]$Cmd, [hashtable]$A, [scriptblock]$OnDone){
+    # Envoltorio WPF: sondea Handle.IsCompleted con un DispatcherTimer -- mismo patron que ya usa
+    # $script:TelemetryTimer en 48-webbridge.ps1 para la telemetria -- y llama a $OnDone en el
+    # hilo de UI cuando termina. NO testeado por Pester (exige un Dispatcher STA vivo, que un
+    # test sin ventana no tiene): verificado por el harness de build.ps1 (AXE_WEBUI_TEST=1) +
+    # comprobacion manual antes de release. Las dos funciones de las que depende (arriba) si lo
+    # estan por completo.
+    $bg = Invoke-AXEPrivilegedBackground $Cmd $A
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(150)
+    $timer.Add_Tick({
+        if(-not $bg.Handle.IsCompleted){ return }
+        $timer.Stop()
+        & $OnDone (Receive-AXEPrivilegedBackground $bg)
+    }.GetNewClosure())
+    $timer.Start()
+}

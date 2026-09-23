@@ -89,39 +89,6 @@ $script:AXEBridgeMap = @{
             }
         })
     }
-    'tweaks.apply' = { param($a)
-        if(-not (Test-Admin)){ throw 'requiere admin: relanza AXE con AXE.bat (se eleva solo)' }
-        $tw = $script:CAT | Where-Object Id -eq ([string]$a.id) | Select-Object -First 1
-        if(-not $tw){ throw "tweak desconocido: $($a.id)" }
-        $blk = Get-BlockReason $tw
-        if($blk){ throw "no aplicable en este equipo: $blk" }
-        if(Test-SnapEligible $tw){ $script:capTweak = $tw.Id }
-        try { & $tw.Apply } finally { $script:capTweak = $null }
-        Commit-TweakState $tw.Id
-        [pscustomobject]@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }
-    }
-    'tweaks.revert' = { param($a)
-        if(-not (Test-Admin)){ throw 'requiere admin: relanza AXE con AXE.bat (se eleva solo)' }
-        $tw = $script:CAT | Where-Object Id -eq ([string]$a.id) | Select-Object -First 1
-        if(-not $tw){ throw "tweak desconocido: $($a.id)" }
-        if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
-        [pscustomobject]@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }
-    }
-    'tweaks.masterRevert' = { param($a)
-        if(-not (Test-Admin)){ throw 'requiere admin: relanza AXE con AXE.bat (se eleva solo)' }
-        $done = 0; $err = 0
-        foreach($tw in $script:CAT){
-            try {
-                if(Get-BlockReason $tw){ continue }
-                if(-not (Test-TweakSafe $tw)){ continue }   # solo revertir lo que esta aplicado
-                if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
-                $done++
-            } catch { $err++; Write-AXELog "MasterRevert: $($tw.Name): $($_.Exception.Message)" 'ERR' }
-        }
-        try { Invoke-AXEMasterRevertTail } catch { Write-AXELog "MasterRevertTail: $($_.Exception.Message)" 'ERR' }
-        [pscustomobject]@{ reverted=$done; errors=$err }
-    }
-
     # --- Fase 7: Telemetria / Prueba / Seguridad ---
     # Todo re-empaqueta funciones YA EXISTENTES del motor (32/33/34/35/36). El front pinta las
     # 'lines' del motor TAL CUAL (mismo texto que la CLI): la honestidad vive en el motor, no aqui.
@@ -257,14 +224,6 @@ $script:AXEBridgeMap = @{
                     noise=$_.Noise; conclusive=[bool]$_.Conclusive; tag=$_.Tag; reason=$_.Reason }
             })
         }
-    }
-
-    # Punto de restauracion del sistema. Best-effort, NUNCA lanza: devuelve {Status;Message}. En
-    # anticheat / SR deshabilitado da Status='fallback' con el motivo (no es un error de AXE).
-    'safety.restorePoint' = { param($a)
-        if(-not (Test-Admin)){ throw 'requiere admin: relanza AXE con AXE.bat (se eleva solo)' }
-        $r = New-AXERestorePoint
-        [pscustomobject]@{ status=[string]$r.Status; message=[string]$r.Message }
     }
 
     # --- Sesion de juego (region 12b + spec 2026-07-25) ---
@@ -431,6 +390,10 @@ function Invoke-AXEBridgeCmd {
 
 function Register-AXEBridge($core){
     # JS -> PS: cada mensaje es {id, cmd, args}. Se responde por ExecuteScriptAsync(__axeReply).
+    # Los 4 comandos del broker (issue #5) NUNCA corren sincronos aqui: esperar el UAC es una
+    # espera SIN LIMITE (decision humana) y este handler corre en el hilo de UI de WPF -- se
+    # despachan a un runspace de fondo (Start-AXEPrivilegedCommand, 46-broker.ps1) y se responde
+    # cuando terminan, igual que la telemetria de mas abajo nunca bloquea este hilo.
     $core.add_WebMessageReceived({
         param($s,$e)
         $reqId = -1
@@ -442,7 +405,19 @@ function Register-AXEBridge($core){
             if($env:AXE_WEBUI_DEBUG -eq '1'){ Write-AXELog "Puente RX id=$reqId cmd=$($msg.cmd)" 'INFO' }
             $argsHt = @{}
             if($msg.args){ $msg.args.PSObject.Properties | ForEach-Object { $argsHt[$_.Name] = $_.Value } }
-            $res = Invoke-AXEBridgeCmd $msg.cmd $argsHt
+            $cmd = [string]$msg.cmd
+
+            if(@($script:AXEBrokerCommands) -ccontains $cmd){
+                $rid = $reqId; $coreRef = $s
+                Start-AXEPrivilegedCommand -Cmd $cmd -A $argsHt -OnDone {
+                    param($res)
+                    $json = ($res | ConvertTo-Json -Depth 8 -Compress)
+                    $js = 'window.__axeReply(' + $rid + ', ' + ($json | ConvertTo-Json) + ')'
+                    try { [void]$coreRef.ExecuteScriptAsync($js) } catch {}
+                }.GetNewClosure()
+                return
+            }
+            $res = Invoke-AXEBridgeCmd $cmd $argsHt
         } catch {
             $res = [pscustomobject]@{ ok=$false; data=$null; err="payload invalido: $($_.Exception.Message)" }
         }
