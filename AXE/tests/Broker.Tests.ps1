@@ -371,3 +371,32 @@ Describe 'Send-AXEBrokerRequest - cliente contra un servidor de pruebas minimo' 
         $r.ok | Should -BeFalse
     }
 }
+
+Describe 'CLI -Broker/-Token de extremo a extremo (dist/AXE.ps1 real, sin admin)' -Tag 'integration' {
+    # Requiere dist/AXE.ps1 reconstruido con los cambios de este plan (Task 10). Lanza el propio
+    # .ps1 construido como subproceso NORMAL (sin admin): ejercita 00-header (parseo de -Broker/
+    # -Token) + 49-webmain (despacho) + Start-AXEBroker juntos, de principio a fin, sin UAC.
+    It 'dist\AXE.ps1 -Broker/-Token responde "no elevado" a traves del CLI real' {
+        # dist/AXE.ps1 YA EXISTE en el repo (build anterior, de otro trabajo): Test-Path por si
+        # solo no basta para detectar "todavia sin el broker". Se comprueba que el CONTENIDO
+        # incluye ya Start-AXEBroker -- si no, es la build vieja (pre-Task 10) y se salta en vez
+        # de fallar contra un dist desactualizado.
+        $dist = "$PSScriptRoot/../dist/AXE.ps1"
+        if(-not (Test-Path $dist) -or -not (Select-String -Path $dist -Pattern 'function Start-AXEBroker' -Quiet)){
+            Set-ItResult -Skipped -Because 'dist/AXE.ps1 sin el broker todavia (se reconstruye en Task 10)'; return
+        }
+        $pipe = "AXE-Test-E2E-$([guid]::NewGuid().ToString('N'))"
+        $tokenPath = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N') + '.token')
+        Set-Content -LiteralPath $tokenPath -Value 'tokE2E' -NoNewline
+        $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-File',"`"$dist`"",'-Broker',$pipe,'-Token',"`"$tokenPath`"") -PassThru -WindowStyle Hidden
+        Start-Sleep -Milliseconds 500
+        $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe, [System.IO.Pipes.PipeDirection]::InOut)
+        $client.Connect(5000)
+        Write-AXEBrokerFrame $client (@{ cmd='safety.restorePoint'; args=@{}; token='tokE2E'; ts=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress)
+        $resp = Read-AXEBrokerFrame $client
+        $client.Dispose()
+        $p.WaitForExit(5000) | Out-Null
+        ($resp | ConvertFrom-Json).ok | Should -BeFalse
+        ($resp | ConvertFrom-Json).err | Should -Match 'elevad'
+    }
+}

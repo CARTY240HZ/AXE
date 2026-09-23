@@ -122,7 +122,13 @@ param(
     [switch]$NetLoad,
     # Vacio a proposito: el default real vive en $script:AXENetLoadUrl (37-netmon), y un param
     # block no puede leer una variable de un modulo que aun no se ha concatenado.
-    [string]$NetLoadUrl = ''
+    [string]$NetLoadUrl = '',
+    # Broker privilegiado bajo demanda (issue #5, auditoria 2026-09-22 s1.2): la UI (sin admin)
+    # relanza este mismo script con -Broker/-Token cuando hace falta tweaks.apply/revert/
+    # masterRevert o safety.restorePoint. Nombres verificados sin colision contra src/ (leccion
+    # $Games/S24) antes de anadirlos.
+    [string]$Broker,
+    [string]$Token
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
