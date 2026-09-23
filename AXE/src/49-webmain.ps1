@@ -15,6 +15,16 @@
 # el kernel ya descongelo lo congelado, pero las prioridades DEGRADADAS siguen bajas porque eso no es
 # estado del job. El diario en disco (AXE/session_degraded.json) las devuelve, comprobando
 # pid+nombre+arranque para no tocar un proceso que solo heredo el numero.
+# --- BROKER (issue #5): antes que cualquier otra cosa del arranque GUI, incluido
+# Restore-AXESessionDegraded. Si -Broker esta presente, este proceso ES el broker: procesa
+# UNA peticion y sale, nunca llega a abrir la ventana. No puede vivir en 45-cli.ps1: ese modulo
+# se concatena ANTES que 46-broker.ps1 (orden alfabetico de build.ps1), y PowerShell no permite
+# llamar una funcion antes de que su sentencia 'function' se haya ejecutado en el script -- Start-
+# AXEBroker (definida en 46) no existiria todavia en ese punto si el despacho viviera en 45.
+if($Broker){
+    exit (Start-AXEBroker $Broker $Token)
+}
+
 try { [void](Restore-AXESessionDegraded) } catch {}
 Show-AXEWebHost
 exit 0
