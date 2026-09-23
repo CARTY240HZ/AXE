@@ -400,3 +400,39 @@ Describe 'CLI -Broker/-Token de extremo a extremo (dist/AXE.ps1 real, sin admin)
         ($resp | ConvertFrom-Json).err | Should -Match 'elevad'
     }
 }
+
+Describe 'Invoke-AXEPrivilegedBackground / Receive-AXEPrivilegedBackground - runspace sin bloquear' -Tag 'unit' {
+    BeforeAll {
+        $script:OldInvokePriv = (Get-Item function:Invoke-AXEPrivileged -EA SilentlyContinue).ScriptBlock
+        # Doble de pruebas: nunca toca Start-Process/UAC. Devuelve lo que recibio, para probar
+        # que los argumentos SI cruzan al runspace de fondo intactos.
+        Set-Item function:Invoke-AXEPrivileged -Value {
+            param($Cmd, $A)
+            [pscustomobject]@{ ok=$true; data=@{ echoCmd=$Cmd; echoId=$A.id }; err=$null }
+        }
+    }
+    AfterAll {
+        if($script:OldInvokePriv){ Set-Item function:Invoke-AXEPrivileged -Value $script:OldInvokePriv }
+    }
+
+    It 'el resultado del doble de pruebas cruza intacto el runspace de fondo' {
+        $bg = Invoke-AXEPrivilegedBackground 'tweaks.apply' @{ id = 'cpu_mmcss' }
+        $timeout = (Get-Date).AddSeconds(5)
+        while(-not $bg.Handle.IsCompleted -and (Get-Date) -lt $timeout){ Start-Sleep -Milliseconds 50 }
+        $bg.Handle.IsCompleted | Should -BeTrue -Because 'el runspace de fondo debe terminar en <5s con el doble de pruebas'
+        $r = Receive-AXEPrivilegedBackground $bg
+        $r.ok | Should -BeTrue
+        $r.data.echoCmd | Should -Be 'tweaks.apply'
+        $r.data.echoId | Should -Be 'cpu_mmcss'
+    }
+
+    It 'una excepcion dentro del runspace se repackea como ok=false, no se relanza' {
+        Set-Item function:Invoke-AXEPrivileged -Value { param($Cmd,$A) throw 'boom de prueba' }
+        $bg = Invoke-AXEPrivilegedBackground 'tweaks.apply' @{ id = 'x' }
+        $timeout = (Get-Date).AddSeconds(5)
+        while(-not $bg.Handle.IsCompleted -and (Get-Date) -lt $timeout){ Start-Sleep -Milliseconds 50 }
+        $r = Receive-AXEPrivilegedBackground $bg
+        $r.ok | Should -BeFalse
+        $r.err | Should -Match 'boom de prueba'
+    }
+}
