@@ -13,17 +13,15 @@
     if (res.ok) p.resolve(res.data); else p.reject(new Error(res.err || 'error'));
   };
 
-  function call(cmd, args) {
+  function call(cmd, args, timeoutMs) {
     return new Promise((resolve, reject) => {
       const id = seq++;
       pending.set(id, { resolve, reject });
       const bridge = window.chrome && window.chrome.webview;
       if (!bridge) { reject(new Error('puente no disponible (¿fuera de WebView2?)')); return; }
-      // Postar el OBJETO (no un string): WebView2 lo serializa y WebMessageAsJson lo entrega como
-      // objeto JSON que ConvertFrom-Json (PS) parsea a {id,cmd,args}. Un JSON.stringify aqui haria
-      // que el lado PS reciba un string doble-codificado (id=0, cmd vacio).
       bridge.postMessage({ id, cmd, args: args || {} });
-      setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error('timeout: ' + cmd)); } }, 15000);
+      const ms = timeoutMs || 15000;
+      setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error('timeout: ' + cmd)); } }, ms);
     });
   }
 
