@@ -415,7 +415,7 @@
     }
     act.disabled = true; act.textContent = wantApply ? 'aplicando…' : 'revirtiendo…';
     try {
-      const r = await AXE.call(wantApply ? 'tweaks.apply' : 'tweaks.revert', { id: t.id });
+      const r = await AXE.call(wantApply ? 'tweaks.apply' : 'tweaks.revert', { id: t.id }, 90000);
       t.applied = !!r.applied;
       card.replaceWith(tweakCard(t));
       setOptBar((wantApply ? 'Aplicado' : 'Revertido') + ': ' + t.name + (r.reboot ? ' · requiere reinicio' : ''), 'ok');
@@ -431,7 +431,7 @@
     const btn = $('btnMasterRevert'); btn.disabled = true;
     setOptBar('revirtiendo todo… no cierres la ventana', null);
     try {
-      const r = await AXE.call('tweaks.masterRevert', {});
+      const r = await AXE.call('tweaks.masterRevert', {}, 90000);
       setOptBar('Master revert: ' + r.reverted + ' revertidos' + (r.errors ? ' · ' + r.errors + ' con error (ver log)' : '') + ' · reinicia el PC', r.errors ? 'err' : 'ok');
       AXE.call('tweaks.list', {}).then((l) => renderCatalog(Array.isArray(l) ? l : [])).catch(() => {});
     } catch (e) {
@@ -632,7 +632,7 @@
     $('btnRestore').addEventListener('click', () => {
       const b = $('btnRestore'); b.disabled = true; b.classList.add('busy');
       $('segRpState').textContent = 'creando…'; $('rpDot').className = 'dot';
-      AXE.call('safety.restorePoint', {}).then((r) => {
+      AXE.call('safety.restorePoint', {}, 90000).then((r) => {
         const ok = r.status === 'ok', fb = r.status === 'fallback';
         $('segRpState').textContent = ok ? 'creado' : (fb ? 'no disponible' : 'error');
         $('rpDot').className = 'dot ' + (ok ? 'ok' : (fb ? 'warn' : 'err'));
@@ -648,7 +648,7 @@
       const b = $('btnSegMaster'); b.disabled = true;
       const msg = $('segMasterMsg'); msg.hidden = false; msg.textContent = 'revirtiendo todo… no cierres la ventana';
       try {
-        const r = await AXE.call('tweaks.masterRevert', {});
+        const r = await AXE.call('tweaks.masterRevert', {}, 90000);
         msg.textContent = 'Master revert: ' + r.reverted + ' revertidos' + (r.errors ? ' · ' + r.errors + ' con error (ver log)' : '') + ' · reinicia el PC';
         if (loaded.optimizar) AXE.call('tweaks.list', {}).then((l) => renderCatalog(Array.isArray(l) ? l : [])).catch(() => {});
       } catch (e) { msg.textContent = 'Master revert falló: ' + e.message; }
