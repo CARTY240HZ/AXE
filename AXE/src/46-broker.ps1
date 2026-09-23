@@ -287,14 +287,18 @@ function Send-AXEBrokerRequest([string]$PipeName, [string]$Cmd, [hashtable]$A, [
     }
 }
 
-function Invoke-AXEPrivileged([string]$Cmd, [hashtable]$A){
+function Invoke-AXEPrivileged([string]$Cmd, [hashtable]$A, [string]$DistPath = $PSCommandPath){
     # Orquestacion completa del lado UI: token + pipe name aleatorios, lanza el broker elevado,
     # conecta, manda la peticion, repasa la respuesta. NO testeado automaticamente (Start-Process
     # -Verb RunAs dispararia un UAC real) -- las dos funciones de las que depende si lo estan.
+    # $DistPath tiene default $PSCommandPath para que una llamada directa (misma thread/runspace
+    # que carga el motor) siga resolviendo sola, como antes -- pero Invoke-AXEPrivilegedBackground
+    # SIEMPRE lo pasa explicito: $PSCommandPath no cruza a un runspace nuevo vía AddScript (viene
+    # vacio ahi dentro), asi que hay que capturarlo en el runspace de LLAMADA y pasarlo como dato.
     $dir = Join-Path $env:LOCALAPPDATA 'AXE\broker'
     $t = New-AXEBrokerToken $dir
     $pipeName = "AXE-Broker-$([guid]::NewGuid().ToString('N'))"
-    $distPath = $PSCommandPath
+    $distPath = $DistPath
     try {
         Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','RemoteSigned','-File',"`"$distPath`"",'-Broker',$pipeName,'-Token',"`"$($t.Path)`"") -Verb RunAs -WindowStyle Hidden | Out-Null
     } catch {
@@ -319,14 +323,21 @@ function Invoke-AXEPrivilegedBackground([string]$Cmd, [hashtable]$A){
     # sustituir Invoke-AXEPrivileged por un doble ANTES de llamar, sin tocar produccion. Nunca se
     # dot-sourcea el motor entero aqui: eso llegaria al fallthrough de 49-webmain.ps1 y abriria
     # OTRA ventana WebView2 desde el runspace de fondo.
+    # $PSCommandPath se lee AQUI, en el runspace de LLAMADA (donde SI resuelve al .ps1 real) --
+    # nunca dentro del runspace de fondo via AddScript, donde viene vacio (variable automatica,
+    # no cruza) y dejaria a Invoke-AXEPrivileged relanzando powershell.exe con -File "" (issue
+    # detectado en revision de Task 8: el broker nunca abria el pipe, Send-AXEBrokerRequest
+    # timeaba a los 20s tras un UAC ya disparado en vano).
+    $distPath = $PSCommandPath
     $rs = [runspacefactory]::CreateRunspace()
     $rs.ApartmentState = 'MTA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
     $ps = [powershell]::Create(); $ps.Runspace = $rs
     $fnNames = 'New-AXEBrokerToken','Write-AXEBrokerFrame','Read-AXEBrokerFrame','Send-AXEBrokerRequest','Invoke-AXEPrivileged'
     $fnSrc = ($fnNames | ForEach-Object { "function $_ { $((Get-Item "function:$_").ScriptBlock) }" }) -join "`n"
-    [void]$ps.AddScript("$fnSrc`nInvoke-AXEPrivileged `$args[0] `$args[1]")
+    [void]$ps.AddScript("$fnSrc`nInvoke-AXEPrivileged `$args[0] `$args[1] `$args[2]")
     [void]$ps.AddArgument($Cmd)
     [void]$ps.AddArgument($A)
+    [void]$ps.AddArgument($distPath)
     @{ Runspace = $rs; PS = $ps; Handle = $ps.BeginInvoke() }
 }
 

@@ -405,10 +405,12 @@ Describe 'Invoke-AXEPrivilegedBackground / Receive-AXEPrivilegedBackground - run
     BeforeAll {
         $script:OldInvokePriv = (Get-Item function:Invoke-AXEPrivileged -EA SilentlyContinue).ScriptBlock
         # Doble de pruebas: nunca toca Start-Process/UAC. Devuelve lo que recibio, para probar
-        # que los argumentos SI cruzan al runspace de fondo intactos.
+        # que los argumentos SI cruzan al runspace de fondo intactos -- incluido $DistPath, que
+        # Invoke-AXEPrivilegedBackground debe pasar explicito (ver el siguiente It: $PSCommandPath
+        # no cruza solo a un runspace nuevo via AddScript, viene vacio ahi dentro).
         Set-Item function:Invoke-AXEPrivileged -Value {
-            param($Cmd, $A)
-            [pscustomobject]@{ ok=$true; data=@{ echoCmd=$Cmd; echoId=$A.id }; err=$null }
+            param($Cmd, $A, $DistPath)
+            [pscustomobject]@{ ok=$true; data=@{ echoCmd=$Cmd; echoId=$A.id; echoDistPath=$DistPath }; err=$null }
         }
     }
     AfterAll {
@@ -426,8 +428,24 @@ Describe 'Invoke-AXEPrivilegedBackground / Receive-AXEPrivilegedBackground - run
         $r.data.echoId | Should -Be 'cpu_mmcss'
     }
 
+    It 'DistPath ($PSCommandPath leido en el runspace de LLAMADA) cruza intacto, nunca vacio (REGRESION revision Task 8)' {
+        # Bug real detectado en revision: Invoke-AXEPrivileged leia $PSCommandPath DENTRO del
+        # runspace de fondo (variable automatica, no cruza via AddScript => vacio ahi). Con eso
+        # vacio, Start-Process relanzaba powershell.exe con -File "" -- el proceso elevado salia
+        # sin abrir el pipe, y Send-AXEBrokerRequest timeaba a los 20s tras disparar un UAC en
+        # vano. La correccion: Invoke-AXEPrivilegedBackground lee $PSCommandPath en SU PROPIO
+        # runspace (el de llamada, donde SI resuelve) y lo pasa como dato explicito.
+        $bg = Invoke-AXEPrivilegedBackground 'tweaks.apply' @{ id = 'x' }
+        $timeout = (Get-Date).AddSeconds(5)
+        while(-not $bg.Handle.IsCompleted -and (Get-Date) -lt $timeout){ Start-Sleep -Milliseconds 50 }
+        $r = Receive-AXEPrivilegedBackground $bg
+        $r.ok | Should -BeTrue
+        $r.data.echoDistPath | Should -Not -BeNullOrEmpty -Because 'un DistPath vacio es exactamente el bug: -File "" nunca abre el pipe'
+        (Test-Path -LiteralPath $r.data.echoDistPath) | Should -BeTrue -Because 'debe ser una ruta real (aqui, este mismo 46-broker.ps1), no una cadena cualquiera'
+    }
+
     It 'una excepcion dentro del runspace se repackea como ok=false, no se relanza' {
-        Set-Item function:Invoke-AXEPrivileged -Value { param($Cmd,$A) throw 'boom de prueba' }
+        Set-Item function:Invoke-AXEPrivileged -Value { param($Cmd,$A,$DistPath) throw 'boom de prueba' }
         $bg = Invoke-AXEPrivilegedBackground 'tweaks.apply' @{ id = 'x' }
         $timeout = (Get-Date).AddSeconds(5)
         while(-not $bg.Handle.IsCompleted -and (Get-Date) -lt $timeout){ Start-Sleep -Milliseconds 50 }
