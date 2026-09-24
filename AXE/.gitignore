@@ -1,5 +1,7 @@
 # Artefactos de test/CI (los genera scripts/Invoke-AXETests.ps1 -CI)
 dist/test-results/
+# Capturas del smoke E2E de la ventana real (scripts/Invoke-AXEUiSmoke.ps1)
+dist/ui-smoke/
 
 # Firmas y builds locales sin firmar (el release firmado lo publica CI)
 dist/*.cat
