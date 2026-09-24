@@ -48,7 +48,9 @@ namespace AXE {
       double freq = (double)Stopwatch.Frequency;
       double toMs = 1000.0 / freq;
       long endTicks = Stopwatch.GetTimestamp() + (long)(freq * durationMs / 1000.0);
-      int B = 2000; double bw = 0.05;            // 2000 buckets x 0.05ms = 0..100ms
+      // 100000 buckets x 1us = 0..100ms. Con 0.05ms el P99.9 nunca bajaba de 50us (borde del primer
+      // cubo): en un equipo sano salia SIEMPRE 0.050 ms, una linea plana que parecia medida y no lo era.
+      int B = 100000; double bw = 0.001;
       long[] hist = new long[B];
       long n = 0; double sum = 0.0, max = 0.0; long stalls = 0;
       long prev = Stopwatch.GetTimestamp();

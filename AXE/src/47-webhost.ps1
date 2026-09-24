@@ -130,7 +130,18 @@ function Show-AXEWebHost {
     # dispara: el smoke test solo valida que carcasa+control se construyen.
     $win.Add_Loaded({
         try {
-            $cwEnv = [Microsoft.Web.WebView2.Core.CoreWebView2Environment]::CreateAsync($null, $script:Udf, $null).GetAwaiter().GetResult()
+            # AXE_WEBVIEW_DEBUG_PORT: SOLO para scripts\Invoke-AXEUiSmoke.ps1 (E2E de la ventana real
+            # por CDP). WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS no se honra aqui (medido), asi que va
+            # por opciones. Sin la variable, opciones $null: produccion identica. Numero validado.
+            $opts = $null
+            if($env:AXE_WEBVIEW_DEBUG_PORT -match '^\d{4,5}$'){
+                # El ctor solo tiene parametros OPCIONALES (y cuantos, depende del SDK): PowerShell no
+                # los rellena solo, asi que se invoca por reflexion con sus valores por defecto.
+                $ctor = [Microsoft.Web.WebView2.Core.CoreWebView2EnvironmentOptions].GetConstructors() | Select-Object -First 1
+                $opts = $ctor.Invoke([object[]]@($ctor.GetParameters() | ForEach-Object { $_.DefaultValue }))
+                $opts.AdditionalBrowserArguments = "--remote-debugging-port=$($env:AXE_WEBVIEW_DEBUG_PORT)"
+            }
+            $cwEnv = [Microsoft.Web.WebView2.Core.CoreWebView2Environment]::CreateAsync($null, $script:Udf, $opts).GetAwaiter().GetResult()
             $script:Web.EnsureCoreWebView2Async($cwEnv) | Out-Null
         } catch { Write-AXELog "WebView2 entorno/init fallo: $($_.Exception.Message)" 'ERR' }
     })

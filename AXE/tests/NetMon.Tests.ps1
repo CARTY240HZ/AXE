@@ -102,6 +102,16 @@ Describe 'Get-AXENetFindings' {
         $f[0].Msg | Should -Match 'no responde'
     }
 
+    # REGRESION: medido en una red real, router que filtra ICMP + internet con 0% de perdida salia
+    # como ERR "o el enlace esta caido". Si internet responde, el enlace NO esta caido.
+    It 'router mudo pero internet responde: no es error, el router filtra ICMP' {
+        $gw  = Get-AXENetStats -Samples @($null,$null,$null)
+        $pub = Get-AXENetStats -Samples @(7,8,9,8)
+        $f = @(Get-AXENetFindings -Gw $gw -Pub $pub)
+        @($f | Where-Object Sev -eq 'ERR').Count | Should -Be 0
+        ($f | Where-Object Msg -match 'filtra' | Select-Object -First 1).Sev | Should -Be 'INFO'
+    }
+
     It 'jitter local por encima del corte practico avisa' {
         # deltas de 10ms => jitter 10 > 5
         $gw = Get-AXENetStats -Samples @(1,11,1,11)

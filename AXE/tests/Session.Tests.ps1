@@ -137,6 +137,25 @@ Describe 'Get-AXESessionPlan - config y casos limite' -Tag 'unit' {
         NamesOf $plan.Congelado | Should -Contain 'randomA'
         NamesOf $plan.Congelado | Should -Not -Contain 'randomB'
     }
+    # REGRESION: solo se excluia el PID de AXE. Su WebView2 (msedgewebview2 x N, hijos y nietos
+    # del host) caia en CONGELAR: al activar la sesion la ventana de AXE se congelaba y no se
+    # podia pulsar OFF. Otro msedgewebview2 AJENO (Widgets, otra app) sigue su reparto normal.
+    It 'todo el arbol de procesos de AXE queda intacto; un proceso del mismo nombre ajeno no' {
+        function P($id,$name,$ppid){ [pscustomobject]@{ Pid=$id; Name=$name; SessionId=1; Path=$null; ParentPid=$ppid } }
+        $facts = @(
+            (P 99  'powershell'     1)     # AXE (host)
+            (P 200 'msedgewebview2' 99)    # navegador WebView2 de AXE
+            (P 201 'msedgewebview2' 200)   # renderer de AXE (nieto)
+            (P 300 'msedgewebview2' 50)    # WebView2 de OTRA app
+            (P 301 'randomApp'      50)
+        )
+        $plan = Get-AXESessionPlan -Processes $facts -GamePid 0 -GameName 'x' -SelfPid 99 -SessionId 1
+        $frozen = @($plan.Congelado | ForEach-Object Pid)
+        $frozen | Should -Not -Contain 200
+        $frozen | Should -Not -Contain 201
+        $frozen | Should -Contain 300
+        @($plan.Intacto | ForEach-Object Pid) | Should -Contain 201
+    }
 }
 
 # --- Persistencia del reparto (spec 2026-07-25). $script:AXEData apunta a un temporal: mismo

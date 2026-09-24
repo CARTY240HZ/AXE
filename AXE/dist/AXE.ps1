@@ -1,6 +1,6 @@
 ﻿# ================================================================
 # AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-24 08:31:17Z
+# Build UTC: 2026-09-24 08:49:23Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -1943,7 +1943,9 @@ namespace AXE {
       double freq = (double)Stopwatch.Frequency;
       double toMs = 1000.0 / freq;
       long endTicks = Stopwatch.GetTimestamp() + (long)(freq * durationMs / 1000.0);
-      int B = 2000; double bw = 0.05;            // 2000 buckets x 0.05ms = 0..100ms
+      // 100000 buckets x 1us = 0..100ms. Con 0.05ms el P99.9 nunca bajaba de 50us (borde del primer
+      // cubo): en un equipo sano salia SIEMPRE 0.050 ms, una linea plana que parecia medida y no lo era.
+      int B = 100000; double bw = 0.001;
       long[] hist = new long[B];
       long n = 0; double sum = 0.0, max = 0.0; long stalls = 0;
       long prev = Stopwatch.GetTimestamp();
@@ -3329,7 +3331,11 @@ function Get-AXENetFindings {
     $out = New-Object System.Collections.ArrayList
 
     if($Gw -and $Gw.Sent -gt 0){
-        if($Gw.Received -eq 0){
+        if($Gw.Received -eq 0 -and $Pub -and $Pub.Received -gt 0){
+            # Internet responde => el enlace funciona: el router solo ignora el ping (muy comun en
+            # routers de operador y redes de empresa). Antes salia ERR "o el enlace esta caido".
+            [void]$out.Add([pscustomobject]@{ Sev='INFO'; Msg='Tu router no responde al ping (lo filtra); internet si responde, asi que el enlace funciona. Sin datos del tramo local.' })
+        } elseif($Gw.Received -eq 0){
             [void]$out.Add([pscustomobject]@{ Sev='ERR'; Msg='La puerta de enlace no responde a ninguna sonda. O filtra ICMP, o el enlace esta caido.' })
         } else {
             # Perdida contra el router: no atraviesa internet, no hay operador de por medio.
@@ -3411,6 +3417,9 @@ function Measure-AXENetProbe {
                 if($r.Status -eq 'Success'){ $rtt = [double]$r.RoundtripTime }
             } catch { $rtt = $null }
             [void]$samples.Add($rtt)
+            # 3 sondas seguidas sin NINGUNA respuesta = el destino filtra ICMP. Seguir eran ~20 s
+            # de timeouts (medido: router de empresa, 24 s por medicion) para el mismo 100%.
+            if($i -eq 2 -and @($samples | Where-Object { $null -ne $_ }).Count -eq 0){ break }
             # Sin espera tras la ultima sonda: solo alargaria la medicion sin aportar nada.
             if($i -lt ($Count-1) -and $IntervalMs -gt 0){ Start-Sleep -Milliseconds $IntervalMs }
         }
@@ -4012,7 +4021,7 @@ function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
 # Sustituido por build.ps1 con la tabla literal real (mismo mecanismo que $script:AXEVersion en
 # 00-header.ps1). $null en el fallback: correr src/ suelto sin build (dev/tests) desactiva la
 # comprobacion en vez de rechazar ficheros validos sin manifiesto que compararlos.
-$script:AXEWebUIManifest = @{'app.js'='FB128D9936285C93A0E0F798ECAF2B2A995040A28C09A0A70BB4FDECF982CFB4';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='037B80E8B1147F70E196FA2D1A17DEBAA726139E3E9F636FB9B95F3E3A53A7D4';'styles.css'='049CD1A2069924C3E7A319A059EDBF9E86BC93C2F226A444D8AB5F3E8D03E635'}
+$script:AXEWebUIManifest = @{'app.js'='DD581E1C40EB4B33B6C0A68AAAF027264E267F8280C03A8824662AF6360D0054';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='67E8A746F88A378E28E71088E15CC14013F411F5CD5B686BF243956771F558B6';'styles.css'='049CD1A2069924C3E7A319A059EDBF9E86BC93C2F226A444D8AB5F3E8D03E635'}
 if($script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ $script:AXEWebUIManifest = $null }
 
 
@@ -4054,6 +4063,10 @@ function Get-AXESessionProcesses {
     # snapshot que ya trae Get-Process. Es deliberado - abrir handles contra un juego protegido es
     # justo lo que un anti-cheat interpreta mal, y AXE promete por escrito no hacerlo.
     $out = New-Object System.Collections.ArrayList
+    # ParentPid: Get-Process de PS 5.1 no lo trae. Una sola consulta CIM (snapshot del sistema,
+    # sin handles por proceso) para que el planificador reconozca el arbol de AXE.
+    $parents = @{}
+    try { Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId -EA Stop | ForEach-Object { $parents[[int]$_.ProcessId] = [int]$_.ParentProcessId } } catch {}
     foreach($p in (Get-Process -EA SilentlyContinue)){
         $path = $null; try { $path = $p.Path } catch {}
         $hwnd = [IntPtr]::Zero; try { $hwnd = $p.MainWindowHandle } catch {}
@@ -4061,6 +4074,7 @@ function Get-AXESessionProcesses {
         $ws = 0.0; try { $ws = [math]::Round($p.WorkingSet64 / 1MB, 0) } catch {}
         [void]$out.Add([pscustomobject]@{
             Pid          = [int]$p.Id
+            ParentPid    = [int]$parents[[int]$p.Id]
             Name         = [string]$p.ProcessName
             SessionId    = [int]$p.SessionId
             Path         = $path
@@ -4298,10 +4312,24 @@ function Get-AXESessionPlan {
     $intacto   = New-Object System.Collections.ArrayList
     $degradado = New-Object System.Collections.ArrayList
     $congelado = New-Object System.Collections.ArrayList
+    # Arbol de AXE (SelfPid + descendientes por ParentPid): su ventana ES un WebView2 hijo
+    # (msedgewebview2 x N). Excluir solo el PID congelaba la propia ventana y el OFF quedaba
+    # inalcanzable. PID reciclado => a lo sumo algo ajeno queda INTACTO: el lado seguro.
+    $selfTree = New-Object 'System.Collections.Generic.HashSet[int]'
+    if($SelfPid -gt 0){
+        [void]$selfTree.Add($SelfPid)
+        do {
+            $grew = $false
+            foreach($p in @($Processes)){
+                if($p -and $p.PSObject.Properties['ParentPid'] -and $selfTree.Contains([int]$p.ParentPid) -and $selfTree.Add([int]$p.Pid)){ $grew = $true }
+            }
+        } while($grew)
+    }
     foreach($p in @($Processes)){
         if($null -eq $p){ continue }
         if([int]$p.SessionId -eq 0){ continue }             # Session 0 nunca (defensivo)
         if([int]$p.SessionId -ne $SessionId){ continue }    # fuera de la sesion interactiva
+        if($selfTree.Contains([int]$p.Pid)){ [void]$intacto.Add($p); continue }
         switch(Get-AXESessionLevel -Proc $p -GamePid $GamePid -SelfPid $SelfPid -Config $Config){
             'intacto'   { [void]$intacto.Add($p) }
             'degradado' { [void]$degradado.Add($p) }
@@ -4848,6 +4876,10 @@ function Get-AXEBenchIdentity {
     $build = 0; if($hw -and $hw.BuildNumber){ $build = [int]$hw.BuildNumber }
     if($build -eq 0){ try { $build = [int][Environment]::OSVersion.Version.Build } catch {} }
     $ver = if($script:AXEVersion){ [string]$script:AXEVersion } else { 'desconocida' }
+    # Revision del METODO de medida: entra en el hash para que una linea base tomada con otro
+    # metodo se rechace como no comparable. r2 = jitter con resolucion de 1us (antes 50us: el
+    # 'antes' viejo marcaria 0.050 y el 'despues' nuevo 0.012 => mejora falsa del 75%).
+    $ver = "$ver (medida r2)"
 
     [pscustomobject]@{
         axeVersion = $ver
@@ -7974,7 +8006,18 @@ function Show-AXEWebHost {
     # dispara: el smoke test solo valida que carcasa+control se construyen.
     $win.Add_Loaded({
         try {
-            $cwEnv = [Microsoft.Web.WebView2.Core.CoreWebView2Environment]::CreateAsync($null, $script:Udf, $null).GetAwaiter().GetResult()
+            # AXE_WEBVIEW_DEBUG_PORT: SOLO para scripts\Invoke-AXEUiSmoke.ps1 (E2E de la ventana real
+            # por CDP). WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS no se honra aqui (medido), asi que va
+            # por opciones. Sin la variable, opciones $null: produccion identica. Numero validado.
+            $opts = $null
+            if($env:AXE_WEBVIEW_DEBUG_PORT -match '^\d{4,5}$'){
+                # El ctor solo tiene parametros OPCIONALES (y cuantos, depende del SDK): PowerShell no
+                # los rellena solo, asi que se invoca por reflexion con sus valores por defecto.
+                $ctor = [Microsoft.Web.WebView2.Core.CoreWebView2EnvironmentOptions].GetConstructors() | Select-Object -First 1
+                $opts = $ctor.Invoke([object[]]@($ctor.GetParameters() | ForEach-Object { $_.DefaultValue }))
+                $opts.AdditionalBrowserArguments = "--remote-debugging-port=$($env:AXE_WEBVIEW_DEBUG_PORT)"
+            }
+            $cwEnv = [Microsoft.Web.WebView2.Core.CoreWebView2Environment]::CreateAsync($null, $script:Udf, $opts).GetAwaiter().GetResult()
             $script:Web.EnsureCoreWebView2Async($cwEnv) | Out-Null
         } catch { Write-AXELog "WebView2 entorno/init fallo: $($_.Exception.Message)" 'ERR' }
     })
@@ -8416,7 +8459,9 @@ function Start-AXEBridgeWorker([string]$DistPath = $PSCommandPath){
     $pool = [runspacefactory]::CreateRunspacePool(1, 1)
     $pool.ApartmentState = 'MTA'; $pool.Open()
     $ps = [powershell]::Create(); $ps.RunspacePool = $pool
-    [void]$ps.AddScript('. $args[0] -LibOnly').AddArgument($DistPath)
+    # $script:HW precalentado aqui (CIM, ~4 s): net.probe/bench/advisor lo leen y sin el decian
+    # "adaptador desconocido" o pagaban la deteccion en su primera llamada.
+    [void]$ps.AddScript('. $args[0] -LibOnly; try { $script:HW = Get-AXEHardware } catch {}').AddArgument($DistPath)
     $script:AXEBridgeWorker = @{ Pool = $pool; Load = @{ Runspace = $null; PS = $ps; Handle = $ps.BeginInvoke() } }
 }
 

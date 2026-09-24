@@ -462,7 +462,7 @@
     const bn = $('btnNet');
     bn.addEventListener('click', () => {
       const out = $('netOut');
-      out.textContent = 'sondeando… (20 paquetes a tu router y a internet · ~4 s)';
+      out.textContent = 'sondeando… (20 paquetes a tu router y a internet · ~5-10 s)';
       bn.disabled = true; bn.classList.add('busy');
       AXE.call('net.probe', {}).then((r) => {
         out.textContent = (r.lines || []).join('\n');
@@ -471,6 +471,8 @@
         .finally(() => { bn.disabled = false; bn.classList.remove('busy'); });
     });
 
+    // Sin esto el handler de telemetría nunca pintaba este osciloscopio: quedaba en «esperando muestreo…».
+    teleLoaded = true;
     if (scopeBuf.length) drawScope($('teleScope'));
   }
 
