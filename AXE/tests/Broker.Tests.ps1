@@ -164,8 +164,12 @@ Describe 'Invoke-AXEBrokerCommand - motor de decision (sin pipe, con tweak sinte
             Revert = { Set-RD 'HKCU:\Software\AXE\_TestBrokerCmdDummy' 'V' 0 }
         }
         [void]$script:CAT.Add($script:DummyTweak)
+        # Hardware sintetico de torre: el broker ya NO aplica sin hardware detectado (ver Its abajo).
+        $script:DesktopHW = [pscustomobject]@{ IsLaptop=$false; IsHybrid=$false; NicName=$null }
+        $script:HW = $script:DesktopHW
     }
     AfterAll {
+        $script:HW = $null
         $script:CAT.Remove($script:DummyTweak)
         Remove-Item $script:DummyKey -Recurse -Force -EA SilentlyContinue
         Remove-Item $script:AXEData -Recurse -Force -EA SilentlyContinue
@@ -190,6 +194,39 @@ Describe 'Invoke-AXEBrokerCommand - motor de decision (sin pipe, con tweak sinte
     }
     It 'un comando fuera de la whitelist devuelve ok=false' {
         (Invoke-AXEBrokerCommand 'os.format' @{}).ok | Should -BeFalse
+    }
+    # REGRESION: el proceso broker nunca detectaba hardware y Get-BlockReason devuelve $null
+    # ("aplicable") con $script:HW vacio: la revalidacion del broker no bloqueaba NADA.
+    It 'apply revalida el hardware: un tweak solo-torre se bloquea en un portatil' {
+        $tw = [pscustomobject]@{ Id='_test_desk_only'; Cat='TEST'; Tier=1; Reboot=$false; Name='x'; Desc='x'
+            Requires=@{ Desktop=$true }; Test={ $false }; Apply={ throw 'NO debia aplicarse' }; Revert={} }
+        [void]$script:CAT.Add($tw)
+        try {
+            $script:HW = [pscustomobject]@{ IsLaptop=$true; IsHybrid=$false; NicName=$null }
+            $r = Invoke-AXEBrokerCommand 'tweaks.apply' @{ id = '_test_desk_only' }
+            $r.ok  | Should -BeFalse
+            $r.err | Should -Match 'no aplicable'
+        } finally { $script:CAT.Remove($tw); $script:HW = $script:DesktopHW }
+    }
+    It 'apply sin hardware detectable se niega en vez de aplicar a ciegas' {
+        $script:HW = $null
+        function Get-AXEHardware { throw 'CIM caido' }
+        try {
+            $r = Invoke-AXEBrokerCommand 'tweaks.apply' @{ id = $script:DummyTweak.Id }
+            $r.ok  | Should -BeFalse
+            $r.err | Should -Match 'hardware'
+        } finally { $script:HW = $script:DesktopHW }
+    }
+    # REGRESION: al portar masterRevert al broker se perdio la cola (autoruns + residuos v1) y el
+    # campo cambio de 'reverted' a 'done': la UI decia "Master revert: undefined revertidos".
+    It 'masterRevert devuelve reverted y ejecuta la cola Invoke-AXEMasterRevertTail' {
+        $script:TailRan = $false
+        function Invoke-AXEMasterRevertTail { $script:TailRan = $true }
+        [void](Invoke-AXEBrokerCommand 'tweaks.apply' @{ id = $script:DummyTweak.Id })
+        $r = Invoke-AXEBrokerCommand 'tweaks.masterRevert' @{}
+        $r.ok | Should -BeTrue
+        $r.data.reverted | Should -BeGreaterOrEqual 1
+        $script:TailRan | Should -BeTrue
     }
     # fps.capture: el nombre de proceso es texto libre del front y acaba en la linea de comandos
     # de PresentMon COMO ADMIN. Nada que pueda inyectar un flag (-output_file ...) o una comilla.

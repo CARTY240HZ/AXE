@@ -1,6 +1,6 @@
 ﻿# ================================================================
 # AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-24 10:33:14Z
+# Build UTC: 2026-09-24 11:34:24Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -1558,6 +1558,12 @@ function Invoke-AXEMasterRevertTail {
 function Test-TweakSafe($tw){
     try { return [bool](& $tw.Test) } catch { return $false }
 }
+function Test-AXETweakUnreadable($tw){
+    # $true si ESTE proceso no puede leer el estado real del tweak. Hoy: su Test lee BCD (bcdedit
+    # exige admin) y la UI no corre elevada desde el split del broker. Sin esto salian "inactivos"
+    # aunque estuvieran aplicados, y la cobertura del score los contaba como apagados.
+    ([string]$tw.Test -match 'bcdedit') -and -not (Test-Admin)
+}
 function Export-AXEProfile($file){
     $prof = foreach($tw in $script:CAT){ [pscustomobject]@{Id=$tw.Id; On=(Test-TweakSafe $tw)} }
     $prof | ConvertTo-Json -Depth 3 | Set-Content $file -Encoding UTF8
@@ -2449,6 +2455,7 @@ function Get-AXESnapshot {
         foreach($tw in $script:CAT){
             if($tw.Tier -notin 0,1){ continue }        # cobertura = Tier 0/1 (seguros/elite)
             if(Get-BlockReason $tw){ continue }          # no aplicable en este HW
+            if(Test-AXETweakUnreadable $tw){ continue }  # sin admin no se lee (BCD): ni on ni off
             $appN++
             if(Test-TweakSafe $tw){ $onN++ }
         }
@@ -4021,7 +4028,7 @@ function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
 # Sustituido por build.ps1 con la tabla literal real (mismo mecanismo que $script:AXEVersion en
 # 00-header.ps1). $null en el fallback: correr src/ suelto sin build (dev/tests) desactiva la
 # comprobacion en vez de rechazar ficheros validos sin manifiesto que compararlos.
-$script:AXEWebUIManifest = @{'app.js'='DD581E1C40EB4B33B6C0A68AAAF027264E267F8280C03A8824662AF6360D0054';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='67E8A746F88A378E28E71088E15CC14013F411F5CD5B686BF243956771F558B6';'styles.css'='C2C06EDD48F2257C546AD87AE15D0E1A916232FCF6D0040CD2893C5F60B03592'}
+$script:AXEWebUIManifest = @{'app.js'='F9961B2F82F1FF5DE125ED018A5ADB68914C0E61D4996ABBA3A0C86DBA03AE73';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='67E8A746F88A378E28E71088E15CC14013F411F5CD5B686BF243956771F558B6';'styles.css'='C2C06EDD48F2257C546AD87AE15D0E1A916232FCF6D0040CD2893C5F60B03592'}
 if($script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ $script:AXEWebUIManifest = $null }
 
 
@@ -7629,6 +7636,12 @@ function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
             'tweaks.apply' {
                 $tw = $script:CAT | Where-Object Id -eq ([string]$A.id) | Select-Object -First 1
                 if(-not $tw){ return @{ ok=$false; data=$null; err="tweak desconocido: $($A.id)" } }
+                # El proceso broker sale en 49-webmain sin haber detectado hardware, y Get-BlockReason
+                # con $script:HW vacio devuelve $null = "aplicable": la revalidacion no bloqueaba
+                # nada (un tweak solo-torre se aplicaba en portatil). Se detecta aqui; si no se puede,
+                # NO se aplica a ciegas. revert/masterRevert no lo necesitan: deshacer siempre vale.
+                if(-not $script:HW){ try { $script:HW = Get-AXEHardware } catch {} }
+                if(-not $script:HW){ return @{ ok=$false; data=$null; err='no pude detectar el hardware: no aplico a ciegas' } }
                 $blk = Get-BlockReason $tw
                 if($blk){ return @{ ok=$false; data=$null; err="no aplicable en este equipo: $blk" } }
                 if(Test-SnapEligible $tw){ $script:capTweak = $tw.Id }
@@ -7652,7 +7665,10 @@ function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
                         $done++
                     } catch { $err++; Write-AXELog "Broker MasterRevert: $($tw.Name): $($_.Exception.Message)" 'ERR' }
                 }
-                @{ ok=$true; data=@{ done=$done; errors=$err }; err=$null }
+                # La cola (autoruns desactivados + residuos v1: SmartScreen, login MS, hypervisor)
+                # se perdio al portar esto desde el bridge; 'reverted' es el campo que lee la UI.
+                try { Invoke-AXEMasterRevertTail } catch { Write-AXELog "Broker MasterRevertTail: $($_.Exception.Message)" 'ERR' }
+                @{ ok=$true; data=@{ reverted=$done; errors=$err }; err=$null }
             }
             'safety.restorePoint' {
                 $r = New-AXERestorePoint
@@ -8133,7 +8149,9 @@ $script:AXEBridgeMap = @{
         @($script:CAT | ForEach-Object {
             $tw = $_
             $blk = $null; try { $blk = Get-BlockReason $tw } catch {}
-            $applied = $false; if(-not $blk){ try { $applied = [bool](Test-TweakSafe $tw) } catch {} }
+            # $null = no legible sin admin (BCD): la UI lo pinta como desconocido, no como inactivo.
+            $applied = $false
+            if(-not $blk){ if(Test-AXETweakUnreadable $tw){ $applied = $null } else { try { $applied = [bool](Test-TweakSafe $tw) } catch {} } }
             [pscustomobject]@{
                 id=$tw.Id; name=$tw.Name; desc=$tw.Desc; cat=$tw.Cat; tier=[int]$tw.Tier
                 reboot=[bool]$tw.Reboot; source=$tw.Source; sourceType=$tw.SourceType

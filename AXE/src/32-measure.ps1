@@ -554,6 +554,7 @@ function Get-AXESnapshot {
         foreach($tw in $script:CAT){
             if($tw.Tier -notin 0,1){ continue }        # cobertura = Tier 0/1 (seguros/elite)
             if(Get-BlockReason $tw){ continue }          # no aplicable en este HW
+            if(Test-AXETweakUnreadable $tw){ continue }  # sin admin no se lee (BCD): ni on ni off
             $appN++
             if(Test-TweakSafe $tw){ $onN++ }
         }

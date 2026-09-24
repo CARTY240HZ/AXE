@@ -27,6 +27,12 @@ function Invoke-AXEMasterRevertTail {
 function Test-TweakSafe($tw){
     try { return [bool](& $tw.Test) } catch { return $false }
 }
+function Test-AXETweakUnreadable($tw){
+    # $true si ESTE proceso no puede leer el estado real del tweak. Hoy: su Test lee BCD (bcdedit
+    # exige admin) y la UI no corre elevada desde el split del broker. Sin esto salian "inactivos"
+    # aunque estuvieran aplicados, y la cobertura del score los contaba como apagados.
+    ([string]$tw.Test -match 'bcdedit') -and -not (Test-Admin)
+}
 function Export-AXEProfile($file){
     $prof = foreach($tw in $script:CAT){ [pscustomobject]@{Id=$tw.Id; On=(Test-TweakSafe $tw)} }
     $prof | ConvertTo-Json -Depth 3 | Set-Content $file -Encoding UTF8
