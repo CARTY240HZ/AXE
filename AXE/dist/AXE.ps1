@@ -1,6 +1,6 @@
 ﻿# ================================================================
 # AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-24 08:49:23Z
+# Build UTC: 2026-09-24 09:07:54Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -4021,7 +4021,7 @@ function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
 # Sustituido por build.ps1 con la tabla literal real (mismo mecanismo que $script:AXEVersion en
 # 00-header.ps1). $null en el fallback: correr src/ suelto sin build (dev/tests) desactiva la
 # comprobacion en vez de rechazar ficheros validos sin manifiesto que compararlos.
-$script:AXEWebUIManifest = @{'app.js'='DD581E1C40EB4B33B6C0A68AAAF027264E267F8280C03A8824662AF6360D0054';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='67E8A746F88A378E28E71088E15CC14013F411F5CD5B686BF243956771F558B6';'styles.css'='049CD1A2069924C3E7A319A059EDBF9E86BC93C2F226A444D8AB5F3E8D03E635'}
+$script:AXEWebUIManifest = @{'app.js'='DD581E1C40EB4B33B6C0A68AAAF027264E267F8280C03A8824662AF6360D0054';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='67E8A746F88A378E28E71088E15CC14013F411F5CD5B686BF243956771F558B6';'styles.css'='C2C06EDD48F2257C546AD87AE15D0E1A916232FCF6D0040CD2893C5F60B03592'}
 if($script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ $script:AXEWebUIManifest = $null }
 
 
