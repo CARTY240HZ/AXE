@@ -210,37 +210,49 @@ Describe 'Register-AXEBridge despacha los 4 comandos del broker al camino asincr
     }
 }
 
-Describe 'Invoke-AXEBridgeBackground: comandos lentos fuera del hilo de UI (REGRESION barrido "No responde")' -Tag 'unit' {
-    BeforeAll {
-        function Wait-TestBg($bg){ $t=[Diagnostics.Stopwatch]::StartNew(); while(-not $bg.Handle.IsCompleted -and $t.ElapsedMilliseconds -lt 15000){ Start-Sleep -Milliseconds 50 }; Receive-AXEPrivilegedBackground $bg }
-        # Dos niveles de llamada: el runspace de fondo necesita el cierre TRANSITIVO, no solo lo
-        # que el cuerpo llama directo (fue justo el bug: Get-AXESweepVerdict -> Get-AXEBand).
-        function Get-AXETestInner($x){ "doble:$x" }
-        function Get-AXETestDouble($x){ Get-AXETestInner $x }
-        $script:AXEBridgeMap['test.bgOk']    = { param($a) Get-AXETestDouble $a.x }
-        $script:AXEBridgeMap['test.bgThrow'] = { param($a) throw 'fallo a proposito' }
+Describe 'Worker de fondo del puente: lo lento nunca en el hilo de UI (REGRESION "No responde")' -Tag 'unit' {
+    It 'los comandos lentos medidos van al worker y existen en el mapa (misma lista blanca)' {
+        foreach($k in 'measure.score','measure.timerSweep','net.probe','bench.baseline','bench.after','advisor.get','fps.capture'){
+            $script:AXEBridgeWorkerCmds | Should -Contain $k
+        }
+        foreach($k in $script:AXEBridgeWorkerCmds){ $script:AXEBridgeMap.Keys | Should -Contain $k }
     }
-    AfterAll {
-        foreach($k in 'test.bgOk','test.bgThrow'){ $script:AXEBridgeMap.Remove($k) }
+    It 'session.* se queda en el hilo de UI (su estado vive en el proceso GUI)' {
+        @($script:AXEBridgeWorkerCmds | Where-Object { $_ -like 'session.*' }).Count | Should -Be 0
     }
-    It 'ejecuta el cuerpo del mapa en otro runspace con sus dependencias transitivas y los args intactos' {
-        $r = Wait-TestBg (Invoke-AXEBridgeBackground 'test.bgOk' @{ x = 7 })
-        $r.ok   | Should -BeTrue
-        $r.data | Should -Be 'doble:7'
+    It 'Register-AXEBridge despacha los lentos al worker y lo arranca al registrar' {
+        $body = (Get-Command Register-AXEBridge).ScriptBlock.ToString()
+        $body | Should -Match 'Start-AXEBridgeWorker'
+        $body | Should -Match 'Invoke-AXEBridgeWorker'
     }
-    It 'una excepcion del cuerpo vuelve como {ok=false,err}, no revienta' {
-        $r = Wait-TestBg (Invoke-AXEBridgeBackground 'test.bgThrow' @{})
-        $r.ok  | Should -BeFalse
-        $r.err | Should -Match 'a proposito'
-    }
-    It 'measure.timerSweep va por el camino de fondo y esta en el mapa (misma lista blanca)' {
-        $script:AXEBridgeBackgroundCmds | Should -Contain 'measure.timerSweep'
-        foreach($k in $script:AXEBridgeBackgroundCmds){ $script:AXEBridgeMap.Keys | Should -Contain $k }
-    }
-    It 'las dependencias de measure.timerSweep incluyen las indirectas (Get-AXEBand via Get-AXESweepVerdict)' {
-        $deps = Get-AXEFunctionDeps $script:AXEBridgeMap['measure.timerSweep']
-        foreach($f in 'Measure-AXETimerSweep','Format-AXETimerSweep','Get-AXESweepVerdict','Get-AXEBand','Set-AXETimerResolution'){
-            $deps.Keys | Should -Contain $f
+}
+
+Describe 'Worker de fondo: dist/AXE.ps1 -LibOnly real' -Tag 'integration' {
+    It 'carga el motor sin abrir ventana y ejecuta comandos en cola con estado compartido' {
+        $dist = "$PSScriptRoot/../dist/AXE.ps1"
+        if(-not (Select-String -Path $dist -Pattern 'LibOnly' -Quiet)){
+            Set-ItResult -Skipped -Because 'dist/AXE.ps1 sin -LibOnly todavia (reconstruir)'; return
+        }
+        $script:AXEBridgeWorker = $null
+        Start-AXEBridgeWorker (Resolve-Path $dist).Path
+        try {
+            # Dos comandos encolados seguidos: el pool de 1 los serializa detras de la carga.
+            $jobs = @(
+                (Invoke-AXEBridgeWorker 'catalog.tiers' @{}),
+                (Invoke-AXEBridgeWorker 'prueba.report' @{})
+            )
+            $res = foreach($j in $jobs){
+                $t=[Diagnostics.Stopwatch]::StartNew()
+                while(-not $j.Handle.IsCompleted -and $t.Elapsed.TotalSeconds -lt 120){ Start-Sleep -Milliseconds 100 }
+                Receive-AXEPrivilegedBackground $j
+            }
+            $res[0].ok | Should -BeTrue
+            @($res[0].data).Count | Should -BeGreaterThan 0      # catalogo cargado en el worker
+            $res[1].ok  | Should -BeFalse                        # sin baseline: se niega, no revienta
+            $res[1].err | Should -Match 'linea base'
+        } finally {
+            try { $script:AXEBridgeWorker.Pool.Close() } catch {}
+            $script:AXEBridgeWorker = $null
         }
     }
 }

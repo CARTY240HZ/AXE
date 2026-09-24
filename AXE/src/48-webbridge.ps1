@@ -94,11 +94,13 @@ $script:AXEBridgeMap = @{
     # 'lines' del motor TAL CUAL (mismo texto que la CLI): la honestidad vive en el motor, no aqui.
 
     # Barrido de resolucion de timer (§3.5). 153 puntos x 200 Sleep(1): ~30-60s reales, NO 1-2s.
-    # Register-AXEBridge lo despacha a un runspace de fondo ($script:AXEBridgeBackgroundCmds): en
+    # Register-AXEBridge lo despacha al worker de fondo ($script:AXEBridgeWorkerCmds): en
     # el hilo de UI dejaba la ventana "No responde" y encolaba measure.score detras hasta su timeout.
     'measure.timerSweep' = { param($a)
         $sw = Measure-AXETimerSweep
-        if(-not $sw){ throw 'barrido no disponible (AXE.Native ausente o rango invalido; ver log)' }
+        # $null tiene varias causas y el motivo exacto ya esta en el log. La comun NO es AXE.Native:
+        # es que Windows 11 no conceda la resolucion a AXE (medido en proceso sin ventana visible).
+        if(-not $sw){ throw 'el barrido no obtuvo datos utiles. Lo mas comun: Windows no concede la resolucion a AXE (activa lat_timerres y reinicia). Motivo exacto en el log.' }
         $bestMs = $null; if($sw.Conclusive -and $sw.Best){ $bestMs = [double]$sw.Best.AppliedMs }
         [pscustomobject]@{
             lines      = @(Format-AXETimerSweep $sw)
@@ -389,53 +391,37 @@ function Invoke-AXEBridgeCmd {
     }
 }
 
-# Comandos LENTOS (decenas de segundos) que no necesitan nada del hilo de UI: corren en un runspace
-# de fondo para que la ventana no quede "No responde". Su cuerpo (el del mapa) y las funciones del
-# motor que usa se inyectan por TEXTO (mismo patron que Invoke-AXEPrivilegedBackground, 46-broker)
-# -- nunca se dot-sourcea el motor entero (llegaria al fallthrough de 49-webmain y abriria otra
-# ventana). [AXE.Native] es un tipo del AppDomain: ya esta cargado para cualquier runspace.
-$script:AXEBridgeBackgroundCmds = @('measure.timerSweep')
+# Comandos LENTOS (segundos a minutos): corren en un WORKER de fondo para que la ventana no quede
+# "No responde" (Windows lo marca a los 5 s de hilo de UI bloqueado; medido: net.probe 24 s,
+# bench.baseline 10 s, advisor.get 10 s, measure.timerSweep hasta 323 s). El worker es un
+# RunspacePool(1,1) que carga el motor ENTERO una vez (dot-source de este mismo .ps1 con -LibOnly,
+# que 49-webmain corta antes de abrir ventana): el catalogo, $script:HW y los estado de sesion de
+# prueba.* viven alli con sus scriptblocks nativos, nada se inyecta por texto. Pool de 1 = los
+# comandos se encolan solos, uno detras de otro, como pasaba en el hilo de UI pero sin bloquearlo.
+# Se quedan en el hilo de UI: lo instantaneo (app.info, hw.get, catalog.tiers) y session.* (su
+# estado -job, timers- vive en ESTE proceso).
+$script:AXEBridgeWorkerCmds = @('measure.score','measure.timerSweep','tweaks.list','net.probe','fps.capture',
+    'diag.get','prueba.baseline','prueba.report','bench.baseline','bench.after','advisor.get')
+$script:AXEBridgeWorker = $null
 
-function Get-AXEFunctionDeps([scriptblock]$Sb){
-    # Cierre transitivo (por AST) de las funciones definidas que $Sb llama. Sustituye a una lista
-    # mantenida a mano: la primera version olvido Get-AXEBand (la usa Get-AXESweepVerdict) y el
-    # barrido fallaba SOLO en la GUI. Devuelve nombre -> ScriptBlock, en orden de descubrimiento.
-    $seen  = [ordered]@{}
-    $queue = New-Object System.Collections.Queue
-    $queue.Enqueue($Sb)
-    while($queue.Count -gt 0){
-        $cur = $queue.Dequeue()
-        foreach($ca in $cur.Ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true)){
-            $n = $ca.GetCommandName()
-            if(-not $n -or $seen.Contains($n)){ continue }
-            $f = Get-Command $n -CommandType Function -EA SilentlyContinue
-            if(-not $f){ continue }
-            $seen[$n] = $f.ScriptBlock
-            $queue.Enqueue($f.ScriptBlock)
-        }
-    }
-    $seen
+function Start-AXEBridgeWorker([string]$DistPath = $PSCommandPath){
+    # Idempotente. La carga (~segundos: parse + catalogo) corre YA en el pool, asi que el primer
+    # comando lento simplemente espera en la cola a que termine; nadie bloquea el hilo de UI.
+    if($script:AXEBridgeWorker){ return }
+    $pool = [runspacefactory]::CreateRunspacePool(1, 1)
+    $pool.ApartmentState = 'MTA'; $pool.Open()
+    $ps = [powershell]::Create(); $ps.RunspacePool = $pool
+    [void]$ps.AddScript('. $args[0] -LibOnly').AddArgument($DistPath)
+    $script:AXEBridgeWorker = @{ Pool = $pool; Load = @{ Runspace = $null; PS = $ps; Handle = $ps.BeginInvoke() } }
 }
 
-function Invoke-AXEBridgeBackground([string]$Cmd, [hashtable]$A){
-    # Arranca el cuerpo de $script:AXEBridgeMap[$Cmd] en un runspace MTA sin bloquear. Devuelve
-    # @{Runspace;PS;Handle}, el mismo contrato que Receive-AXEPrivilegedBackground recoge.
-    $rs = [runspacefactory]::CreateRunspace()
-    $rs.ApartmentState = 'MTA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
-    $ps = [powershell]::Create(); $ps.Runspace = $rs
-    $deps  = Get-AXEFunctionDeps $script:AXEBridgeMap[$Cmd]
-    $fnSrc = ($deps.Keys | ForEach-Object { "function $_ { $($deps[$_]) }" }) -join "`n"
-    $body  = $script:AXEBridgeMap[$Cmd].ToString()
-    [void]$ps.AddScript(@"
-`$script:AXELog = `$args[1]
-$fnSrc
-`$fn = { $body }
-try { [pscustomobject]@{ ok=`$true; data=(& `$fn `$args[0]); err='' } }
-catch { [pscustomobject]@{ ok=`$false; data=`$null; err=`$_.Exception.Message } }
-"@)
-    [void]$ps.AddArgument($A)
-    [void]$ps.AddArgument($script:AXELog)
-    @{ Runspace = $rs; PS = $ps; Handle = $ps.BeginInvoke() }
+function Invoke-AXEBridgeWorker([string]$Cmd, [hashtable]$A){
+    # Encola $Cmd en el worker. Devuelve @{Runspace;PS;Handle}, el contrato que ya recogen
+    # Wait-AXEBackground/Receive-AXEPrivilegedBackground (Runspace=$null: el pool no se cierra).
+    Start-AXEBridgeWorker
+    $ps = [powershell]::Create(); $ps.RunspacePool = $script:AXEBridgeWorker.Pool
+    [void]$ps.AddScript('Invoke-AXEBridgeCmd $args[0] $args[1]').AddArgument($Cmd).AddArgument($A)
+    @{ Runspace = $null; PS = $ps; Handle = $ps.BeginInvoke() }
 }
 
 function Register-AXEBridge($core){
@@ -443,7 +429,9 @@ function Register-AXEBridge($core){
     # Los 4 comandos del broker (issue #5) NUNCA corren sincronos aqui: esperar el UAC es una
     # espera SIN LIMITE (decision humana) y este handler corre en el hilo de UI de WPF -- se
     # despachan a un runspace de fondo (Start-AXEPrivilegedCommand, 46-broker.ps1) y se responde
-    # cuando terminan, igual que la telemetria de mas abajo nunca bloquea este hilo.
+    # cuando terminan, igual que la telemetria de mas abajo nunca bloquea este hilo. Los lentos
+    # ($script:AXEBridgeWorkerCmds) van al worker, que empieza a cargar el motor YA.
+    Start-AXEBridgeWorker
     $core.add_WebMessageReceived({
         param($s,$e)
         $reqId = -1
@@ -458,7 +446,7 @@ function Register-AXEBridge($core){
             $cmd = [string]$msg.cmd
 
             $isBroker = @($script:AXEBrokerCommands) -ccontains $cmd
-            $isSlow   = @($script:AXEBridgeBackgroundCmds) -ccontains $cmd
+            $isSlow   = @($script:AXEBridgeWorkerCmds) -ccontains $cmd
             if($isBroker -or $isSlow){
                 $rid = $reqId; $coreRef = $s
                 $reply = {
@@ -468,7 +456,7 @@ function Register-AXEBridge($core){
                     try { [void]$coreRef.ExecuteScriptAsync($js) } catch {}
                 }.GetNewClosure()
                 if($isBroker){ Start-AXEPrivilegedCommand -Cmd $cmd -A $argsHt -OnDone $reply }
-                else { Wait-AXEBackground (Invoke-AXEBridgeBackground $cmd $argsHt) $reply }
+                else { Wait-AXEBackground (Invoke-AXEBridgeWorker $cmd $argsHt) $reply }
                 return
             }
             $res = Invoke-AXEBridgeCmd $cmd $argsHt
