@@ -392,8 +392,13 @@ function Measure-AXETimerSweep {
         foreach($ms in ($plan | Sort-Object { Get-Random })){
             $applied = Set-AXETimerResolution -Ms $ms
             if($null -eq $applied){ continue }
-            [void][AXE.Native]::MeasureSleepDelta(5)          # warm-up, descartado
-            $r = [AXE.Native]::MeasureSleepDelta([int]$Samples)
+            $w = [AXE.Native]::MeasureSleepDelta(5)           # warm-up
+            # Request NO concedido (sleep de ~15.6ms, mismo corte de 5ms que $granted abajo): las
+            # $Samples muestras no aportan nada -- el punto se descarta igual como NotGranted -- y
+            # cuestan ~3s cada una. Medido: con aislamiento por-proceso de Win11 el barrido entero
+            # tardaba 323s. El warm-up ya basta para clasificarlo.
+            if($w[1] -ge 5.0){ $r = $w }
+            else { $r = [AXE.Native]::MeasureSleepDelta([int]$Samples) }
             [void]$out.Add([pscustomobject]@{
                 RequestedMs = [math]::Round($ms,4)
                 AppliedMs   = $applied

@@ -446,9 +446,11 @@
     const b = $('btnSweep');
     b.addEventListener('click', () => {
       const out = $('sweepOut');
-      out.textContent = 'midiendo barrido… (~2 s · prioridad alta · no cierres la ventana)';
+      out.textContent = 'midiendo barrido… (~15-60 s · prioridad alta · no cierres la ventana)';
       b.disabled = true; b.classList.add('busy');
-      AXE.call('measure.timerSweep', {}).then((r) => {
+      // Corre en un runspace de fondo (la ventana sigue respondiendo) pero tarda decenas de
+      // segundos: el timeout por defecto de 15 s lo daba por fallido a mitad de medida.
+      AXE.call('measure.timerSweep', {}, 180000).then((r) => {
         out.textContent = (r.lines || []).join('\n');
       }).catch((e) => { out.textContent = 'No se pudo medir el barrido: ' + e.message; })
         .finally(() => { b.disabled = false; b.classList.remove('busy'); });
