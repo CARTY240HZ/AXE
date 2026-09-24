@@ -322,16 +322,29 @@ if($SelfTest){
     #  ($PSCommandPath), donde "'x' = { param($a)" es un patron EXCLUSIVO del puente (14/14 en dist).
     #  Si el mapa esta cargado (contexto Pester/futuro) se usa tal cual. Match case-sensitive (-c*),
     #  coherente con el despacho exacto del puente.
+    #  Los 4 comandos del broker (issue #5, 46-broker) no estan en el mapa pero el JS los llama
+    #  legitimamente (Register-AXEBridge los desvia al broker): la lista blanca efectiva es
+    #  mapa + $script:AXEBrokerCommands, que tampoco esta cargado aqui y se parsea igual.
     $checks++
     $wlKeys = @()
+    $brokerKeys = @()
+    $selfSrc = ''
+    if(-not $script:AXEBridgeMap -or -not $script:AXEBrokerCommands){
+        try { $selfSrc = Get-Content $PSCommandPath -Raw -EA Stop } catch {}
+    }
     if($script:AXEBridgeMap){
         $wlKeys = @($script:AXEBridgeMap.Keys)
     } else {
-        $selfSrc = ''
-        try { $selfSrc = Get-Content $PSCommandPath -Raw -EA Stop } catch {}
         $rx = '(?m)^\s*''([A-Za-z][A-Za-z.]*)''\s*=\s*\{\s*param\(\$a\)'
         $wlKeys = @([regex]::Matches($selfSrc, $rx) | ForEach-Object { $_.Groups[1].Value })
     }
+    if($script:AXEBrokerCommands){
+        $brokerKeys = @($script:AXEBrokerCommands)
+    } else {
+        $mb = [regex]::Match($selfSrc, '(?m)^\$script:AXEBrokerCommands\s*=\s*@\(([^)]*)\)')
+        if($mb.Success){ $brokerKeys = @([regex]::Matches($mb.Groups[1].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value }) }
+    }
+    if(@($wlKeys).Count -gt 0){ $wlKeys = @($wlKeys) + @($brokerKeys) }
     if(@($wlKeys).Count -eq 0){
         [void]$fails.Add('S-webui-3: no se pudo determinar la lista blanca del puente (mapa vivo ausente y parseo vacio)')
     } else {

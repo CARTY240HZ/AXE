@@ -385,6 +385,12 @@ Describe 'CLI -Broker/-Token de extremo a extremo (dist/AXE.ps1 real, sin admin)
         if(-not (Test-Path $dist) -or -not (Select-String -Path $dist -Pattern 'function Start-AXEBroker' -Quiet)){
             Set-ItResult -Skipped -Because 'dist/AXE.ps1 sin el broker todavia (se reconstruye en Task 10)'; return
         }
+        # El subproceso hereda el token del runner: si el runner ya esta elevado, el broker
+        # EJECUTARIA de verdad safety.restorePoint (punto de restauracion real en la maquina) en
+        # vez de rechazarlo. Se salta ANTES de lanzar nada. Chequeo inline (mismo que Test-Admin)
+        # porque este Describe no carga 28-revert-export.ps1.
+        $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        if($elevated){ Set-ItResult -Skipped -Because 'este proceso ya esta elevado, no se puede probar el guard de "no elevado" aqui'; return }
         $pipe = "AXE-Test-E2E-$([guid]::NewGuid().ToString('N'))"
         $tokenPath = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N') + '.token')
         Set-Content -LiteralPath $tokenPath -Value 'tokE2E' -NoNewline
