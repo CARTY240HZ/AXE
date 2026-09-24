@@ -150,6 +150,12 @@ function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
             'tweaks.apply' {
                 $tw = $script:CAT | Where-Object Id -eq ([string]$A.id) | Select-Object -First 1
                 if(-not $tw){ return @{ ok=$false; data=$null; err="tweak desconocido: $($A.id)" } }
+                # El proceso broker sale en 49-webmain sin haber detectado hardware, y Get-BlockReason
+                # con $script:HW vacio devuelve $null = "aplicable": la revalidacion no bloqueaba
+                # nada (un tweak solo-torre se aplicaba en portatil). Se detecta aqui; si no se puede,
+                # NO se aplica a ciegas. revert/masterRevert no lo necesitan: deshacer siempre vale.
+                if(-not $script:HW){ try { $script:HW = Get-AXEHardware } catch {} }
+                if(-not $script:HW){ return @{ ok=$false; data=$null; err='no pude detectar el hardware: no aplico a ciegas' } }
                 $blk = Get-BlockReason $tw
                 if($blk){ return @{ ok=$false; data=$null; err="no aplicable en este equipo: $blk" } }
                 if(Test-SnapEligible $tw){ $script:capTweak = $tw.Id }
@@ -173,7 +179,10 @@ function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
                         $done++
                     } catch { $err++; Write-AXELog "Broker MasterRevert: $($tw.Name): $($_.Exception.Message)" 'ERR' }
                 }
-                @{ ok=$true; data=@{ done=$done; errors=$err }; err=$null }
+                # La cola (autoruns desactivados + residuos v1: SmartScreen, login MS, hypervisor)
+                # se perdio al portar esto desde el bridge; 'reverted' es el campo que lee la UI.
+                try { Invoke-AXEMasterRevertTail } catch { Write-AXELog "Broker MasterRevertTail: $($_.Exception.Message)" 'ERR' }
+                @{ ok=$true; data=@{ reverted=$done; errors=$err }; err=$null }
             }
             'safety.restorePoint' {
                 $r = New-AXERestorePoint

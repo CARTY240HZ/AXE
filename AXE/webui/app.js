@@ -387,7 +387,11 @@
     card.dataset.id = t.id;
     const top = elt('div', 'tw-top');
     top.appendChild(elt('div', 'tw-name', t.name));
-    top.appendChild(elt('span', 'tw-state' + (t.blocked ? ' blocked' : (t.applied ? ' on' : '')), t.blocked ? 'no aplicable' : (t.applied ? 'activo' : 'inactivo')));
+    // applied === null: estado no legible sin admin (lee BCD). Decir «inactivo» sería inventarlo.
+    const unknown = t.applied === null && !t.blocked;
+    const st = elt('span', 'tw-state' + (t.blocked ? ' blocked' : (t.applied ? ' on' : '')), t.blocked ? 'no aplicable' : (unknown ? 'estado ?' : (t.applied ? 'activo' : 'inactivo')));
+    if (unknown) st.title = 'Windows solo deja leer este ajuste (arranque/BCD) con permisos de administrador. Aplicar o revertir sí funciona (pide UAC).';
+    top.appendChild(st);
     card.appendChild(top);
     card.appendChild(elt('div', 'tw-desc', t.desc || ''));
     const foot = elt('div', 'tw-foot');
@@ -401,6 +405,12 @@
     } else {
       const act = elt('button', 'tw-act' + (t.applied ? ' revert' : ''), t.applied ? 'Revertir' : 'Aplicar');
       act.addEventListener('click', () => toggleTweak(t, card, act));
+      // Estado desconocido: se ofrecen las DOS acciones; forzar una sería adivinar el estado.
+      if (unknown) {
+        const rev = elt('button', 'tw-act revert', 'Revertir');
+        rev.addEventListener('click', () => { t.applied = true; toggleTweak(t, card, rev); });
+        foot.appendChild(rev);
+      }
       foot.appendChild(act);
     }
     card.appendChild(foot);

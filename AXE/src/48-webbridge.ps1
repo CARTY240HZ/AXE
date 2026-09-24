@@ -81,7 +81,9 @@ $script:AXEBridgeMap = @{
         @($script:CAT | ForEach-Object {
             $tw = $_
             $blk = $null; try { $blk = Get-BlockReason $tw } catch {}
-            $applied = $false; if(-not $blk){ try { $applied = [bool](Test-TweakSafe $tw) } catch {} }
+            # $null = no legible sin admin (BCD): la UI lo pinta como desconocido, no como inactivo.
+            $applied = $false
+            if(-not $blk){ if(Test-AXETweakUnreadable $tw){ $applied = $null } else { try { $applied = [bool](Test-TweakSafe $tw) } catch {} } }
             [pscustomobject]@{
                 id=$tw.Id; name=$tw.Name; desc=$tw.Desc; cat=$tw.Cat; tier=[int]$tw.Tier
                 reboot=[bool]$tw.Reboot; source=$tw.Source; sourceType=$tw.SourceType

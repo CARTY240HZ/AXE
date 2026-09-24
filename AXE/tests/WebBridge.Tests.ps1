@@ -70,6 +70,16 @@ Describe 'Puente: Optimizar (Fase 6) - solo lecturas seguras' {
             $r.data[0].PSObject.Properties.Name | Should -Contain $k
         }
     }
+    # REGRESION: la UI ya no corre elevada y bcdedit sin admin da "acceso denegado": los tweaks
+    # cuyo Test lee BCD salian INACTIVOS aunque estuvieran aplicados. Sin admin: applied = null.
+    It 'sin admin, un tweak cuyo estado lee BCD sale con applied=null (desconocido), no inactivo' {
+        function Test-Admin { $false }
+        $r = Invoke-AXEBridgeCmd 'tweaks.list' @{}
+        $dyn = @($r.data) | Where-Object id -eq 'cpu_dyntick'
+        $dyn.applied | Should -BeNullOrEmpty
+        $dyn.PSObject.Properties.Name | Should -Contain 'applied'
+        (@($r.data) | Where-Object id -eq 'sys_bing').applied | Should -BeOfType [bool]
+    }
 }
 
 Describe 'Puente: Fase 7 - lecturas seguras' {
