@@ -547,8 +547,9 @@
       if (!proc) { out.textContent = 'Escribe el nombre del proceso del juego (ej: cs2).'; $('fpsProc').focus(); return; }
       let secs = parseInt($('fpsSecs').value, 10); if (!(secs >= 3)) secs = 20;
       const b = $('btnFps'); b.disabled = true; b.classList.add('busy');
-      out.textContent = 'capturando ' + secs + ' s… pon el juego en la escena a medir (la ventana puede tardar en responder)';
-      AXE.call('fps.capture', { process: proc, seconds: secs }).then((r) => {
+      out.textContent = 'capturando ' + secs + ' s… pon el juego en la escena a medir';
+      // la captura dura 'secs' (hasta 120) + arranque de PresentMon + cola del worker
+      AXE.call('fps.capture', { process: proc, seconds: secs }, (secs + 120) * 1000).then((r) => {
         out.textContent = (r.lines || []).join('\n');
       }).catch((e) => { out.textContent = 'No pude capturar: ' + e.message; })
         .finally(() => { b.disabled = false; b.classList.remove('busy'); });

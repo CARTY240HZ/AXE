@@ -21,6 +21,9 @@
 # se concatena ANTES que 46-broker.ps1 (orden alfabetico de build.ps1), y PowerShell no permite
 # llamar una funcion antes de que su sentencia 'function' se haya ejecutado en el script -- Start-
 # AXEBroker (definida en 46) no existiria todavia en ese punto si el despacho viviera en 45.
+# -LibOnly (worker del puente): motor ya definido, se vuelve SIN abrir ventana. 'return', no
+# 'exit': es un dot-source dentro del proceso GUI y 'exit' mataria el runspace del worker.
+if($LibOnly){ return }
 if($Broker){
     exit (Start-AXEBroker $Broker $Token)
 }

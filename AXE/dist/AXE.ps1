@@ -1,6 +1,6 @@
 ﻿# ================================================================
 # AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-24 07:57:22Z
+# Build UTC: 2026-09-24 08:20:40Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -135,7 +135,11 @@ param(
     # masterRevert o safety.restorePoint. Nombres verificados sin colision contra src/ (leccion
     # $Games/S24) antes de anadirlos.
     [string]$Broker,
-    [string]$Token
+    [string]$Token,
+    # Solo definir el motor, sin CLI ni ventana: lo usa el worker de fondo del puente
+    # (Start-AXEBridgeWorker, 48-webbridge) al hacer dot-source de este mismo script. grep
+    # '$LibOnly' sobre src/ = 0 hits fuera de 00/49 (leccion $Games/S24).
+    [switch]$LibOnly
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
@@ -4005,7 +4009,7 @@ function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
 # Sustituido por build.ps1 con la tabla literal real (mismo mecanismo que $script:AXEVersion en
 # 00-header.ps1). $null en el fallback: correr src/ suelto sin build (dev/tests) desactiva la
 # comprobacion en vez de rechazar ficheros validos sin manifiesto que compararlos.
-$script:AXEWebUIManifest = @{'app.js'='DE21D7277DB4BE336AF90A7735DA8F7A35D1FDF17F037DD76997D9AF548E0772';'bridge.js'='4A8EE3D2ADDA10258955F21D3C4531A90D8BED2CB385607ACA395E2E81E1D6DB';'index.html'='5B78BD65F61A9DEF3DC774BD1D15C1954A18E20CE12B9E237F876E6B311B6026';'styles.css'='049CD1A2069924C3E7A319A059EDBF9E86BC93C2F226A444D8AB5F3E8D03E635'}
+$script:AXEWebUIManifest = @{'app.js'='FB128D9936285C93A0E0F798ECAF2B2A995040A28C09A0A70BB4FDECF982CFB4';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='71AEF8513F000D5DC09B1617332B6CACF60A868FB1DB4A12449DC873588F2119';'styles.css'='049CD1A2069924C3E7A319A059EDBF9E86BC93C2F226A444D8AB5F3E8D03E635'}
 if($script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ $script:AXEWebUIManifest = $null }
 
 
@@ -8076,11 +8080,13 @@ $script:AXEBridgeMap = @{
     # 'lines' del motor TAL CUAL (mismo texto que la CLI): la honestidad vive en el motor, no aqui.
 
     # Barrido de resolucion de timer (§3.5). 153 puntos x 200 Sleep(1): ~30-60s reales, NO 1-2s.
-    # Register-AXEBridge lo despacha a un runspace de fondo ($script:AXEBridgeBackgroundCmds): en
+    # Register-AXEBridge lo despacha al worker de fondo ($script:AXEBridgeWorkerCmds): en
     # el hilo de UI dejaba la ventana "No responde" y encolaba measure.score detras hasta su timeout.
     'measure.timerSweep' = { param($a)
         $sw = Measure-AXETimerSweep
-        if(-not $sw){ throw 'barrido no disponible (AXE.Native ausente o rango invalido; ver log)' }
+        # $null tiene varias causas y el motivo exacto ya esta en el log. La comun NO es AXE.Native:
+        # es que Windows 11 no conceda la resolucion a AXE (medido en proceso sin ventana visible).
+        if(-not $sw){ throw 'el barrido no obtuvo datos utiles. Lo mas comun: Windows no concede la resolucion a AXE (activa lat_timerres y reinicia). Motivo exacto en el log.' }
         $bestMs = $null; if($sw.Conclusive -and $sw.Best){ $bestMs = [double]$sw.Best.AppliedMs }
         [pscustomobject]@{
             lines      = @(Format-AXETimerSweep $sw)
@@ -8371,53 +8377,37 @@ function Invoke-AXEBridgeCmd {
     }
 }
 
-# Comandos LENTOS (decenas de segundos) que no necesitan nada del hilo de UI: corren en un runspace
-# de fondo para que la ventana no quede "No responde". Su cuerpo (el del mapa) y las funciones del
-# motor que usa se inyectan por TEXTO (mismo patron que Invoke-AXEPrivilegedBackground, 46-broker)
-# -- nunca se dot-sourcea el motor entero (llegaria al fallthrough de 49-webmain y abriria otra
-# ventana). [AXE.Native] es un tipo del AppDomain: ya esta cargado para cualquier runspace.
-$script:AXEBridgeBackgroundCmds = @('measure.timerSweep')
+# Comandos LENTOS (segundos a minutos): corren en un WORKER de fondo para que la ventana no quede
+# "No responde" (Windows lo marca a los 5 s de hilo de UI bloqueado; medido: net.probe 24 s,
+# bench.baseline 10 s, advisor.get 10 s, measure.timerSweep hasta 323 s). El worker es un
+# RunspacePool(1,1) que carga el motor ENTERO una vez (dot-source de este mismo .ps1 con -LibOnly,
+# que 49-webmain corta antes de abrir ventana): el catalogo, $script:HW y los estado de sesion de
+# prueba.* viven alli con sus scriptblocks nativos, nada se inyecta por texto. Pool de 1 = los
+# comandos se encolan solos, uno detras de otro, como pasaba en el hilo de UI pero sin bloquearlo.
+# Se quedan en el hilo de UI: lo instantaneo (app.info, hw.get, catalog.tiers) y session.* (su
+# estado -job, timers- vive en ESTE proceso).
+$script:AXEBridgeWorkerCmds = @('measure.score','measure.timerSweep','tweaks.list','net.probe','fps.capture',
+    'diag.get','prueba.baseline','prueba.report','bench.baseline','bench.after','advisor.get')
+$script:AXEBridgeWorker = $null
 
-function Get-AXEFunctionDeps([scriptblock]$Sb){
-    # Cierre transitivo (por AST) de las funciones definidas que $Sb llama. Sustituye a una lista
-    # mantenida a mano: la primera version olvido Get-AXEBand (la usa Get-AXESweepVerdict) y el
-    # barrido fallaba SOLO en la GUI. Devuelve nombre -> ScriptBlock, en orden de descubrimiento.
-    $seen  = [ordered]@{}
-    $queue = New-Object System.Collections.Queue
-    $queue.Enqueue($Sb)
-    while($queue.Count -gt 0){
-        $cur = $queue.Dequeue()
-        foreach($ca in $cur.Ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true)){
-            $n = $ca.GetCommandName()
-            if(-not $n -or $seen.Contains($n)){ continue }
-            $f = Get-Command $n -CommandType Function -EA SilentlyContinue
-            if(-not $f){ continue }
-            $seen[$n] = $f.ScriptBlock
-            $queue.Enqueue($f.ScriptBlock)
-        }
-    }
-    $seen
+function Start-AXEBridgeWorker([string]$DistPath = $PSCommandPath){
+    # Idempotente. La carga (~segundos: parse + catalogo) corre YA en el pool, asi que el primer
+    # comando lento simplemente espera en la cola a que termine; nadie bloquea el hilo de UI.
+    if($script:AXEBridgeWorker){ return }
+    $pool = [runspacefactory]::CreateRunspacePool(1, 1)
+    $pool.ApartmentState = 'MTA'; $pool.Open()
+    $ps = [powershell]::Create(); $ps.RunspacePool = $pool
+    [void]$ps.AddScript('. $args[0] -LibOnly').AddArgument($DistPath)
+    $script:AXEBridgeWorker = @{ Pool = $pool; Load = @{ Runspace = $null; PS = $ps; Handle = $ps.BeginInvoke() } }
 }
 
-function Invoke-AXEBridgeBackground([string]$Cmd, [hashtable]$A){
-    # Arranca el cuerpo de $script:AXEBridgeMap[$Cmd] en un runspace MTA sin bloquear. Devuelve
-    # @{Runspace;PS;Handle}, el mismo contrato que Receive-AXEPrivilegedBackground recoge.
-    $rs = [runspacefactory]::CreateRunspace()
-    $rs.ApartmentState = 'MTA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
-    $ps = [powershell]::Create(); $ps.Runspace = $rs
-    $deps  = Get-AXEFunctionDeps $script:AXEBridgeMap[$Cmd]
-    $fnSrc = ($deps.Keys | ForEach-Object { "function $_ { $($deps[$_]) }" }) -join "`n"
-    $body  = $script:AXEBridgeMap[$Cmd].ToString()
-    [void]$ps.AddScript(@"
-`$script:AXELog = `$args[1]
-$fnSrc
-`$fn = { $body }
-try { [pscustomobject]@{ ok=`$true; data=(& `$fn `$args[0]); err='' } }
-catch { [pscustomobject]@{ ok=`$false; data=`$null; err=`$_.Exception.Message } }
-"@)
-    [void]$ps.AddArgument($A)
-    [void]$ps.AddArgument($script:AXELog)
-    @{ Runspace = $rs; PS = $ps; Handle = $ps.BeginInvoke() }
+function Invoke-AXEBridgeWorker([string]$Cmd, [hashtable]$A){
+    # Encola $Cmd en el worker. Devuelve @{Runspace;PS;Handle}, el contrato que ya recogen
+    # Wait-AXEBackground/Receive-AXEPrivilegedBackground (Runspace=$null: el pool no se cierra).
+    Start-AXEBridgeWorker
+    $ps = [powershell]::Create(); $ps.RunspacePool = $script:AXEBridgeWorker.Pool
+    [void]$ps.AddScript('Invoke-AXEBridgeCmd $args[0] $args[1]').AddArgument($Cmd).AddArgument($A)
+    @{ Runspace = $null; PS = $ps; Handle = $ps.BeginInvoke() }
 }
 
 function Register-AXEBridge($core){
@@ -8425,7 +8415,9 @@ function Register-AXEBridge($core){
     # Los 4 comandos del broker (issue #5) NUNCA corren sincronos aqui: esperar el UAC es una
     # espera SIN LIMITE (decision humana) y este handler corre en el hilo de UI de WPF -- se
     # despachan a un runspace de fondo (Start-AXEPrivilegedCommand, 46-broker.ps1) y se responde
-    # cuando terminan, igual que la telemetria de mas abajo nunca bloquea este hilo.
+    # cuando terminan, igual que la telemetria de mas abajo nunca bloquea este hilo. Los lentos
+    # ($script:AXEBridgeWorkerCmds) van al worker, que empieza a cargar el motor YA.
+    Start-AXEBridgeWorker
     $core.add_WebMessageReceived({
         param($s,$e)
         $reqId = -1
@@ -8440,7 +8432,7 @@ function Register-AXEBridge($core){
             $cmd = [string]$msg.cmd
 
             $isBroker = @($script:AXEBrokerCommands) -ccontains $cmd
-            $isSlow   = @($script:AXEBridgeBackgroundCmds) -ccontains $cmd
+            $isSlow   = @($script:AXEBridgeWorkerCmds) -ccontains $cmd
             if($isBroker -or $isSlow){
                 $rid = $reqId; $coreRef = $s
                 $reply = {
@@ -8450,7 +8442,7 @@ function Register-AXEBridge($core){
                     try { [void]$coreRef.ExecuteScriptAsync($js) } catch {}
                 }.GetNewClosure()
                 if($isBroker){ Start-AXEPrivilegedCommand -Cmd $cmd -A $argsHt -OnDone $reply }
-                else { Wait-AXEBackground (Invoke-AXEBridgeBackground $cmd $argsHt) $reply }
+                else { Wait-AXEBackground (Invoke-AXEBridgeWorker $cmd $argsHt) $reply }
                 return
             }
             $res = Invoke-AXEBridgeCmd $cmd $argsHt
@@ -8556,6 +8548,9 @@ function Register-AXEBridge($core){
 # se concatena ANTES que 46-broker.ps1 (orden alfabetico de build.ps1), y PowerShell no permite
 # llamar una funcion antes de que su sentencia 'function' se haya ejecutado en el script -- Start-
 # AXEBroker (definida en 46) no existiria todavia en ese punto si el despacho viviera en 45.
+# -LibOnly (worker del puente): motor ya definido, se vuelve SIN abrir ventana. 'return', no
+# 'exit': es un dot-source dentro del proceso GUI y 'exit' mataria el runspace del worker.
+if($LibOnly){ return }
 if($Broker){
     exit (Start-AXEBroker $Broker $Token)
 }

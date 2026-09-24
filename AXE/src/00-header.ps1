@@ -128,7 +128,11 @@ param(
     # masterRevert o safety.restorePoint. Nombres verificados sin colision contra src/ (leccion
     # $Games/S24) antes de anadirlos.
     [string]$Broker,
-    [string]$Token
+    [string]$Token,
+    # Solo definir el motor, sin CLI ni ventana: lo usa el worker de fondo del puente
+    # (Start-AXEBridgeWorker, 48-webbridge) al hacer dot-source de este mismo script. grep
+    # '$LibOnly' sobre src/ = 0 hits fuera de 00/49 (leccion $Games/S24).
+    [switch]$LibOnly
 )
 
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).

@@ -23,7 +23,9 @@
       // objeto JSON que ConvertFrom-Json (PS) parsea a {id,cmd,args}. Un JSON.stringify aqui haria
       // que el lado PS reciba un string doble-codificado (id=0, cmd vacio).
       bridge.postMessage({ id, cmd, args: args || {} });
-      const ms = timeoutMs || 15000;
+      // 120 s: los comandos lentos van a UN worker de fondo en cola (48-webbridge); esperar detras
+      // de un barrido/benchmark es normal, no un puente muerto. 15 s los daba por fallidos.
+      const ms = timeoutMs || 120000;
       setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error('timeout: ' + cmd)); } }, ms);
     });
   }
