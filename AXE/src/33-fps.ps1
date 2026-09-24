@@ -164,7 +164,10 @@ function Measure-AXEFps {
     try {
         # -stop_existing_session: si quedo una sesion ETW colgada de una captura anterior,
         # PresentMon falla al arrancar. -terminate_after_timed cierra el proceso solo.
-        $pmArgs = @('-process_name',$proc,'-output_file',$csv,'-timed',$Seconds,'-terminate_after_timed','-stop_existing_session','-no_top')
+        # Comillas A MANO: Start-Process de PS 5.1 une -ArgumentList con espacios sin citar nada,
+        # asi que una ruta con espacios (p.ej. ...\OneDrive - Empresa\...) llegaba partida y
+        # PresentMon "no generaba CSV". El nombre ya viene sin comillas (lo valida el broker).
+        $pmArgs = @('-process_name',"`"$proc`"",'-output_file',"`"$csv`"",'-timed',$Seconds,'-terminate_after_timed','-stop_existing_session','-no_top')
         $p = Start-Process -FilePath $pm -ArgumentList $pmArgs -PassThru -Wait -WindowStyle Hidden -EA Stop
         if($p.ExitCode -ne 0){ Write-AXELog "PresentMon salio con codigo $($p.ExitCode)." 'WARN' }
     } catch {

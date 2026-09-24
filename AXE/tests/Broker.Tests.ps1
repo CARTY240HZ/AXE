@@ -5,7 +5,7 @@ BeforeAll {
 }
 
 Describe 'Test-AXEBrokerCommand - whitelist cerrada del broker' -Tag 'unit' {
-    It '<_> esta permitido' -ForEach 'tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint' {
+    It '<_> esta permitido' -ForEach 'tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint','fps.capture' {
         Test-AXEBrokerCommand $_ | Should -BeTrue
     }
     It 'un comando desconocido se rechaza' {
@@ -190,6 +190,27 @@ Describe 'Invoke-AXEBrokerCommand - motor de decision (sin pipe, con tweak sinte
     }
     It 'un comando fuera de la whitelist devuelve ok=false' {
         (Invoke-AXEBrokerCommand 'os.format' @{}).ok | Should -BeFalse
+    }
+    # fps.capture: el nombre de proceso es texto libre del front y acaba en la linea de comandos
+    # de PresentMon COMO ADMIN. Nada que pueda inyectar un flag (-output_file ...) o una comilla.
+    It 'fps.capture rechaza nombre de proceso <_> ANTES de lanzar nada' -ForEach @(
+        'cs2 -output_file C:\Windows\x.csv', 'cs2" -x', '-stop_existing_session', '', ('a' * 80), 'cs2;calc'
+    ) {
+        $r = Invoke-AXEBrokerCommand 'fps.capture' @{ process = $_ }
+        $r.ok  | Should -BeFalse
+        $r.err | Should -Match 'nombre de proceso'
+    }
+}
+
+Describe 'Measure-AXEFps - argumentos de PresentMon (REGRESION rutas con espacios)' -Tag 'unit' {
+    It 'entrecomilla proceso y CSV: PS 5.1 Start-Process no lo hace y la ruta de OneDrive se partia' {
+        $src = Get-Content "$PSScriptRoot/../src/33-fps.ps1" -Raw
+        $src.Contains(@'
+'-process_name',"`"$proc`""
+'@) | Should -BeTrue
+        $src.Contains(@'
+'-output_file',"`"$csv`""
+'@) | Should -BeTrue
     }
 }
 

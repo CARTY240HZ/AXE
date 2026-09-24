@@ -212,7 +212,7 @@ Describe 'Register-AXEBridge despacha los 4 comandos del broker al camino asincr
 
 Describe 'Worker de fondo del puente: lo lento nunca en el hilo de UI (REGRESION "No responde")' -Tag 'unit' {
     It 'los comandos lentos medidos van al worker y existen en el mapa (misma lista blanca)' {
-        foreach($k in 'measure.score','measure.timerSweep','net.probe','bench.baseline','bench.after','advisor.get','fps.capture'){
+        foreach($k in 'measure.score','measure.timerSweep','net.probe','bench.baseline','bench.after','advisor.get'){
             $script:AXEBridgeWorkerCmds | Should -Contain $k
         }
         foreach($k in $script:AXEBridgeWorkerCmds){ $script:AXEBridgeMap.Keys | Should -Contain $k }

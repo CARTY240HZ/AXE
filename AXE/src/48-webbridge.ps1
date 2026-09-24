@@ -37,8 +37,8 @@ $script:AXEBridgeMap = @{
     }
 
     # Medicion real (timer + jitter + cobertura). Get-AXESnapshot corre el busy-loop de jitter
-    # (~1s) en ESTE hilo (UI); no congela el render (WebView2 es out-of-process) pero si retrasa
-    # otras respuestas ~1s. Fase 5 lo mueve a un runspace de fondo. DTO plano para el gauge.
+    # (~1s) + cobertura del catalogo: 2-5 s medidos. Corre en el worker de fondo ($script:
+    # AXEBridgeWorkerCmds), nunca en el hilo de UI. DTO plano para el gauge.
     'measure.score' = { param($a)
         $snap = Get-AXESnapshot
         $sc   = Get-AXEScore $snap
@@ -131,8 +131,8 @@ $script:AXEBridgeMap = @{
         }
     }
 
-    # Captura de FPS con PresentMon. BLOQUEANTE: Start-Process -Wait durante 'seconds' (default 20s)
-    # y requiere admin (sesion ETW). Devuelve Ok/lines del motor; si no puede, el motor da el motivo
+    # Captura de FPS con PresentMon: Start-Process -Wait durante 'seconds' (default 20s). Necesita admin
+    # (sesion ETW): en la GUI va por el BROKER (46), que valida el nombre; esta entrada la usan CLI/tests. Si no puede, el motor da el motivo
     # honesto (PresentMon ausente, juego no abierto, sin permisos) y viaja en 'lines'.
     'fps.capture' = { param($a)
         if(-not $a.process){ throw 'proceso requerido (ej: cs2, valorant)' }
@@ -400,7 +400,7 @@ function Invoke-AXEBridgeCmd {
 # comandos se encolan solos, uno detras de otro, como pasaba en el hilo de UI pero sin bloquearlo.
 # Se quedan en el hilo de UI: lo instantaneo (app.info, hw.get, catalog.tiers) y session.* (su
 # estado -job, timers- vive en ESTE proceso).
-$script:AXEBridgeWorkerCmds = @('measure.score','measure.timerSweep','tweaks.list','net.probe','fps.capture',
+$script:AXEBridgeWorkerCmds = @('measure.score','measure.timerSweep','tweaks.list','net.probe',
     'diag.get','prueba.baseline','prueba.report','bench.baseline','bench.after','advisor.get')
 $script:AXEBridgeWorker = $null
 
