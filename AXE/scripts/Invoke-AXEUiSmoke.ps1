@@ -115,6 +115,28 @@ try {
         }
     }
 
+    # 4c. CLIC en cada boton de solo medida, como un usuario: navega a la vista, pulsa, espera a
+    #     que el boton deje de estar 'busy' y lee lo que pinto la interfaz. Falla si pinta un error
+    #     o si se queda colgado. Cubre el cableado JS (handler -> AXE.call -> render), que las
+    #     llamadas directas de arriba no ven.
+    $clicks = @(
+        @('telemetria','btnSweep','sweepOut'), @('telemetria','btnNet','netOut'),
+        @('prueba','btnBaseline','pruebaBar'), @('prueba','btnReport','reportOut'),
+        @('prueba','btnBenchBase','benchOut'), @('prueba','btnBenchAfter','benchOut'),
+        @('prueba','btnDiag','diagList'), @('prueba','btnAdvice','adviceList'),
+        @('sesion','btnSessDetect','sessBar'), @('sesion','btnSessPreview','sessBar')
+    )
+    foreach($k in $clicks){
+        $js = "(async()=>{document.querySelector('.nav-item[data-view=`"$($k[0])`"]').click();await new Promise(r=>setTimeout(r,300));const b=document.getElementById('$($k[1])');if(b.disabled)return JSON.stringify({err:'boton desactivado'});const t=performance.now();b.click();await new Promise(r=>setTimeout(r,200));while((b.classList.contains('busy')||b.disabled)&&performance.now()-t<180000)await new Promise(r=>setTimeout(r,250));return JSON.stringify({ms:Math.round(performance.now()-t),busy:b.classList.contains('busy'),txt:(document.getElementById('$($k[2])').textContent||'').trim().slice(0,160)})})()"
+        $r = Invoke-Js $js 240 | ConvertFrom-Json
+        $txt = ($r.txt -replace '\s+',' ')
+        '{0,-15} {1,6} ms  {2}' -f $k[1], $r.ms, $(if($r.err){"ERROR: $($r.err)"}else{$txt.Substring(0,[math]::Min(90,$txt.Length))})
+        if($r.err -or $r.busy -or $txt -match '^(No pude|No se pudo)' -or [string]::IsNullOrWhiteSpace($txt)){
+            # 'no obtuvo datos utiles' del barrido = ventana tapada (Windows), no un fallo de AXE.
+            if($txt -notmatch 'no obtuvo datos utiles'){ [void]$fails.Add("clic $($k[1]): $($r.err)$txt") }
+        }
+    }
+
     # 5. Captura de cada vista del router.
     $views = Invoke-Js "JSON.stringify([...document.querySelectorAll('.nav-item[data-view]')].map(n=>n.dataset.view))" | ConvertFrom-Json
     foreach($v in $views){
