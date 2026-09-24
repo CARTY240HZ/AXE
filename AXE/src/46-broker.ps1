@@ -350,7 +350,11 @@ function Invoke-AXEPrivilegedBackground([string]$Cmd, [hashtable]$A){
     $ps = [powershell]::Create(); $ps.Runspace = $rs
     $fnNames = 'New-AXEBrokerToken','Write-AXEBrokerFrame','Read-AXEBrokerFrame','Send-AXEBrokerRequest','Invoke-AXEPrivileged'
     $fnSrc = ($fnNames | ForEach-Object { "function $_ { $((Get-Item "function:$_").ScriptBlock) }" }) -join "`n"
-    [void]$ps.AddScript("$fnSrc`nInvoke-AXEPrivileged `$args[0] `$args[1] `$args[2]")
+    # Las funciones viajan como TEXTO pero las variables $script: que leen no: sin esta linea
+    # $script:AXEBrokerMaxBytes llegaba vacio y Write-AXEBrokerFrame rechazaba TODO mensaje
+    # ("demasiado grande (109 bytes, maximo )"). Todo apply/revert/restorePoint/fps de la GUI
+    # fallaba; lo destapo el smoke E2E con el broker real (scripts\Invoke-AXEUiSmoke.ps1 -WriteFlows).
+    [void]$ps.AddScript("`$script:AXEBrokerMaxBytes = $([int]$script:AXEBrokerMaxBytes)`n$fnSrc`nInvoke-AXEPrivileged `$args[0] `$args[1] `$args[2]")
     [void]$ps.AddArgument($Cmd)
     [void]$ps.AddArgument($A)
     [void]$ps.AddArgument($distPath)

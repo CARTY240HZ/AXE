@@ -1,6 +1,6 @@
 ﻿# ================================================================
 # AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-24 09:07:54Z
+# Build UTC: 2026-09-24 10:33:14Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -7829,7 +7829,11 @@ function Invoke-AXEPrivilegedBackground([string]$Cmd, [hashtable]$A){
     $ps = [powershell]::Create(); $ps.Runspace = $rs
     $fnNames = 'New-AXEBrokerToken','Write-AXEBrokerFrame','Read-AXEBrokerFrame','Send-AXEBrokerRequest','Invoke-AXEPrivileged'
     $fnSrc = ($fnNames | ForEach-Object { "function $_ { $((Get-Item "function:$_").ScriptBlock) }" }) -join "`n"
-    [void]$ps.AddScript("$fnSrc`nInvoke-AXEPrivileged `$args[0] `$args[1] `$args[2]")
+    # Las funciones viajan como TEXTO pero las variables $script: que leen no: sin esta linea
+    # $script:AXEBrokerMaxBytes llegaba vacio y Write-AXEBrokerFrame rechazaba TODO mensaje
+    # ("demasiado grande (109 bytes, maximo )"). Todo apply/revert/restorePoint/fps de la GUI
+    # fallaba; lo destapo el smoke E2E con el broker real (scripts\Invoke-AXEUiSmoke.ps1 -WriteFlows).
+    [void]$ps.AddScript("`$script:AXEBrokerMaxBytes = $([int]$script:AXEBrokerMaxBytes)`n$fnSrc`nInvoke-AXEPrivileged `$args[0] `$args[1] `$args[2]")
     [void]$ps.AddArgument($Cmd)
     [void]$ps.AddArgument($A)
     [void]$ps.AddArgument($distPath)
