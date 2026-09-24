@@ -15,7 +15,9 @@
 # Funciones puras primero (testeables sin pipe real, mismo patron que 35-diag.ps1): validacion
 # de mensaje. Luego las impuras (Start-AXEBroker/servidor, Send-AXEBrokerRequest/cliente).
 
-$script:AXEBrokerCommands  = @('tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint')
+# fps.capture: PresentMon abre una sesion ETW, que exige admin; desde que la UI no corre elevada
+# (issue #5) la captura fallaba siempre. Su unico dato libre se valida en Invoke-AXEBrokerCommand.
+$script:AXEBrokerCommands  = @('tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint','fps.capture')
 $script:AXEBrokerMaxBytes  = 65536   # 64 KB: tope de tamano del mensaje
 $script:AXEBrokerMaxDepth  = 8       # tope de profundidad JSON
 $script:AXEBrokerMaxSkewSec = 5      # ventana de frescura del timestamp
@@ -138,7 +140,7 @@ function Read-AXEBrokerRequest([string]$Json, [string]$ExpectedToken){
 }
 
 function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
-    # Motor de decision del broker: los 4 unicos comandos que puede ejecutar, usando EXACTAMENTE
+    # Motor de decision del broker: los 5 unicos comandos que puede ejecutar, usando EXACTAMENTE
     # el mismo protocolo de snapshot ya arreglado en el bridge (auditoria 2026-09-22 s1.1) --
     # $script:CAT/Get-BlockReason/Test-SnapEligible/Commit-TweakState/Restore-TweakState son las
     # funciones REALES del motor, no una copia. Nunca lanza hacia fuera: cualquier excepcion se
@@ -176,6 +178,20 @@ function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
             'safety.restorePoint' {
                 $r = New-AXERestorePoint
                 @{ ok=$true; data=@{ status=[string]$r.Status; message=[string]$r.Message }; err=$null }
+            }
+            'fps.capture' {
+                # Texto libre del front que acaba en la linea de comandos de PresentMon COMO ADMIN:
+                # solo letras/digitos/._- y espacio, empezando por letra o digito (nada de comillas,
+                # ';' ni un '-' inicial que PresentMon leeria como flag). Espacio si: "League of
+                # Legends"; 33-fps lo entrecomilla, y sin comillas no hay forma de cerrar el argumento.
+                $name = [string]$A.process
+                if($name -notmatch '^[\p{L}\p{Nd}][\p{L}\p{Nd}._ -]{0,63}$' -or $name -match ' -'){
+                    return @{ ok=$false; data=$null; err='nombre de proceso invalido' }
+                }
+                $secs = 20; if($A.seconds){ $secs = [int]$A.seconds }
+                if($secs -lt 3){ $secs = 3 }; if($secs -gt 120){ $secs = 120 }
+                $s = Measure-AXEFps -ProcessName $name -Seconds $secs
+                @{ ok=$true; data=@{ ok=[bool]$s.Ok; lines=@(Format-AXEFpsStats $s 'Captura') }; err=$null }
             }
             default { @{ ok=$false; data=$null; err="cmd desconocido: $Cmd" } }
         }

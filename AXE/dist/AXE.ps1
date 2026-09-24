@@ -1,6 +1,6 @@
 ﻿# ================================================================
 # AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-24 08:20:40Z
+# Build UTC: 2026-09-24 08:31:17Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -2714,7 +2714,10 @@ function Measure-AXEFps {
     try {
         # -stop_existing_session: si quedo una sesion ETW colgada de una captura anterior,
         # PresentMon falla al arrancar. -terminate_after_timed cierra el proceso solo.
-        $pmArgs = @('-process_name',$proc,'-output_file',$csv,'-timed',$Seconds,'-terminate_after_timed','-stop_existing_session','-no_top')
+        # Comillas A MANO: Start-Process de PS 5.1 une -ArgumentList con espacios sin citar nada,
+        # asi que una ruta con espacios (p.ej. ...\OneDrive - Empresa\...) llegaba partida y
+        # PresentMon "no generaba CSV". El nombre ya viene sin comillas (lo valida el broker).
+        $pmArgs = @('-process_name',"`"$proc`"",'-output_file',"`"$csv`"",'-timed',$Seconds,'-terminate_after_timed','-stop_existing_session','-no_top')
         $p = Start-Process -FilePath $pm -ArgumentList $pmArgs -PassThru -Wait -WindowStyle Hidden -EA Stop
         if($p.ExitCode -ne 0){ Write-AXELog "PresentMon salio con codigo $($p.ExitCode)." 'WARN' }
     } catch {
@@ -4009,7 +4012,7 @@ function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
 # Sustituido por build.ps1 con la tabla literal real (mismo mecanismo que $script:AXEVersion en
 # 00-header.ps1). $null en el fallback: correr src/ suelto sin build (dev/tests) desactiva la
 # comprobacion en vez de rechazar ficheros validos sin manifiesto que compararlos.
-$script:AXEWebUIManifest = @{'app.js'='FB128D9936285C93A0E0F798ECAF2B2A995040A28C09A0A70BB4FDECF982CFB4';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='71AEF8513F000D5DC09B1617332B6CACF60A868FB1DB4A12449DC873588F2119';'styles.css'='049CD1A2069924C3E7A319A059EDBF9E86BC93C2F226A444D8AB5F3E8D03E635'}
+$script:AXEWebUIManifest = @{'app.js'='FB128D9936285C93A0E0F798ECAF2B2A995040A28C09A0A70BB4FDECF982CFB4';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='037B80E8B1147F70E196FA2D1A17DEBAA726139E3E9F636FB9B95F3E3A53A7D4';'styles.css'='049CD1A2069924C3E7A319A059EDBF9E86BC93C2F226A444D8AB5F3E8D03E635'}
 if($script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ $script:AXEWebUIManifest = $null }
 
 
@@ -7459,7 +7462,9 @@ if($Session){
 # Funciones puras primero (testeables sin pipe real, mismo patron que 35-diag.ps1): validacion
 # de mensaje. Luego las impuras (Start-AXEBroker/servidor, Send-AXEBrokerRequest/cliente).
 
-$script:AXEBrokerCommands  = @('tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint')
+# fps.capture: PresentMon abre una sesion ETW, que exige admin; desde que la UI no corre elevada
+# (issue #5) la captura fallaba siempre. Su unico dato libre se valida en Invoke-AXEBrokerCommand.
+$script:AXEBrokerCommands  = @('tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint','fps.capture')
 $script:AXEBrokerMaxBytes  = 65536   # 64 KB: tope de tamano del mensaje
 $script:AXEBrokerMaxDepth  = 8       # tope de profundidad JSON
 $script:AXEBrokerMaxSkewSec = 5      # ventana de frescura del timestamp
@@ -7582,7 +7587,7 @@ function Read-AXEBrokerRequest([string]$Json, [string]$ExpectedToken){
 }
 
 function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
-    # Motor de decision del broker: los 4 unicos comandos que puede ejecutar, usando EXACTAMENTE
+    # Motor de decision del broker: los 5 unicos comandos que puede ejecutar, usando EXACTAMENTE
     # el mismo protocolo de snapshot ya arreglado en el bridge (auditoria 2026-09-22 s1.1) --
     # $script:CAT/Get-BlockReason/Test-SnapEligible/Commit-TweakState/Restore-TweakState son las
     # funciones REALES del motor, no una copia. Nunca lanza hacia fuera: cualquier excepcion se
@@ -7620,6 +7625,20 @@ function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
             'safety.restorePoint' {
                 $r = New-AXERestorePoint
                 @{ ok=$true; data=@{ status=[string]$r.Status; message=[string]$r.Message }; err=$null }
+            }
+            'fps.capture' {
+                # Texto libre del front que acaba en la linea de comandos de PresentMon COMO ADMIN:
+                # solo letras/digitos/._- y espacio, empezando por letra o digito (nada de comillas,
+                # ';' ni un '-' inicial que PresentMon leeria como flag). Espacio si: "League of
+                # Legends"; 33-fps lo entrecomilla, y sin comillas no hay forma de cerrar el argumento.
+                $name = [string]$A.process
+                if($name -notmatch '^[\p{L}\p{Nd}][\p{L}\p{Nd}._ -]{0,63}$' -or $name -match ' -'){
+                    return @{ ok=$false; data=$null; err='nombre de proceso invalido' }
+                }
+                $secs = 20; if($A.seconds){ $secs = [int]$A.seconds }
+                if($secs -lt 3){ $secs = 3 }; if($secs -gt 120){ $secs = 120 }
+                $s = Measure-AXEFps -ProcessName $name -Seconds $secs
+                @{ ok=$true; data=@{ ok=[bool]$s.Ok; lines=@(Format-AXEFpsStats $s 'Captura') }; err=$null }
             }
             default { @{ ok=$false; data=$null; err="cmd desconocido: $Cmd" } }
         }
@@ -8023,8 +8042,8 @@ $script:AXEBridgeMap = @{
     }
 
     # Medicion real (timer + jitter + cobertura). Get-AXESnapshot corre el busy-loop de jitter
-    # (~1s) en ESTE hilo (UI); no congela el render (WebView2 es out-of-process) pero si retrasa
-    # otras respuestas ~1s. Fase 5 lo mueve a un runspace de fondo. DTO plano para el gauge.
+    # (~1s) + cobertura del catalogo: 2-5 s medidos. Corre en el worker de fondo ($script:
+    # AXEBridgeWorkerCmds), nunca en el hilo de UI. DTO plano para el gauge.
     'measure.score' = { param($a)
         $snap = Get-AXESnapshot
         $sc   = Get-AXEScore $snap
@@ -8117,8 +8136,8 @@ $script:AXEBridgeMap = @{
         }
     }
 
-    # Captura de FPS con PresentMon. BLOQUEANTE: Start-Process -Wait durante 'seconds' (default 20s)
-    # y requiere admin (sesion ETW). Devuelve Ok/lines del motor; si no puede, el motor da el motivo
+    # Captura de FPS con PresentMon: Start-Process -Wait durante 'seconds' (default 20s). Necesita admin
+    # (sesion ETW): en la GUI va por el BROKER (46), que valida el nombre; esta entrada la usan CLI/tests. Si no puede, el motor da el motivo
     # honesto (PresentMon ausente, juego no abierto, sin permisos) y viaja en 'lines'.
     'fps.capture' = { param($a)
         if(-not $a.process){ throw 'proceso requerido (ej: cs2, valorant)' }
@@ -8386,7 +8405,7 @@ function Invoke-AXEBridgeCmd {
 # comandos se encolan solos, uno detras de otro, como pasaba en el hilo de UI pero sin bloquearlo.
 # Se quedan en el hilo de UI: lo instantaneo (app.info, hw.get, catalog.tiers) y session.* (su
 # estado -job, timers- vive en ESTE proceso).
-$script:AXEBridgeWorkerCmds = @('measure.score','measure.timerSweep','tweaks.list','net.probe','fps.capture',
+$script:AXEBridgeWorkerCmds = @('measure.score','measure.timerSweep','tweaks.list','net.probe',
     'diag.get','prueba.baseline','prueba.report','bench.baseline','bench.after','advisor.get')
 $script:AXEBridgeWorker = $null
 
