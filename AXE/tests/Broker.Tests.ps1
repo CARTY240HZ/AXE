@@ -435,9 +435,14 @@ Describe 'Invoke-AXEPrivilegedBackground / Receive-AXEPrivilegedBackground - run
         # que los argumentos SI cruzan al runspace de fondo intactos -- incluido $DistPath, que
         # Invoke-AXEPrivilegedBackground debe pasar explicito (ver el siguiente It: $PSCommandPath
         # no cruza solo a un runspace nuevo via AddScript, viene vacio ahi dentro).
+        # El doble usa el framing REAL (Write/Read-AXEBrokerFrame) dentro del runspace de fondo: con
+        # un doble que no lo tocaba, nadie vio que alli $script:AXEBrokerMaxBytes llegaba VACIO y
+        # todo apply/revert de la GUI fallaba con "mensaje demasiado grande (109 bytes, maximo )".
         Set-Item function:Invoke-AXEPrivileged -Value {
             param($Cmd, $A, $DistPath)
-            [pscustomobject]@{ ok=$true; data=@{ echoCmd=$Cmd; echoId=$A.id; echoDistPath=$DistPath }; err=$null }
+            $ms = New-Object System.IO.MemoryStream
+            Write-AXEBrokerFrame $ms '{"cmd":"x"}'; $ms.Position = 0
+            [pscustomobject]@{ ok=$true; data=@{ echoCmd=$Cmd; echoId=$A.id; echoDistPath=$DistPath; frame=(Read-AXEBrokerFrame $ms) }; err=$null }
         }
     }
     AfterAll {
@@ -453,6 +458,16 @@ Describe 'Invoke-AXEPrivilegedBackground / Receive-AXEPrivilegedBackground - run
         $r.ok | Should -BeTrue
         $r.data.echoCmd | Should -Be 'tweaks.apply'
         $r.data.echoId | Should -Be 'cpu_mmcss'
+    }
+
+    It 'el framing real funciona DENTRO del runspace de fondo (REGRESION: tope de tamano vacio alli)' {
+        $bg = Invoke-AXEPrivilegedBackground 'tweaks.apply' @{ id = 'x' }
+        $timeout = (Get-Date).AddSeconds(5)
+        while(-not $bg.Handle.IsCompleted -and (Get-Date) -lt $timeout){ Start-Sleep -Milliseconds 50 }
+        $r = Receive-AXEPrivilegedBackground $bg
+        $r.err | Should -BeNullOrEmpty
+        $r.ok | Should -BeTrue
+        $r.data.frame | Should -Be '{"cmd":"x"}'
     }
 
     It 'DistPath ($PSCommandPath leido en el runspace de LLAMADA) cruza intacto, nunca vacio (REGRESION revision Task 8)' {

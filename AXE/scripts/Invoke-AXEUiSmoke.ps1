@@ -6,7 +6,10 @@
 #   No aplica ni revierte nada (esos van por el broker con UAC: prueba manual).
 # Uso: powershell -NoProfile -File .\scripts\Invoke-AXEUiSmoke.ps1 [-OutDir <carpeta PNG>]
 # Sale con 0 si todo OK, 1 si algo fallo. Abre una ventana visible unos segundos.
-param([string]$OutDir = (Join-Path $PSScriptRoot '..\dist\ui-smoke'), [int]$Port = 9333)
+# -WriteFlows: ademas aplica y revierte UN tweak inocuo (sys_bing, HKCU, sin reinicio) por el
+# broker REAL y verifica en el registro que queda exactamente como estaba. Opt-in: toca el sistema.
+# Sin UAC solo si el shell ya esta elevado; si no, saltara el dialogo (hay que aceptarlo a mano).
+param([string]$OutDir = (Join-Path $PSScriptRoot '..\dist\ui-smoke'), [int]$Port = 9333, [switch]$WriteFlows)
 $ErrorActionPreference = 'Stop'
 $dist = Join-Path $PSScriptRoot '..\dist\AXE.ps1'
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
@@ -93,6 +96,24 @@ try {
     # 'no obtuvo datos utiles' = Windows 11 no concede la resolucion a una ventana tapada: es el
     # mensaje honesto esperado, no un fallo. Cualquier OTRO error si lo es.
     if($r.sweep -ne 'ok' -and $r.sweep -notmatch 'no obtuvo datos utiles'){ [void]$fails.Add("barrido: $($r.sweep)") }
+
+    # 4b. Escritura por el broker real (opt-in). Solo si el tweak NO estaba aplicado: nunca se
+    #     altera un estado que el usuario eligio.
+    if($WriteFlows){
+        $key = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Search'; $name = 'BingSearchEnabled'
+        $read = { $p = Get-ItemProperty -Path $key -Name $name -EA SilentlyContinue; if($p){ $p.$name } else { '<ausente>' } }
+        $orig = & $read
+        if($orig -eq 0){ 'escritura: sys_bing ya aplicado por el usuario, se salta (no se toca su estado)' }
+        else {
+            $a = Invoke-Js "AXE.call('tweaks.apply',{id:'sys_bing'},90000).then(d=>JSON.stringify({ok:true,d}),e=>JSON.stringify({ok:false,err:e.message}))" 120 | ConvertFrom-Json
+            $mid = & $read
+            $r = Invoke-Js "AXE.call('tweaks.revert',{id:'sys_bing'},90000).then(d=>JSON.stringify({ok:true,d}),e=>JSON.stringify({ok:false,err:e.message}))" 120 | ConvertFrom-Json
+            $end = & $read
+            "escritura: apply ok=$($a.ok) applied=$($a.d.applied) reg=$mid | revert ok=$($r.ok) applied=$($r.d.applied) reg=$end (original=$orig)"
+            if(-not $a.ok -or -not $a.d.applied -or $mid -ne 0){ [void]$fails.Add("tweaks.apply por el broker: $($a.err) applied=$($a.d.applied) reg=$mid") }
+            if(-not $r.ok -or $r.d.applied -or "$end" -ne "$orig"){ [void]$fails.Add("tweaks.revert no dejo el registro como estaba: $($r.err) reg=$end original=$orig") }
+        }
+    }
 
     # 5. Captura de cada vista del router.
     $views = Invoke-Js "JSON.stringify([...document.querySelectorAll('.nav-item[data-view]')].map(n=>n.dataset.view))" | ConvertFrom-Json
