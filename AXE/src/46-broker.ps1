@@ -359,7 +359,14 @@ function Start-AXEPrivilegedCommand([string]$Cmd, [hashtable]$A, [scriptblock]$O
     # test sin ventana no tiene): verificado por el harness de build.ps1 (AXE_WEBUI_TEST=1) +
     # comprobacion manual antes de release. Las dos funciones de las que depende (arriba) si lo
     # estan por completo.
-    $bg = Invoke-AXEPrivilegedBackground $Cmd $A
+    Wait-AXEBackground (Invoke-AXEPrivilegedBackground $Cmd $A) $OnDone
+}
+
+function Wait-AXEBackground($Bg, [scriptblock]$OnDone){
+    # Sondea un @{Runspace;PS;Handle} de fondo desde el hilo de UI y llama a $OnDone con el
+    # resultado cuando termina. Compartido por el broker y por los comandos lentos del puente
+    # (Invoke-AXEBridgeBackground, 48-webbridge).
+    $bg = $Bg
     $timer = New-Object System.Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds(150)
     $timer.Add_Tick({

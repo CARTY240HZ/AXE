@@ -209,3 +209,38 @@ Describe 'Register-AXEBridge despacha los 4 comandos del broker al camino asincr
         $script:BridgeSrc | Should -Match 'Start-AXEPrivilegedCommand'
     }
 }
+
+Describe 'Invoke-AXEBridgeBackground: comandos lentos fuera del hilo de UI (REGRESION barrido "No responde")' -Tag 'unit' {
+    BeforeAll {
+        function Wait-TestBg($bg){ $t=[Diagnostics.Stopwatch]::StartNew(); while(-not $bg.Handle.IsCompleted -and $t.ElapsedMilliseconds -lt 15000){ Start-Sleep -Milliseconds 50 }; Receive-AXEPrivilegedBackground $bg }
+        # Dos niveles de llamada: el runspace de fondo necesita el cierre TRANSITIVO, no solo lo
+        # que el cuerpo llama directo (fue justo el bug: Get-AXESweepVerdict -> Get-AXEBand).
+        function Get-AXETestInner($x){ "doble:$x" }
+        function Get-AXETestDouble($x){ Get-AXETestInner $x }
+        $script:AXEBridgeMap['test.bgOk']    = { param($a) Get-AXETestDouble $a.x }
+        $script:AXEBridgeMap['test.bgThrow'] = { param($a) throw 'fallo a proposito' }
+    }
+    AfterAll {
+        foreach($k in 'test.bgOk','test.bgThrow'){ $script:AXEBridgeMap.Remove($k) }
+    }
+    It 'ejecuta el cuerpo del mapa en otro runspace con sus dependencias transitivas y los args intactos' {
+        $r = Wait-TestBg (Invoke-AXEBridgeBackground 'test.bgOk' @{ x = 7 })
+        $r.ok   | Should -BeTrue
+        $r.data | Should -Be 'doble:7'
+    }
+    It 'una excepcion del cuerpo vuelve como {ok=false,err}, no revienta' {
+        $r = Wait-TestBg (Invoke-AXEBridgeBackground 'test.bgThrow' @{})
+        $r.ok  | Should -BeFalse
+        $r.err | Should -Match 'a proposito'
+    }
+    It 'measure.timerSweep va por el camino de fondo y esta en el mapa (misma lista blanca)' {
+        $script:AXEBridgeBackgroundCmds | Should -Contain 'measure.timerSweep'
+        foreach($k in $script:AXEBridgeBackgroundCmds){ $script:AXEBridgeMap.Keys | Should -Contain $k }
+    }
+    It 'las dependencias de measure.timerSweep incluyen las indirectas (Get-AXEBand via Get-AXESweepVerdict)' {
+        $deps = Get-AXEFunctionDeps $script:AXEBridgeMap['measure.timerSweep']
+        foreach($f in 'Measure-AXETimerSweep','Format-AXETimerSweep','Get-AXESweepVerdict','Get-AXEBand','Set-AXETimerResolution'){
+            $deps.Keys | Should -Contain $f
+        }
+    }
+}

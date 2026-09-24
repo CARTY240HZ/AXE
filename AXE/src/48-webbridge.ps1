@@ -93,8 +93,9 @@ $script:AXEBridgeMap = @{
     # Todo re-empaqueta funciones YA EXISTENTES del motor (32/33/34/35/36). El front pinta las
     # 'lines' del motor TAL CUAL (mismo texto que la CLI): la honestidad vive en el motor, no aqui.
 
-    # Barrido de resolucion de timer (§3.5). Corre el busy-loop nativo N pasadas en ESTE hilo (UI):
-    # tarda ~1-2s y retrasa otras respuestas ese rato; no congela el render (WebView2 out-of-process).
+    # Barrido de resolucion de timer (§3.5). 153 puntos x 200 Sleep(1): ~30-60s reales, NO 1-2s.
+    # Register-AXEBridge lo despacha a un runspace de fondo ($script:AXEBridgeBackgroundCmds): en
+    # el hilo de UI dejaba la ventana "No responde" y encolaba measure.score detras hasta su timeout.
     'measure.timerSweep' = { param($a)
         $sw = Measure-AXETimerSweep
         if(-not $sw){ throw 'barrido no disponible (AXE.Native ausente o rango invalido; ver log)' }
@@ -388,6 +389,55 @@ function Invoke-AXEBridgeCmd {
     }
 }
 
+# Comandos LENTOS (decenas de segundos) que no necesitan nada del hilo de UI: corren en un runspace
+# de fondo para que la ventana no quede "No responde". Su cuerpo (el del mapa) y las funciones del
+# motor que usa se inyectan por TEXTO (mismo patron que Invoke-AXEPrivilegedBackground, 46-broker)
+# -- nunca se dot-sourcea el motor entero (llegaria al fallthrough de 49-webmain y abriria otra
+# ventana). [AXE.Native] es un tipo del AppDomain: ya esta cargado para cualquier runspace.
+$script:AXEBridgeBackgroundCmds = @('measure.timerSweep')
+
+function Get-AXEFunctionDeps([scriptblock]$Sb){
+    # Cierre transitivo (por AST) de las funciones definidas que $Sb llama. Sustituye a una lista
+    # mantenida a mano: la primera version olvido Get-AXEBand (la usa Get-AXESweepVerdict) y el
+    # barrido fallaba SOLO en la GUI. Devuelve nombre -> ScriptBlock, en orden de descubrimiento.
+    $seen  = [ordered]@{}
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue($Sb)
+    while($queue.Count -gt 0){
+        $cur = $queue.Dequeue()
+        foreach($ca in $cur.Ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true)){
+            $n = $ca.GetCommandName()
+            if(-not $n -or $seen.Contains($n)){ continue }
+            $f = Get-Command $n -CommandType Function -EA SilentlyContinue
+            if(-not $f){ continue }
+            $seen[$n] = $f.ScriptBlock
+            $queue.Enqueue($f.ScriptBlock)
+        }
+    }
+    $seen
+}
+
+function Invoke-AXEBridgeBackground([string]$Cmd, [hashtable]$A){
+    # Arranca el cuerpo de $script:AXEBridgeMap[$Cmd] en un runspace MTA sin bloquear. Devuelve
+    # @{Runspace;PS;Handle}, el mismo contrato que Receive-AXEPrivilegedBackground recoge.
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.ApartmentState = 'MTA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
+    $ps = [powershell]::Create(); $ps.Runspace = $rs
+    $deps  = Get-AXEFunctionDeps $script:AXEBridgeMap[$Cmd]
+    $fnSrc = ($deps.Keys | ForEach-Object { "function $_ { $($deps[$_]) }" }) -join "`n"
+    $body  = $script:AXEBridgeMap[$Cmd].ToString()
+    [void]$ps.AddScript(@"
+`$script:AXELog = `$args[1]
+$fnSrc
+`$fn = { $body }
+try { [pscustomobject]@{ ok=`$true; data=(& `$fn `$args[0]); err='' } }
+catch { [pscustomobject]@{ ok=`$false; data=`$null; err=`$_.Exception.Message } }
+"@)
+    [void]$ps.AddArgument($A)
+    [void]$ps.AddArgument($script:AXELog)
+    @{ Runspace = $rs; PS = $ps; Handle = $ps.BeginInvoke() }
+}
+
 function Register-AXEBridge($core){
     # JS -> PS: cada mensaje es {id, cmd, args}. Se responde por ExecuteScriptAsync(__axeReply).
     # Los 4 comandos del broker (issue #5) NUNCA corren sincronos aqui: esperar el UAC es una
@@ -407,14 +457,18 @@ function Register-AXEBridge($core){
             if($msg.args){ $msg.args.PSObject.Properties | ForEach-Object { $argsHt[$_.Name] = $_.Value } }
             $cmd = [string]$msg.cmd
 
-            if(@($script:AXEBrokerCommands) -ccontains $cmd){
+            $isBroker = @($script:AXEBrokerCommands) -ccontains $cmd
+            $isSlow   = @($script:AXEBridgeBackgroundCmds) -ccontains $cmd
+            if($isBroker -or $isSlow){
                 $rid = $reqId; $coreRef = $s
-                Start-AXEPrivilegedCommand -Cmd $cmd -A $argsHt -OnDone {
+                $reply = {
                     param($res)
                     $json = ($res | ConvertTo-Json -Depth 8 -Compress)
                     $js = 'window.__axeReply(' + $rid + ', ' + ($json | ConvertTo-Json) + ')'
                     try { [void]$coreRef.ExecuteScriptAsync($js) } catch {}
                 }.GetNewClosure()
+                if($isBroker){ Start-AXEPrivilegedCommand -Cmd $cmd -A $argsHt -OnDone $reply }
+                else { Wait-AXEBackground (Invoke-AXEBridgeBackground $cmd $argsHt) $reply }
                 return
             }
             $res = Invoke-AXEBridgeCmd $cmd $argsHt

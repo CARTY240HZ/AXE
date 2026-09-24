@@ -1,6 +1,6 @@
 ﻿# ================================================================
 # AXE 7.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-24 06:51:33Z
+# Build UTC: 2026-09-24 07:57:22Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -2283,8 +2283,13 @@ function Measure-AXETimerSweep {
         foreach($ms in ($plan | Sort-Object { Get-Random })){
             $applied = Set-AXETimerResolution -Ms $ms
             if($null -eq $applied){ continue }
-            [void][AXE.Native]::MeasureSleepDelta(5)          # warm-up, descartado
-            $r = [AXE.Native]::MeasureSleepDelta([int]$Samples)
+            $w = [AXE.Native]::MeasureSleepDelta(5)           # warm-up
+            # Request NO concedido (sleep de ~15.6ms, mismo corte de 5ms que $granted abajo): las
+            # $Samples muestras no aportan nada -- el punto se descarta igual como NotGranted -- y
+            # cuestan ~3s cada una. Medido: con aislamiento por-proceso de Win11 el barrido entero
+            # tardaba 323s. El warm-up ya basta para clasificarlo.
+            if($w[1] -ge 5.0){ $r = $w }
+            else { $r = [AXE.Native]::MeasureSleepDelta([int]$Samples) }
             [void]$out.Add([pscustomobject]@{
                 RequestedMs = [math]::Round($ms,4)
                 AppliedMs   = $applied
@@ -4000,7 +4005,7 @@ function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
 # Sustituido por build.ps1 con la tabla literal real (mismo mecanismo que $script:AXEVersion en
 # 00-header.ps1). $null en el fallback: correr src/ suelto sin build (dev/tests) desactiva la
 # comprobacion en vez de rechazar ficheros validos sin manifiesto que compararlos.
-$script:AXEWebUIManifest = @{'app.js'='B6336679A690385425ED44F9EBF221811381261855572E6FE4D4FEE8D73241D2';'bridge.js'='4A8EE3D2ADDA10258955F21D3C4531A90D8BED2CB385607ACA395E2E81E1D6DB';'index.html'='5B78BD65F61A9DEF3DC774BD1D15C1954A18E20CE12B9E237F876E6B311B6026';'styles.css'='049CD1A2069924C3E7A319A059EDBF9E86BC93C2F226A444D8AB5F3E8D03E635'}
+$script:AXEWebUIManifest = @{'app.js'='DE21D7277DB4BE336AF90A7735DA8F7A35D1FDF17F037DD76997D9AF548E0772';'bridge.js'='4A8EE3D2ADDA10258955F21D3C4531A90D8BED2CB385607ACA395E2E81E1D6DB';'index.html'='5B78BD65F61A9DEF3DC774BD1D15C1954A18E20CE12B9E237F876E6B311B6026';'styles.css'='049CD1A2069924C3E7A319A059EDBF9E86BC93C2F226A444D8AB5F3E8D03E635'}
 if($script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ $script:AXEWebUIManifest = $null }
 
 
@@ -7794,7 +7799,14 @@ function Start-AXEPrivilegedCommand([string]$Cmd, [hashtable]$A, [scriptblock]$O
     # test sin ventana no tiene): verificado por el harness de build.ps1 (AXE_WEBUI_TEST=1) +
     # comprobacion manual antes de release. Las dos funciones de las que depende (arriba) si lo
     # estan por completo.
-    $bg = Invoke-AXEPrivilegedBackground $Cmd $A
+    Wait-AXEBackground (Invoke-AXEPrivilegedBackground $Cmd $A) $OnDone
+}
+
+function Wait-AXEBackground($Bg, [scriptblock]$OnDone){
+    # Sondea un @{Runspace;PS;Handle} de fondo desde el hilo de UI y llama a $OnDone con el
+    # resultado cuando termina. Compartido por el broker y por los comandos lentos del puente
+    # (Invoke-AXEBridgeBackground, 48-webbridge).
+    $bg = $Bg
     $timer = New-Object System.Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds(150)
     $timer.Add_Tick({
@@ -8063,8 +8075,9 @@ $script:AXEBridgeMap = @{
     # Todo re-empaqueta funciones YA EXISTENTES del motor (32/33/34/35/36). El front pinta las
     # 'lines' del motor TAL CUAL (mismo texto que la CLI): la honestidad vive en el motor, no aqui.
 
-    # Barrido de resolucion de timer (§3.5). Corre el busy-loop nativo N pasadas en ESTE hilo (UI):
-    # tarda ~1-2s y retrasa otras respuestas ese rato; no congela el render (WebView2 out-of-process).
+    # Barrido de resolucion de timer (§3.5). 153 puntos x 200 Sleep(1): ~30-60s reales, NO 1-2s.
+    # Register-AXEBridge lo despacha a un runspace de fondo ($script:AXEBridgeBackgroundCmds): en
+    # el hilo de UI dejaba la ventana "No responde" y encolaba measure.score detras hasta su timeout.
     'measure.timerSweep' = { param($a)
         $sw = Measure-AXETimerSweep
         if(-not $sw){ throw 'barrido no disponible (AXE.Native ausente o rango invalido; ver log)' }
@@ -8358,6 +8371,55 @@ function Invoke-AXEBridgeCmd {
     }
 }
 
+# Comandos LENTOS (decenas de segundos) que no necesitan nada del hilo de UI: corren en un runspace
+# de fondo para que la ventana no quede "No responde". Su cuerpo (el del mapa) y las funciones del
+# motor que usa se inyectan por TEXTO (mismo patron que Invoke-AXEPrivilegedBackground, 46-broker)
+# -- nunca se dot-sourcea el motor entero (llegaria al fallthrough de 49-webmain y abriria otra
+# ventana). [AXE.Native] es un tipo del AppDomain: ya esta cargado para cualquier runspace.
+$script:AXEBridgeBackgroundCmds = @('measure.timerSweep')
+
+function Get-AXEFunctionDeps([scriptblock]$Sb){
+    # Cierre transitivo (por AST) de las funciones definidas que $Sb llama. Sustituye a una lista
+    # mantenida a mano: la primera version olvido Get-AXEBand (la usa Get-AXESweepVerdict) y el
+    # barrido fallaba SOLO en la GUI. Devuelve nombre -> ScriptBlock, en orden de descubrimiento.
+    $seen  = [ordered]@{}
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue($Sb)
+    while($queue.Count -gt 0){
+        $cur = $queue.Dequeue()
+        foreach($ca in $cur.Ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true)){
+            $n = $ca.GetCommandName()
+            if(-not $n -or $seen.Contains($n)){ continue }
+            $f = Get-Command $n -CommandType Function -EA SilentlyContinue
+            if(-not $f){ continue }
+            $seen[$n] = $f.ScriptBlock
+            $queue.Enqueue($f.ScriptBlock)
+        }
+    }
+    $seen
+}
+
+function Invoke-AXEBridgeBackground([string]$Cmd, [hashtable]$A){
+    # Arranca el cuerpo de $script:AXEBridgeMap[$Cmd] en un runspace MTA sin bloquear. Devuelve
+    # @{Runspace;PS;Handle}, el mismo contrato que Receive-AXEPrivilegedBackground recoge.
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.ApartmentState = 'MTA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
+    $ps = [powershell]::Create(); $ps.Runspace = $rs
+    $deps  = Get-AXEFunctionDeps $script:AXEBridgeMap[$Cmd]
+    $fnSrc = ($deps.Keys | ForEach-Object { "function $_ { $($deps[$_]) }" }) -join "`n"
+    $body  = $script:AXEBridgeMap[$Cmd].ToString()
+    [void]$ps.AddScript(@"
+`$script:AXELog = `$args[1]
+$fnSrc
+`$fn = { $body }
+try { [pscustomobject]@{ ok=`$true; data=(& `$fn `$args[0]); err='' } }
+catch { [pscustomobject]@{ ok=`$false; data=`$null; err=`$_.Exception.Message } }
+"@)
+    [void]$ps.AddArgument($A)
+    [void]$ps.AddArgument($script:AXELog)
+    @{ Runspace = $rs; PS = $ps; Handle = $ps.BeginInvoke() }
+}
+
 function Register-AXEBridge($core){
     # JS -> PS: cada mensaje es {id, cmd, args}. Se responde por ExecuteScriptAsync(__axeReply).
     # Los 4 comandos del broker (issue #5) NUNCA corren sincronos aqui: esperar el UAC es una
@@ -8377,14 +8439,18 @@ function Register-AXEBridge($core){
             if($msg.args){ $msg.args.PSObject.Properties | ForEach-Object { $argsHt[$_.Name] = $_.Value } }
             $cmd = [string]$msg.cmd
 
-            if(@($script:AXEBrokerCommands) -ccontains $cmd){
+            $isBroker = @($script:AXEBrokerCommands) -ccontains $cmd
+            $isSlow   = @($script:AXEBridgeBackgroundCmds) -ccontains $cmd
+            if($isBroker -or $isSlow){
                 $rid = $reqId; $coreRef = $s
-                Start-AXEPrivilegedCommand -Cmd $cmd -A $argsHt -OnDone {
+                $reply = {
                     param($res)
                     $json = ($res | ConvertTo-Json -Depth 8 -Compress)
                     $js = 'window.__axeReply(' + $rid + ', ' + ($json | ConvertTo-Json) + ')'
                     try { [void]$coreRef.ExecuteScriptAsync($js) } catch {}
                 }.GetNewClosure()
+                if($isBroker){ Start-AXEPrivilegedCommand -Cmd $cmd -A $argsHt -OnDone $reply }
+                else { Wait-AXEBackground (Invoke-AXEBridgeBackground $cmd $argsHt) $reply }
                 return
             }
             $res = Invoke-AXEBridgeCmd $cmd $argsHt
