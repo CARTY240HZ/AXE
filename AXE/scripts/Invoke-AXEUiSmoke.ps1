@@ -101,6 +101,20 @@ try {
         Start-Sleep -Milliseconds 800
         Save-Shot $v
     }
+    # 6. Tamanos/escalados reales de usuario: portatil pequeno, 1366x768, 125% y 150% de Windows.
+    #    Captura de cada vista + deteccion de desbordamiento horizontal (lo que "se rompe" primero).
+    $sizes = @(@{w=900;h=600;s=1}, @{w=1366;h=768;s=1}, @{w=1280;h=720;s=1.25}, @{w=1280;h=800;s=1.5})
+    foreach($z in $sizes){
+        [void](Send-Cdp 'Emulation.setDeviceMetricsOverride' @{ width=$z.w; height=$z.h; deviceScaleFactor=$z.s; mobile=$false })
+        foreach($v in $views){
+            [void](Invoke-Js "document.querySelector('.nav-item[data-view=`"$v`"]').click()")
+            Start-Sleep -Milliseconds 500
+            $ov = Invoke-Js "JSON.stringify([...document.querySelectorAll('body *')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.right>innerWidth+1&&getComputedStyle(e).position!=='fixed'}).slice(0,3).map(e=>(e.id||e.className||e.tagName)+'@'+Math.round(e.getBoundingClientRect().right)))"
+            if($ov -ne '[]'){ [void]$fails.Add("desborda en horizontal a $($z.w)x$($z.h)@$($z.s) en '$v': $ov") }
+            Save-Shot ("{0}_{1}x{2}@{3}" -f $v,$z.w,$z.h,$z.s)
+        }
+    }
+    [void](Send-Cdp 'Emulation.clearDeviceMetricsOverride')
     "Capturas en: $((Resolve-Path $OutDir).Path)"
 } catch {
     [void]$fails.Add("smoke abortado: $($_.Exception.Message)")

@@ -79,7 +79,11 @@ body{
 .card h3{margin:0 0 2px;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);font-weight:600}
 
 /* score */
-.score{grid-column:span 2;grid-row:span 2;display:flex;flex-direction:column;
+/* min-height en TODAS las anchuras, no solo <1180 (ver ese corte): con span 2 y '.gauge{flex:1}' el
+   marcador declara ~38px intrinsecos, las dos filas se quedan en el alto de las constantes y
+   overflow:hidden recortaba las barras del score y la ultima medicion. Visto en capturas reales
+   a 1184, 1366 y 1280@150%: la mitad inferior del marcador no se pintaba nunca. */
+.score{grid-column:span 2;grid-row:span 2;display:flex;flex-direction:column;min-height:390px;
   background:radial-gradient(120% 120% at 30% 0%,#191d24,#14171c)}
 .score-top{display:flex;justify-content:space-between;align-items:flex-start}
 .receipt{font-family:var(--mono);font-size:11px;color:var(--accent);cursor:pointer;
@@ -150,7 +154,13 @@ body{
 .btn.primary:hover{background:#eab13f;box-shadow:0 8px 24px -8px rgba(224,163,46,.55)}
 .btn.wide{grid-column:span 2}
 .btn.danger{border-color:rgba(217,96,90,.3);color:var(--red)}
-.btn[disabled]{opacity:.42;cursor:not-allowed;transform:none;background:var(--surface-2);border-color:var(--line)}
+/* .6 y no .42: el subtitulo de un boton desactivado suele ser el POR QUE ("escribe el proceso...",
+   "captura el antes primero") y a .42 no se leia en las capturas reales. */
+.btn[disabled]{opacity:.6;cursor:not-allowed;transform:none;background:var(--surface-2);border-color:var(--line)}
+/* primary desactivado: el fondo pasa a oscuro pero heredaba el texto OSCURO del ambar = invisible
+   (visto en el ON de Sesion y en "Medir despues" de Prueba). */
+.btn.primary[disabled]{color:var(--fg)}
+.btn.primary[disabled] span{color:var(--muted)}
 .btn[disabled]:hover{transform:none;background:var(--surface-2);border-color:var(--line);box-shadow:none}
 .btn.primary.busy{opacity:.8;cursor:progress}
 
