@@ -86,7 +86,11 @@ function Get-AXENetFindings {
     $out = New-Object System.Collections.ArrayList
 
     if($Gw -and $Gw.Sent -gt 0){
-        if($Gw.Received -eq 0){
+        if($Gw.Received -eq 0 -and $Pub -and $Pub.Received -gt 0){
+            # Internet responde => el enlace funciona: el router solo ignora el ping (muy comun en
+            # routers de operador y redes de empresa). Antes salia ERR "o el enlace esta caido".
+            [void]$out.Add([pscustomobject]@{ Sev='INFO'; Msg='Tu router no responde al ping (lo filtra); internet si responde, asi que el enlace funciona. Sin datos del tramo local.' })
+        } elseif($Gw.Received -eq 0){
             [void]$out.Add([pscustomobject]@{ Sev='ERR'; Msg='La puerta de enlace no responde a ninguna sonda. O filtra ICMP, o el enlace esta caido.' })
         } else {
             # Perdida contra el router: no atraviesa internet, no hay operador de por medio.
@@ -168,6 +172,9 @@ function Measure-AXENetProbe {
                 if($r.Status -eq 'Success'){ $rtt = [double]$r.RoundtripTime }
             } catch { $rtt = $null }
             [void]$samples.Add($rtt)
+            # 3 sondas seguidas sin NINGUNA respuesta = el destino filtra ICMP. Seguir eran ~20 s
+            # de timeouts (medido: router de empresa, 24 s por medicion) para el mismo 100%.
+            if($i -eq 2 -and @($samples | Where-Object { $null -ne $_ }).Count -eq 0){ break }
             # Sin espera tras la ultima sonda: solo alargaria la medicion sin aportar nada.
             if($i -lt ($Count-1) -and $IntervalMs -gt 0){ Start-Sleep -Milliseconds $IntervalMs }
         }

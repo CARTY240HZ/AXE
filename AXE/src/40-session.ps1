@@ -35,6 +35,10 @@ function Get-AXESessionProcesses {
     # snapshot que ya trae Get-Process. Es deliberado - abrir handles contra un juego protegido es
     # justo lo que un anti-cheat interpreta mal, y AXE promete por escrito no hacerlo.
     $out = New-Object System.Collections.ArrayList
+    # ParentPid: Get-Process de PS 5.1 no lo trae. Una sola consulta CIM (snapshot del sistema,
+    # sin handles por proceso) para que el planificador reconozca el arbol de AXE.
+    $parents = @{}
+    try { Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId -EA Stop | ForEach-Object { $parents[[int]$_.ProcessId] = [int]$_.ParentProcessId } } catch {}
     foreach($p in (Get-Process -EA SilentlyContinue)){
         $path = $null; try { $path = $p.Path } catch {}
         $hwnd = [IntPtr]::Zero; try { $hwnd = $p.MainWindowHandle } catch {}
@@ -42,6 +46,7 @@ function Get-AXESessionProcesses {
         $ws = 0.0; try { $ws = [math]::Round($p.WorkingSet64 / 1MB, 0) } catch {}
         [void]$out.Add([pscustomobject]@{
             Pid          = [int]$p.Id
+            ParentPid    = [int]$parents[[int]$p.Id]
             Name         = [string]$p.ProcessName
             SessionId    = [int]$p.SessionId
             Path         = $path
@@ -279,10 +284,24 @@ function Get-AXESessionPlan {
     $intacto   = New-Object System.Collections.ArrayList
     $degradado = New-Object System.Collections.ArrayList
     $congelado = New-Object System.Collections.ArrayList
+    # Arbol de AXE (SelfPid + descendientes por ParentPid): su ventana ES un WebView2 hijo
+    # (msedgewebview2 x N). Excluir solo el PID congelaba la propia ventana y el OFF quedaba
+    # inalcanzable. PID reciclado => a lo sumo algo ajeno queda INTACTO: el lado seguro.
+    $selfTree = New-Object 'System.Collections.Generic.HashSet[int]'
+    if($SelfPid -gt 0){
+        [void]$selfTree.Add($SelfPid)
+        do {
+            $grew = $false
+            foreach($p in @($Processes)){
+                if($p -and $p.PSObject.Properties['ParentPid'] -and $selfTree.Contains([int]$p.ParentPid) -and $selfTree.Add([int]$p.Pid)){ $grew = $true }
+            }
+        } while($grew)
+    }
     foreach($p in @($Processes)){
         if($null -eq $p){ continue }
         if([int]$p.SessionId -eq 0){ continue }             # Session 0 nunca (defensivo)
         if([int]$p.SessionId -ne $SessionId){ continue }    # fuera de la sesion interactiva
+        if($selfTree.Contains([int]$p.Pid)){ [void]$intacto.Add($p); continue }
         switch(Get-AXESessionLevel -Proc $p -GamePid $GamePid -SelfPid $SelfPid -Config $Config){
             'intacto'   { [void]$intacto.Add($p) }
             'degradado' { [void]$degradado.Add($p) }

@@ -411,7 +411,9 @@ function Start-AXEBridgeWorker([string]$DistPath = $PSCommandPath){
     $pool = [runspacefactory]::CreateRunspacePool(1, 1)
     $pool.ApartmentState = 'MTA'; $pool.Open()
     $ps = [powershell]::Create(); $ps.RunspacePool = $pool
-    [void]$ps.AddScript('. $args[0] -LibOnly').AddArgument($DistPath)
+    # $script:HW precalentado aqui (CIM, ~4 s): net.probe/bench/advisor lo leen y sin el decian
+    # "adaptador desconocido" o pagaban la deteccion en su primera llamada.
+    [void]$ps.AddScript('. $args[0] -LibOnly; try { $script:HW = Get-AXEHardware } catch {}').AddArgument($DistPath)
     $script:AXEBridgeWorker = @{ Pool = $pool; Load = @{ Runspace = $null; PS = $ps; Handle = $ps.BeginInvoke() } }
 }
 

@@ -145,6 +145,10 @@ function Get-AXEBenchIdentity {
     $build = 0; if($hw -and $hw.BuildNumber){ $build = [int]$hw.BuildNumber }
     if($build -eq 0){ try { $build = [int][Environment]::OSVersion.Version.Build } catch {} }
     $ver = if($script:AXEVersion){ [string]$script:AXEVersion } else { 'desconocida' }
+    # Revision del METODO de medida: entra en el hash para que una linea base tomada con otro
+    # metodo se rechace como no comparable. r2 = jitter con resolucion de 1us (antes 50us: el
+    # 'antes' viejo marcaria 0.050 y el 'despues' nuevo 0.012 => mejora falsa del 75%).
+    $ver = "$ver (medida r2)"
 
     [pscustomobject]@{
         axeVersion = $ver
