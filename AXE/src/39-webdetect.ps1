@@ -153,13 +153,29 @@ function Get-AXEWebView2Runtime {
 function Get-AXEWebUIManifest([string]$Dir){
     # Recorre $Dir y devuelve ruta-relativa (con / , no \) -> SHA256 en mayusculas. Mismo
     # algoritmo tanto al incrustar (build.ps1) como al comprobar en runtime.
+    #   Los ficheros de TEXTO se hashean con los finales de linea normalizados (CRLF -> LF). Git los
+    # entrega con CRLF o LF segun core.autocrlf de cada maquina: hasheando los bytes crudos, el mismo
+    # commit daba un manifiesto distinto en local y en la CI, y el anti-deriva rechazaba el dist.
+    # Cambiar solo finales de linea no altera lo que ejecuta la WebView2, asi que no es una
+    # manipulacion que haya que detectar.
     $out = @{}
     if(-not (Test-Path $Dir)){ return $out }
     $base = (Resolve-Path $Dir).Path
-    Get-ChildItem -Path $Dir -Recurse -File | Sort-Object FullName | ForEach-Object {
-        $rel = $_.FullName.Substring($base.Length).TrimStart('\','/') -replace '\\','/'
-        $out[$rel] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
-    }
+    $text = '.js','.css','.html','.htm','.json','.svg','.txt','.md'
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        Get-ChildItem -Path $Dir -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $rel = $_.FullName.Substring($base.Length).TrimStart('\','/') -replace '\\','/'
+            $bytes = [IO.File]::ReadAllBytes($_.FullName)
+            if($text -contains $_.Extension.ToLowerInvariant()){
+                # UTF-8 ida y vuelta: sin perdida para UTF-8 valido (el BOM viaja como U+FEFF) y rapido;
+                # un bucle byte a byte en PowerShell retrasaba el arranque de la ventana.
+                $utf8 = New-Object Text.UTF8Encoding $false
+                $bytes = $utf8.GetBytes($utf8.GetString($bytes).Replace("`r`n", "`n"))
+            }
+            $out[$rel] = ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-','')
+        }
+    } finally { $sha.Dispose() }
     $out
 }
 
