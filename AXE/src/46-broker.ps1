@@ -213,20 +213,25 @@ function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
 if(-not ('AXE.PipeNative' -as [type])){
     Add-Type -Namespace AXE -Name PipeNative -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetNamedPipeClientProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle Pipe, out uint ClientProcessId);'
 }
-function Test-AXEBrokerClientIsPowerShell($ServerStream){
-    # Chequeo grosero adicional, SECUNDARIO al token (que es la autorizacion real): el proceso
-    # que conecto es powershell.exe. AXE.bat siempre lanza con 'powershell' a secas (Windows
-    # PowerShell), nunca 'pwsh' (PowerShell 7) -- coherente con que esta misma maquina de
-    # desarrollo no tiene pwsh instalado.
-    try {
-        $procId = 0
-        $ok = [AXE.PipeNative]::GetNamedPipeClientProcessId($ServerStream.SafePipeHandle, [ref]$procId)
-        if(-not $ok -or $procId -eq 0){ return $false }
-        (Get-Process -Id $procId -EA Stop).ProcessName -eq 'powershell'
-    } catch { $false }
+function Test-AXEBrokerClientPid([int]$Actual, [int]$Expected){
+    # PURA. El cliente del pipe tiene que ser EXACTAMENTE el proceso de la UI que lanzo este broker
+    # (su PID llega por la linea de comandos del proceso elevado, que un proceso sin elevar no puede
+    # tocar). Sin PID esperado se rechaza: falla cerrado. Antes solo se miraba que el cliente se
+    # llamara 'powershell', y cualquier proceso del mismo usuario podia leer el token de
+    # %LOCALAPPDATA% y ganar la carrera al pipe lanzando un powershell.exe propio.
+    $Expected -gt 0 -and $Actual -eq $Expected
 }
 
-function Start-AXEBroker([string]$PipeName, [string]$TokenPath){
+function Get-AXEBrokerClientPid($ServerStream){
+    # PID del proceso conectado al pipe, o 0 si Windows no lo da.
+    try {
+        [uint32]$procId = 0
+        if(-not [AXE.PipeNative]::GetNamedPipeClientProcessId($ServerStream.SafePipeHandle, [ref]$procId)){ return 0 }
+        [int]$procId
+    } catch { 0 }
+}
+
+function Start-AXEBroker([string]$PipeName, [string]$TokenPath, [int]$ClientPid){
     # Servidor de UNA peticion: crea el pipe, la procesa (o rechaza), responde, sale. Nunca queda
     # residente (issue #5: "no persistent service or scheduled task").
     $token = $null
@@ -245,8 +250,9 @@ function Start-AXEBroker([string]$PipeName, [string]$TokenPath){
         $connectTask = $server.WaitForConnectionAsync()
         if(-not $connectTask.Wait(10000)){ Write-AXELog 'Broker: nadie conecto en 10s, salgo.' 'WARN'; return 1 }
 
-        if(-not (Test-AXEBrokerClientIsPowerShell $server)){
-            Write-AXELog 'Broker: el cliente conectado no es powershell.exe, cierro.' 'WARN'; return 1
+        $actualPid = Get-AXEBrokerClientPid $server
+        if(-not (Test-AXEBrokerClientPid $actualPid $ClientPid)){
+            Write-AXELog "Broker: cliente no autorizado (PID $actualPid, esperado $ClientPid), cierro." 'WARN'; return 1
         }
 
         $json = Read-AXEBrokerFrame $server
@@ -325,7 +331,7 @@ function Invoke-AXEPrivileged([string]$Cmd, [hashtable]$A, [string]$DistPath = $
     $pipeName = "AXE-Broker-$([guid]::NewGuid().ToString('N'))"
     $distPath = $DistPath
     try {
-        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','RemoteSigned','-File',"`"$distPath`"",'-Broker',$pipeName,'-Token',"`"$($t.Path)`"") -Verb RunAs -WindowStyle Hidden | Out-Null
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','RemoteSigned','-File',"`"$distPath`"",'-Broker',$pipeName,'-Token',"`"$($t.Path)`"",'-ClientPid',"$PID") -Verb RunAs -WindowStyle Hidden | Out-Null
     } catch {
         try { Remove-Item -LiteralPath $t.Path -Force -EA SilentlyContinue } catch {}
         if($_.Exception -is [System.ComponentModel.Win32Exception] -and $_.Exception.NativeErrorCode -eq 1223){
