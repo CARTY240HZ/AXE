@@ -25,7 +25,7 @@
 # 'exit': es un dot-source dentro del proceso GUI y 'exit' mataria el runspace del worker.
 if($LibOnly){ return }
 if($Broker){
-    exit (Start-AXEBroker $Broker $Token)
+    exit (Start-AXEBroker $Broker $Token $ClientPid)
 }
 
 try { [void](Restore-AXESessionDegraded) } catch {}
