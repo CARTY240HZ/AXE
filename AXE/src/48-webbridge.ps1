@@ -91,6 +91,31 @@ $script:AXEBridgeMap = @{
             }
         })
     }
+    # --- Optimizar en un clic (26-oneclick, spec 2026-09-24) ---
+    # plan: lo pendiente por tier en ESTE equipo (lee el estado de cada tweak: worker). pending: la
+    # ultima optimizacion si aun falta medir el 'despues' (null si ya se enseno; corrupt si no se
+    # puede leer). save: escribe ese registro. Nada de esto aplica un tweak: eso va por el broker.
+    'optimize.plan'    = { param($a) Get-AXEOneClickPending }
+    'optimize.pending' = { param($a)
+        $s = Read-AXEOneClickState
+        if($s -and -not $s.corrupt -and $s.done){ return $null }
+        $s
+    }
+    'optimize.save'    = { param($a)
+        if([string]$a.profile -cnotin 'seguro','equilibrado','maximo'){ throw "perfil desconocido: $($a.profile)" }
+        # @(): PS 5.1 entrega un array JSON de UN elemento como string suelto.
+        $ids = @(@($a.applied) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+        $known = @($script:CAT | ForEach-Object { [string]$_.Id })
+        foreach($i in $ids){ if($known -cnotcontains $i){ throw "id desconocido: $i" } }
+        $bench = [string]$a.benchId
+        if($bench.Length -gt 64){ throw 'benchId demasiado largo' }
+        Save-AXEOneClickState ([pscustomobject]@{
+            ts=(Get-Date).ToUniversalTime().ToString('u'); profile=[string]$a.profile; benchId=$bench
+            applied=[string[]]$ids; rebootNeeded=[bool]$a.rebootNeeded; done=[bool]$a.done
+        })
+        $true
+    }
+
     # --- Fase 7: Telemetria / Prueba / Seguridad ---
     # Todo re-empaqueta funciones YA EXISTENTES del motor (32/33/34/35/36). El front pinta las
     # 'lines' del motor TAL CUAL (mismo texto que la CLI): la honestidad vive en el motor, no aqui.
@@ -403,7 +428,8 @@ function Invoke-AXEBridgeCmd {
 # Se quedan en el hilo de UI: lo instantaneo (app.info, hw.get, catalog.tiers) y session.* (su
 # estado -job, timers- vive en ESTE proceso).
 $script:AXEBridgeWorkerCmds = @('measure.score','measure.timerSweep','tweaks.list','net.probe',
-    'diag.get','prueba.baseline','prueba.report','bench.baseline','bench.after','advisor.get')
+    'diag.get','prueba.baseline','prueba.report','bench.baseline','bench.after','advisor.get',
+    'optimize.plan','optimize.pending','optimize.save')
 $script:AXEBridgeWorker = $null
 
 function Start-AXEBridgeWorker([string]$DistPath = $PSCommandPath){
