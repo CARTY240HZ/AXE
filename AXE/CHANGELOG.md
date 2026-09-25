@@ -3,7 +3,7 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y [Versionado Semántico](https://semver.org/lang/es/).
 
-## [Sin publicar]
+## [1.1.0] — 2026-09-25
 
 ### Añadido
 - **Optimiza tu PC en un clic** (spec `2026-09-24`, `src/26-oneclick.ps1`, broker
@@ -176,4 +176,5 @@ y [Versionado Semántico](https://semver.org/lang/es/).
 - **Build modular**: el motor se parte en módulos numerados en `src/`; `build.ps1` los concatena
   a `dist/AXE.ps1` (fuente única). Reversión con **fidelidad de snapshot** (no inventa defaults).
 
+[1.1.0]: https://github.com/CARTY240HZ/AXE/releases/tag/v1.1.0
 [1.0.0]: https://github.com/CARTY240HZ/AXE/releases/tag/v1.0.0
