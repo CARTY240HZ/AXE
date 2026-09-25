@@ -113,6 +113,12 @@ function Show-AXEWebHost {
             $core.Settings.AreDevToolsEnabled = $false
         }
         $core.Settings.IsStatusBarEnabled = $false
+        # Politica de origen (48a): solo https://axe.local navega; target=_blank va al navegador del
+        # sistema. Falla CERRADO: sin la politica no se registra el puente ni se carga la interfaz.
+        if(-not (Protect-AXEWebView2 $core)){
+            [System.Windows.MessageBox]::Show('No pude aplicar la politica de seguridad de la interfaz. Revisa el log.','AXE','OK','Error') | Out-Null
+            return
+        }
         # Zoom: se restaura el elegido la vez anterior y se guarda cada vez que cambia. Sin esto
         # Ctrl+rueda funcionaba pero se olvidaba al cerrar, que para quien necesita la interfaz mas
         # grande equivale a no tenerlo. Guardar es best-effort (Set-AXEUIZoom no lanza).

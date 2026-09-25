@@ -24,7 +24,22 @@ y [Versionado Semántico](https://semver.org/lang/es/).
   guardarse y ser ignorado en silencio por el planificador: un ajuste que parece guardarse y no hace
   nada es peor que un rechazo.
 
+### Seguridad
+- **La ventana solo muestra y solo escucha a la interfaz propia** (`src/48a-websecurity.ps1`,
+  `src/47-webhost.ps1`, `src/48-webbridge.ps1`). Antes la WebView2 no bloqueaba la navegación y el
+  puente no miraba de dónde venía cada mensaje: los enlaces «fuente» de cada tweak abrían webs
+  externas *dentro* de la app. Ahora solo `https://axe.local` navega, los enlaces externos se abren
+  en el navegador del sistema, los objetos de host y los diálogos de script están desactivados, y el
+  puente descarta cualquier mensaje de otro origen. Si la política no se puede aplicar, la interfaz
+  no carga (falla cerrado).
+
 ### Corregido
+- **«Aplicar» ya no revierte en una tarjeta con estado desconocido** (`webui/app.js`). Revertir
+  marcaba el tweak como aplicado *antes* de llamar; si se cancelaba el UAC, el botón Aplicar quedaba
+  mandando un revertir.
+- **El panel ya no dice «encendido hace 0 min»** (`src/48-webbridge.ps1`). Usaba
+  `[Environment]::TickCount64`, que no existe en Windows PowerShell 5.1 (el runtime de AXE). Ahora
+  lee el arranque del sistema por CIM; si no puede, no pinta nada en vez de un cero.
 - **La prioridad degradada ya no se queda baja si AXE muere** (`src/40-session.ps1`,
   `src/47-webhost.ps1`, `src/49-webmain.ps1`). El diseño apoyaba TODA la recuperación en el kernel:
   al cerrarse el handle del job, Windows descongela. Cierto para lo congelado y **falso para lo
