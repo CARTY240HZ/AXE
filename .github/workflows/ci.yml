@@ -107,6 +107,29 @@ jobs:
           $cfg = New-PesterConfiguration
           $cfg.Run.Path = 'AXE/tests'
           $cfg.Filter.Tag = 'integration'
+          $cfg.Filter.ExcludeTag = 'ps51'
+          $cfg.Run.Exit = $true
+          $cfg.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $cfg
+
+      # El broker corre en Windows PowerShell 5.1 en produccion (Invoke-AXEPrivileged lanza
+      # powershell.exe): sus tests de pipe real van aqui, con el mismo runtime. Pester 5 se instala
+      # aparte porque los modulos de pwsh no son visibles desde 5.1.
+      - name: Pester (integration, broker en Windows PowerShell 5.1)
+        shell: powershell
+        env:
+          AXE_INTEGRATION: '1'
+        run: |
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default -ErrorAction Stop
+          }
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser -ErrorAction Stop
+          Import-Module Pester -MinimumVersion 5.5.0
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = 'AXE/tests'
+          $cfg.Filter.Tag = 'ps51'
           $cfg.Run.Exit = $true
           $cfg.Output.Verbosity = 'Detailed'
           Invoke-Pester -Configuration $cfg
