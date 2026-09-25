@@ -185,6 +185,64 @@ Describe 'Puente: sesion de juego (spec 2026-07-25)' {
     }
 }
 
+Describe 'Puente: Optimizar en un clic (spec 2026-09-24)' {
+    # optimize.save escribe oneclick_last.json: se aisla $script:AXEData en un temporal.
+    BeforeAll {
+        $script:OcDataOld = $script:AXEData
+        $script:AXEData = Join-Path ([IO.Path]::GetTempPath()) ('axe-test-bridge-oc-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:AXEData -Force | Out-Null
+        $script:OcKnownId = [string]@($script:CAT)[0].Id
+    }
+    AfterAll {
+        if($script:AXEData -and (Test-Path $script:AXEData)){ Remove-Item $script:AXEData -Recurse -Force -EA SilentlyContinue }
+        $script:AXEData = $script:OcDataOld
+    }
+    AfterEach { Remove-Item (Join-Path $script:AXEData 'oneclick_last.json') -Force -EA SilentlyContinue }
+
+    It 'optimize.plan devuelve t0/t1/t2 como arrays' {
+        $r = Invoke-AXEBridgeCmd 'optimize.plan' @{}
+        $r.ok | Should -BeTrue
+        foreach($k in 't0','t1','t2'){ $r.data.PSObject.Properties.Name | Should -Contain $k; ,$r.data.$k | Should -BeOfType [object[]] }
+    }
+    It 'optimize.save rechaza un perfil desconocido' {
+        $r = Invoke-AXEBridgeCmd 'optimize.save' @{ profile='turbo'; applied=@($script:OcKnownId) }
+        $r.ok  | Should -BeFalse
+        $r.err | Should -Match 'perfil'
+    }
+    It 'optimize.save rechaza ids que no estan en el catalogo' {
+        $r = Invoke-AXEBridgeCmd 'optimize.save' @{ profile='seguro'; applied=@('no_existe_xyz') }
+        $r.ok  | Should -BeFalse
+        $r.err | Should -Match 'no_existe_xyz'
+    }
+    It 'save -> pending ida y vuelta (con UN solo id: sigue siendo lista)' {
+        $s = Invoke-AXEBridgeCmd 'optimize.save' @{ profile='equilibrado'; benchId='b123'; applied=@($script:OcKnownId); rebootNeeded=$true; done=$false }
+        $s.ok | Should -BeTrue
+        $p = Invoke-AXEBridgeCmd 'optimize.pending' @{}
+        $p.ok | Should -BeTrue
+        $p.data.profile      | Should -Be 'equilibrado'
+        $p.data.benchId      | Should -Be 'b123'
+        $p.data.rebootNeeded | Should -BeTrue
+        @($p.data.applied)   | Should -Be @($script:OcKnownId)
+        # El front lee applied como lista: tras JSON por el puente no puede llegar como string suelto.
+        (($p | ConvertTo-Json -Depth 8 -Compress) -match ('"applied":\["' + $script:OcKnownId + '"\]')) | Should -BeTrue
+    }
+    It 'pending con done=$true no devuelve nada (ya se mostro el resultado)' {
+        [void](Invoke-AXEBridgeCmd 'optimize.save' @{ profile='seguro'; applied=@($script:OcKnownId); done=$true })
+        $p = Invoke-AXEBridgeCmd 'optimize.pending' @{}
+        $p.ok   | Should -BeTrue
+        $p.data | Should -BeNullOrEmpty
+    }
+    It 'pending con fichero corrupto lo dice (corrupt=true), no finge que no paso nada' {
+        Set-Content -LiteralPath (Join-Path $script:AXEData 'oneclick_last.json') -Value '{roto'
+        $p = Invoke-AXEBridgeCmd 'optimize.pending' @{}
+        $p.ok | Should -BeTrue
+        $p.data.corrupt | Should -BeTrue
+    }
+    It 'los tres van al worker de fondo (leen el catalogo entero o el disco)' {
+        foreach($c in 'optimize.plan','optimize.pending','optimize.save'){ $script:AXEBridgeWorkerCmds | Should -Contain $c }
+    }
+}
+
 Describe 'Puente: endurecimiento' {
     It 'todo cmd de la lista blanca responde con la forma {ok,data,err} y no tumba el proceso' {
         foreach($cmd in $script:AXEBridgeMap.Keys){
