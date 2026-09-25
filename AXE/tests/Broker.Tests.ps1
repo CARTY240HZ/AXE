@@ -92,6 +92,20 @@ Describe 'Write/Read-AXEBrokerFrame - framing sobre un stream' -Tag 'unit' {
         $ms.Position = 0
         { Read-AXEBrokerFrame $ms } | Should -Throw
     }
+    It 'REGRESION ultrareview #15: un extremo conectado que no manda nada NO cuelga la lectura' {
+        # Pipe real: el cliente conecta y se queda mudo. Antes Stream.Read esperaba para siempre y
+        # el broker ELEVADO quedaba residente.
+        $name = "AXE-Test-Mudo-$([guid]::NewGuid().ToString('N'))"
+        $server = New-Object System.IO.Pipes.NamedPipeServerStream($name, [System.IO.Pipes.PipeDirection]::InOut, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous)
+        $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $name, [System.IO.Pipes.PipeDirection]::InOut)
+        try {
+            $conn = $server.WaitForConnectionAsync()
+            $client.Connect(5000); [void]$conn.Wait(5000)
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            { Read-AXEBrokerFrame $server 600 } | Should -Throw -ExpectedMessage '*no respondio*'
+            $sw.ElapsedMilliseconds | Should -BeLessThan 5000
+        } finally { $client.Dispose(); $server.Dispose() }
+    }
 }
 
 Describe 'Read-AXEBrokerRequest - validacion completa (REGRESION superficie issue #5 criterio 4)' -Tag 'unit' {

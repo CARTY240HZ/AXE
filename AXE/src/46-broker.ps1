@@ -2,10 +2,10 @@
 # REGION 14c - BROKER (proceso privilegiado bajo demanda)
 # =====================================================
 # Separa la logica privilegiada (Set-RD/sc.exe/bcdedit/Set-ProcessMitigation) del proceso
-# UI/WebView2 (issue #5, auditoria 2026-09-22 s1.2). Solo 4 comandos del bridge la necesitan
-# (grep de Test-Admin en 48-webbridge.ps1, verificado): tweaks.apply, tweaks.revert,
-# tweaks.masterRevert, safety.restorePoint. El resto del bridge sigue en el proceso UI sin
-# cambios.
+# UI/WebView2 (issue #5, auditoria 2026-09-22 s1.2). Solo los 7 comandos de
+# $script:AXEBrokerCommands (abajo, fuente unica) corren elevados: tweaks.apply, tweaks.revert,
+# tweaks.masterRevert, safety.restorePoint, fps.capture, tweaks.applyBatch y tweaks.revertBatch.
+# El resto del bridge sigue en el proceso UI sin cambios.
 #
 # Modelo: on-demand por operacion. La UI relanza ESTE MISMO script con -Broker <pipeName>
 # -Token <ruta> via Start-Process -Verb RunAs; el broker procesa EXACTAMENTE una peticion
@@ -75,13 +75,28 @@ function Write-AXEBrokerFrame([System.IO.Stream]$Stream, [string]$Json){
     $Stream.Flush()
 }
 
-function Read-AXEBrokerFrame([System.IO.Stream]$Stream){
+function Read-AXEBrokerFrame([System.IO.Stream]$Stream, [int]$TimeoutMs = 30000){
     # Devuelve el JSON como string, o $null si el stream se cerro sin mandar nada (EOF limpio).
     # Rechaza por TAMANO DECLARADO antes de leer el cuerpo: nunca bufferiza un payload sin limite.
+    # $TimeoutMs acota el frame ENTERO: Stream.Read de un pipe no tiene timeout propio y un
+    # extremo que se queda mudo (suspension, AV interceptando el pipe, ventana matada a mitad)
+    # dejaba el broker ELEVADO esperando para siempre, contra su "nunca queda residente".
+    # ReadAsync + Wait: funciona igual en pipes sincronos y en MemoryStream (tests). Va DENTRO de
+    # esta funcion y no en un helper aparte porque Invoke-AXEPrivilegedBackground copia al
+    # runspace de fondo solo las funciones que nombra.
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    $readSome = {
+        param($b, $off, $cnt)
+        $left = [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
+        if($left -le 0){ throw "el otro extremo no respondio en $TimeoutMs ms" }
+        $t = $Stream.ReadAsync($b, $off, $cnt)
+        if(-not $t.Wait($left)){ throw "el otro extremo no respondio en $TimeoutMs ms" }
+        $t.Result
+    }
     $lenBytes = New-Object byte[] 4
     $read = 0
     while($read -lt 4){
-        $n = $Stream.Read($lenBytes, $read, 4 - $read)
+        $n = & $readSome $lenBytes $read (4 - $read)
         if($n -eq 0){ if($read -eq 0){ return $null } else { throw 'conexion cerrada a mitad de la cabecera' } }
         $read += $n
     }
@@ -93,7 +108,7 @@ function Read-AXEBrokerFrame([System.IO.Stream]$Stream){
     $buf = New-Object byte[] $len
     $read = 0
     while($read -lt $len){
-        $n = $Stream.Read($buf, $read, $len - $read)
+        $n = & $readSome $buf $read ($len - $read)
         if($n -eq 0){ throw 'conexion cerrada a mitad del cuerpo' }
         $read += $n
     }
@@ -361,7 +376,9 @@ function Send-AXEBrokerRequest([string]$PipeName, [string]$Cmd, [hashtable]$A, [
             $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
             $req = @{ cmd = $Cmd; args = $A; token = $Token; ts = $ts } | ConvertTo-Json -Compress -Depth 5
             Write-AXEBrokerFrame $client $req
-            $json = Read-AXEBrokerFrame $client
+            # Respuesta: un lote con punto de restauracion tarda minutos; 20 min acota un broker colgado
+            # (la ventana ya desiste a los 10) sin cortar una operacion larga legitima.
+            $json = Read-AXEBrokerFrame $client 1200000
             if(-not $json){ return [pscustomobject]@{ ok=$false; data=$null; err='el broker cerro sin responder' } }
             $r = $json | ConvertFrom-Json
             [pscustomobject]@{ ok=[bool]$r.ok; data=$r.data; err=$r.err }

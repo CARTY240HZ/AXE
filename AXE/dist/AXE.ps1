@@ -1,6 +1,6 @@
 ﻿# ================================================================
-# AXE 1.1.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-25 09:09:58Z
+# AXE 1.1.1 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
+# Build UTC: 2026-09-25 10:48:24Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 26-oneclick.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 48a-websecurity.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -147,7 +147,7 @@ param(
 # Version canonica. build.ps1 reemplaza el token desde el fichero VERSION (fuente unica).
 # Va DESPUES del param block (regla PS: param() debe ser la primera sentencia).
 # Fallback si el token no se reemplazo (se corre src suelto sin build).
-$script:AXEVersion = '1.1.0'
+$script:AXEVersion = '1.1.1'
 if($script:AXEVersion -like '*__AXE_VERSION__*'){ $script:AXEVersion = '1.0.0-dev' }
 
 
@@ -1554,6 +1554,28 @@ function Get-AXEOneClickPending {
 }
 
 function Get-AXEOneClickStatePath { Join-Path $script:AXEData 'oneclick_last.json' }
+
+function Get-AXEBootStamp {
+    # Arranque del SO en UTC (ISO 8601), o $null si CIM no responde. Con el se sabe si hubo reinicio
+    # entre guardar una optimizacion que lo pedia y volver a abrir AXE.
+    try { (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime.ToUniversalTime().ToString('o') } catch { $null }
+}
+
+function Test-AXEOneClickRebooted {
+    # PURA. $true si el reinicio que pedia la optimizacion YA ocurrio (o si no hacia falta). Sin
+    # uno de los dos arranques no se puede saber: se da por hecho, como antes de guardar el dato,
+    # para no dejar la medida del 'despues' bloqueada para siempre. Tolerancia de 60 s: el valor de
+    # CIM se redondea distinto segun la lectura.
+    param($State, [string]$NowBoot)
+    if(-not $State -or -not $State.rebootNeeded){ return $true }
+    # ConvertFrom-Json de pwsh ya entrega un DateTime; el de 5.1, el texto ISO. Se aceptan los dos.
+    $toUtc = { param($v)
+        if($v -is [DateTime]){ return $v.ToUniversalTime() }
+        [DateTime]::Parse([string]$v, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    }
+    if($null -eq $State.bootTime -or [string]::IsNullOrWhiteSpace([string]$State.bootTime) -or [string]::IsNullOrWhiteSpace($NowBoot)){ return $true }
+    try { [Math]::Abs(((& $toUtc $NowBoot) - (& $toUtc $State.bootTime)).TotalSeconds) -gt 60 } catch { $true }
+}
 
 function Save-AXEOneClickState($State){
     $State | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Get-AXEOneClickStatePath) -Encoding UTF8
@@ -4085,7 +4107,7 @@ function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
 # Sustituido por build.ps1 con la tabla literal real (mismo mecanismo que $script:AXEVersion en
 # 00-header.ps1). $null en el fallback: correr src/ suelto sin build (dev/tests) desactiva la
 # comprobacion en vez de rechazar ficheros validos sin manifiesto que compararlos.
-$script:AXEWebUIManifest = @{'app.js'='FD5266ABF2BB3587A4ED4C0D856C656E7755C55D78D41BAFAE47884C41827F03';'bridge.js'='43EDCC179CBEA0F058A210056DE94EE55DE4F97920C8AB7CDA14E13A8A5A77E7';'index.html'='7BEA4669FFC596AF3A7AFDE57C5314490711DCF3200409C55D0D2745FAC40A3D';'styles.css'='C712B9856F80E9ECDA203CAAF61BA714FFE3285BCFC4859F320456DD780518D4'}
+$script:AXEWebUIManifest = @{'app.js'='28BF836E4FAA5FEBF482CAC1EABD161F18599D108F22AB4E08140911E5906DD0';'bridge.js'='43EDCC179CBEA0F058A210056DE94EE55DE4F97920C8AB7CDA14E13A8A5A77E7';'index.html'='7BEA4669FFC596AF3A7AFDE57C5314490711DCF3200409C55D0D2745FAC40A3D';'styles.css'='C712B9856F80E9ECDA203CAAF61BA714FFE3285BCFC4859F320456DD780518D4'}
 if($script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ $script:AXEWebUIManifest = $null }
 
 
@@ -5776,21 +5798,41 @@ function Compare-AXEVersion {
 
 # --- Firma --------------------------------------------------------------------------------
 
+# Huellas SHA1 (40 hex) de los certificados con los que firma ESTE proyecto. Una firma 'Valid'
+# solo prueba que el certificado encadena a una raiz de confianza de Windows, o sea: que lo firmo
+# ALGUIEN. Sin esta lista, quien tomara el release (token filtrado, workflow comprometido) podria
+# firmar un AXE.ps1 malicioso con cualquier certificado de firma de codigo comprado a parte y el
+# updater lo instalaria. Vacia = ningun editor autorizado = el updater nunca reemplaza nada solo
+# (falla cerrado). Al conseguir el certificado del proyecto, su huella va aqui (docs/SIGNING.md).
+$script:AXEPublisherThumbprints = @()
+
+function Test-AXESignerPinned {
+    # PURA. La huella del firmante tiene que estar EXACTAMENTE en la lista del proyecto.
+    param([string]$Thumbprint, [string[]]$Pinned = $script:AXEPublisherThumbprints)
+    if([string]::IsNullOrWhiteSpace($Thumbprint) -or $Thumbprint -notmatch '^[0-9A-Fa-f]{40}$'){ return $false }
+    foreach($p in @($Pinned)){ if([string]$p -and ([string]$p).ToUpperInvariant() -ceq $Thumbprint.ToUpperInvariant()){ return $true } }
+    $false
+}
+
 function Test-AXESignature {
-    # $true SOLO con Status 'Valid'. 'NotSigned', 'HashMismatch', 'NotTrusted' y
-    # 'UnknownError' son todos $false: a la hora de decidir si se reemplaza un fichero que
-    # luego correra ELEVADO no se distingue "aun no firmado" de "firma rota".
-    param([string]$Path)
+    # $true SOLO con Status 'Valid' Y firmante de la lista del proyecto. 'NotSigned',
+    # 'HashMismatch', 'NotTrusted', 'UnknownError' y una firma valida de OTRO editor son todos
+    # $false: a la hora de decidir si se reemplaza un fichero que luego correra ELEVADO no se
+    # distingue "aun no firmado" de "firma rota" ni de "firmado por un desconocido".
+    param([string]$Path, [string[]]$Pinned = $script:AXEPublisherThumbprints)
     if([string]::IsNullOrWhiteSpace($Path)){ return $false }
     if(-not (Test-Path -LiteralPath $Path -PathType Leaf)){ return $false }
-    try { return ((Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop).Status -eq 'Valid') }
-    catch { return $false }
+    try {
+        $s = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+        if($s.Status -ne 'Valid' -or -not $s.SignerCertificate){ return $false }
+        return (Test-AXESignerPinned $s.SignerCertificate.Thumbprint $Pinned)
+    } catch { return $false }
 }
 
 function Get-AXESignatureInfo {
     # Detalle para el informe (quien firma, si lleva timestamp). Nunca lanza.
     param([string]$Path)
-    $out = [pscustomobject]@{ Path=$Path; Valid=$false; Status='NotChecked'; Signer=$null; TimeStamped=$false }
+    $out = [pscustomobject]@{ Path=$Path; Valid=$false; Status='NotChecked'; Signer=$null; Thumbprint=$null; Pinned=$false; TimeStamped=$false }
     if([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)){
         $out.Status = 'NotFound'; return $out
     }
@@ -5799,6 +5841,8 @@ function Get-AXESignatureInfo {
         $out.Status      = [string]$s.Status
         $out.Valid       = ($s.Status -eq 'Valid')
         $out.Signer      = if($s.SignerCertificate){ $s.SignerCertificate.Subject } else { $null }
+        $out.Thumbprint  = if($s.SignerCertificate){ $s.SignerCertificate.Thumbprint } else { $null }
+        $out.Pinned      = Test-AXESignerPinned $out.Thumbprint
         $out.TimeStamped = [bool]$s.TimeStamperCertificate
     } catch { $out.Status = 'Error' }
     $out
@@ -6074,7 +6118,8 @@ function Invoke-AXEUpdate {
         #     destino es escribible por el usuario y AXE.bat lo ejecuta ELEVADO despues.
         if(-not (Test-AXESignature $newPs)){
             return (& $mk 'refused' $Release.Version @"
-El AXE.ps1 de $($Release.Tag) no lleva firma Authenticode valida: no se reemplaza nada.
+El AXE.ps1 de $($Release.Tag) no lleva una firma Authenticode valida DEL PROYECTO: no se reemplaza nada.
+(Una firma de cualquier otro editor tampoco vale: solo prueba que lo firmo alguien, no que fuera AXE.)
 El checksum SI cuadra, pero viaja en el mismo release que el fichero, asi que prueba que
 llego entero, no QUIEN lo publico. Como AXE se ejecuta elevado, reemplazarlo sin firma
 convertiria al updater en la via de escalada de privilegios que el resto del proyecto evita.
@@ -7545,10 +7590,10 @@ if($Session){
 # REGION 14c - BROKER (proceso privilegiado bajo demanda)
 # =====================================================
 # Separa la logica privilegiada (Set-RD/sc.exe/bcdedit/Set-ProcessMitigation) del proceso
-# UI/WebView2 (issue #5, auditoria 2026-09-22 s1.2). Solo 4 comandos del bridge la necesitan
-# (grep de Test-Admin en 48-webbridge.ps1, verificado): tweaks.apply, tweaks.revert,
-# tweaks.masterRevert, safety.restorePoint. El resto del bridge sigue en el proceso UI sin
-# cambios.
+# UI/WebView2 (issue #5, auditoria 2026-09-22 s1.2). Solo los 7 comandos de
+# $script:AXEBrokerCommands (abajo, fuente unica) corren elevados: tweaks.apply, tweaks.revert,
+# tweaks.masterRevert, safety.restorePoint, fps.capture, tweaks.applyBatch y tweaks.revertBatch.
+# El resto del bridge sigue en el proceso UI sin cambios.
 #
 # Modelo: on-demand por operacion. La UI relanza ESTE MISMO script con -Broker <pipeName>
 # -Token <ruta> via Start-Process -Verb RunAs; el broker procesa EXACTAMENTE una peticion
@@ -7618,13 +7663,28 @@ function Write-AXEBrokerFrame([System.IO.Stream]$Stream, [string]$Json){
     $Stream.Flush()
 }
 
-function Read-AXEBrokerFrame([System.IO.Stream]$Stream){
+function Read-AXEBrokerFrame([System.IO.Stream]$Stream, [int]$TimeoutMs = 30000){
     # Devuelve el JSON como string, o $null si el stream se cerro sin mandar nada (EOF limpio).
     # Rechaza por TAMANO DECLARADO antes de leer el cuerpo: nunca bufferiza un payload sin limite.
+    # $TimeoutMs acota el frame ENTERO: Stream.Read de un pipe no tiene timeout propio y un
+    # extremo que se queda mudo (suspension, AV interceptando el pipe, ventana matada a mitad)
+    # dejaba el broker ELEVADO esperando para siempre, contra su "nunca queda residente".
+    # ReadAsync + Wait: funciona igual en pipes sincronos y en MemoryStream (tests). Va DENTRO de
+    # esta funcion y no en un helper aparte porque Invoke-AXEPrivilegedBackground copia al
+    # runspace de fondo solo las funciones que nombra.
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    $readSome = {
+        param($b, $off, $cnt)
+        $left = [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
+        if($left -le 0){ throw "el otro extremo no respondio en $TimeoutMs ms" }
+        $t = $Stream.ReadAsync($b, $off, $cnt)
+        if(-not $t.Wait($left)){ throw "el otro extremo no respondio en $TimeoutMs ms" }
+        $t.Result
+    }
     $lenBytes = New-Object byte[] 4
     $read = 0
     while($read -lt 4){
-        $n = $Stream.Read($lenBytes, $read, 4 - $read)
+        $n = & $readSome $lenBytes $read (4 - $read)
         if($n -eq 0){ if($read -eq 0){ return $null } else { throw 'conexion cerrada a mitad de la cabecera' } }
         $read += $n
     }
@@ -7636,7 +7696,7 @@ function Read-AXEBrokerFrame([System.IO.Stream]$Stream){
     $buf = New-Object byte[] $len
     $read = 0
     while($read -lt $len){
-        $n = $Stream.Read($buf, $read, $len - $read)
+        $n = & $readSome $buf $read ($len - $read)
         if($n -eq 0){ throw 'conexion cerrada a mitad del cuerpo' }
         $read += $n
     }
@@ -7904,7 +7964,9 @@ function Send-AXEBrokerRequest([string]$PipeName, [string]$Cmd, [hashtable]$A, [
             $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
             $req = @{ cmd = $Cmd; args = $A; token = $Token; ts = $ts } | ConvertTo-Json -Compress -Depth 5
             Write-AXEBrokerFrame $client $req
-            $json = Read-AXEBrokerFrame $client
+            # Respuesta: un lote con punto de restauracion tarda minutos; 20 min acota un broker colgado
+            # (la ventana ya desiste a los 10) sin cortar una operacion larga legitima.
+            $json = Read-AXEBrokerFrame $client 1200000
             if(-not $json){ return [pscustomobject]@{ ok=$false; data=$null; err='el broker cerro sin responder' } }
             $r = $json | ConvertFrom-Json
             [pscustomobject]@{ ok=[bool]$r.ok; data=$r.data; err=$r.err }
@@ -8289,6 +8351,10 @@ $script:AXEBridgeMap = @{
     'optimize.pending' = { param($a)
         $s = Read-AXEOneClickState
         if($s -and -not $s.corrupt -and $s.done){ return $null }
+        # rebooted: si el reinicio que pedia esa optimizacion ya ocurrio. Sin el, el front media el
+        # 'despues' al reabrir AXE aunque no se hubiera reiniciado, y dejaba lanzar otra optimizacion
+        # encima que pisaba este registro (ultrareview #15).
+        if($s -and -not $s.corrupt){ $s | Add-Member -NotePropertyName rebooted -NotePropertyValue ([bool](Test-AXEOneClickRebooted $s (Get-AXEBootStamp))) -Force }
         $s
     }
     'optimize.save'    = { param($a)
@@ -8302,6 +8368,7 @@ $script:AXEBridgeMap = @{
         Save-AXEOneClickState ([pscustomobject]@{
             ts=(Get-Date).ToUniversalTime().ToString('u'); profile=[string]$a.profile; benchId=$bench
             applied=[string[]]$ids; rebootNeeded=[bool]$a.rebootNeeded; done=[bool]$a.done
+            bootTime=(Get-AXEBootStamp)
         })
         $true
     }

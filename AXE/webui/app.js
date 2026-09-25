@@ -455,7 +455,7 @@
   // UN UAC, punto de restauración dentro) → optimize.save → bench.after, o reinicio y medir al
   // volver. Los ids aplicados se guardan ANTES de medir el después: pase lo que pase con la
   // medida, «Deshacer» sabe qué deshacer.
-  const OC = { profile: 'equilibrado', plan: null, busy: false, last: null };
+  const OC = { profile: 'equilibrado', plan: null, busy: false, last: null, rebootPending: false };
   const ocArr = (x) => (Array.isArray(x) ? x : (x == null ? [] : [x]));   // PS 5.1: array de 1 = objeto suelto
   const OC_TAG = { mejor: ['mejora real', 'ok'], peor: ['empeora', 'bad'], ruido: ['dentro del ruido', 'unk'] };
 
@@ -489,7 +489,7 @@
   }
   function ocLoadPlan() {
     return AXE.call('optimize.plan', {}).then((p) => { OC.plan = p || { t0: [], t1: [], t2: [] }; ocRenderPlan(); })
-      .catch((e) => { OC.plan = null; $('ocGoSub').textContent = 'no disponible'; ocMsg('No pude calcular qué falta por aplicar: ' + e.message, 'err'); });
+      .catch((e) => { OC.plan = null; ocRenderPlan(); $('ocGoSub').textContent = 'no disponible'; ocMsg('No pude calcular qué falta por aplicar: ' + e.message, 'err'); });
   }
   function ocMsg(text, kind) { const m = $('ocMsg'); m.hidden = !text; m.className = 'oc-msg' + (kind ? ' ' + kind : ''); m.textContent = text || ''; }
   function ocSteps(labels, current, detail) {
@@ -579,6 +579,9 @@
 
   async function ocRun() {
     if (OC.busy || !OC.plan) return;
+    // Una optimizacion que pidio reinicio y aun no se ha reiniciado: otra encima pisaria su registro
+    // (y con el, su Deshacer y su medida del despues). Primero reiniciar, o deshacerla.
+    if (OC.rebootPending) { ocMsg('Tienes una optimización a medias: reinicia el PC para completarla antes de lanzar otra. Si prefieres, puedes deshacerla.', 'warn'); return; }
     const profile = OC.profile, it = ocProfileItems(profile);
     ocClearResult(); ocMsg('');
     if (!it.base.length && !it.t2.length) { ocMsg('Ya optimizado con este perfil: no queda nada pendiente en este equipo.', 'ok'); return; }
@@ -619,6 +622,7 @@
       if (!okIds.length) { ocSteps(null); ocMsg('No se pudo aplicar ningún cambio. Abajo, el motivo de cada uno.', 'err'); try { await ocSave({ done: true }); } catch (e) {} return; }
       if (reboot) {
         ocSteps(null);
+        OC.rebootPending = true;
         ocMsg('Reinicia para completar: ' + reboot + (reboot === 1 ? ' cambio lo necesita' : ' cambios lo necesitan') + '. Al volver a abrir AXE mediré el después solo.', 'warn');
         return;
       }
@@ -637,8 +641,9 @@
     try {
       const r = await AXE.call('tweaks.revertBatch', { ids: ids }, 600000);
       const res = ocArr(r && r.results), bad = res.filter((x) => !x.ok), reboot = res.some((x) => x.ok && x.reboot);
-      try { await ocSave({ applied: bad.map((x) => x.id), done: true }); } catch (e) {}
+      try { await ocSave({ applied: bad.map((x) => x.id), rebootNeeded: reboot, done: true }); } catch (e) {}
       OC.last = bad.length ? Object.assign({}, OC.last, { ids: bad.map((x) => x.id) }) : null;
+      OC.rebootPending = false;   // esta optimizacion ya no espera reinicio para medirse: se ha deshecho
       ocClearResult();
       ocMsg((res.length - bad.length) + ' cambios deshechos' + (bad.length ? ' · ' + bad.length + ' fallaron: ' + bad.map((x) => x.id + ' (' + (x.err || 'error') + ')').join(', ') : '') + (reboot ? ' · reinicia para completar' : ''), bad.length ? 'err' : 'ok');
       ocRefreshCatalog();
@@ -657,11 +662,18 @@
     addEventListener('keydown', (e) => { if (e.key === 'Escape') $('ocReportSheet').classList.remove('open'); });
     ocLoadPlan();
     // Optimización pendiente de medir (tras reiniciar, o si se cerró la ventana a mitad): se mide sola.
+    // Si pedía reinicio y el PC aún no se ha reiniciado, NO se mide (saldría un 'después' falso):
+    // se recuerda que falta reiniciar y se bloquea otra optimización encima.
     AXE.call('optimize.pending', {}).then(async (p) => {
       if (!p) return;
       if (p.corrupt) { ocMsg('No pude leer el registro de la última optimización (fichero dañado). Tus ajustes siguen como estén: puedes revertirlos en Optimizar.', 'warn'); return; }
       OC.last = { ids: ocArr(p.applied), profile: p.profile, benchId: p.benchId };
       ocRenderUndo();
+      if (p.rebootNeeded && p.rebooted === false) {
+        OC.rebootPending = true;
+        ocMsg('Tu última optimización necesita reiniciar el PC para completarse. Reinicia y, al volver a abrir AXE, mediré el después solo. También puedes deshacerla.', 'warn');
+        return;
+      }
       if (!p.benchId || OC.busy) return;
       ocLock(true);
       try { ocSteps(['Midiendo el después'], 0, 'Midiendo el después de tu última optimización… (~10-30 s)'); await ocMeasureAfter(p.benchId); }

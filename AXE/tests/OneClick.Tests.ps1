@@ -57,3 +57,27 @@ Describe 'Save/Read-AXEOneClickState - sobrevive al reinicio' -Tag 'unit' {
         (Read-AXEOneClickState).corrupt | Should -BeTrue
     }
 }
+
+Describe 'Test-AXEOneClickRebooted - no medir el despues ni pisar el registro antes de reiniciar (REGRESION ultrareview #15)' -Tag 'unit' {
+    BeforeAll { $script:B1 = '2026-09-25T08:00:00.0000000Z'; $script:B2 = '2026-09-25T10:30:00.0000000Z' }
+    It 'mismo arranque que al guardar = aun NO se ha reiniciado' {
+        Test-AXEOneClickRebooted ([pscustomobject]@{ rebootNeeded=$true; bootTime=$script:B1 }) $script:B1 | Should -BeFalse
+    }
+    It 'otro arranque = ya se reinicio' {
+        Test-AXEOneClickRebooted ([pscustomobject]@{ rebootNeeded=$true; bootTime=$script:B1 }) $script:B2 | Should -BeTrue
+    }
+    It 'unos segundos de diferencia en la lectura de CIM no cuentan como reinicio' {
+        Test-AXEOneClickRebooted ([pscustomobject]@{ rebootNeeded=$true; bootTime='2026-09-25T08:00:00Z' }) '2026-09-25T08:00:02Z' | Should -BeFalse
+    }
+    It 'si no hacia falta reiniciar, cuenta como hecho' {
+        Test-AXEOneClickRebooted ([pscustomobject]@{ rebootNeeded=$false; bootTime=$script:B1 }) $script:B1 | Should -BeTrue
+    }
+    It 'sin dato de arranque (registro antiguo o CIM caido) no se bloquea para siempre' {
+        Test-AXEOneClickRebooted ([pscustomobject]@{ rebootNeeded=$true }) $script:B1 | Should -BeTrue
+        Test-AXEOneClickRebooted ([pscustomobject]@{ rebootNeeded=$true; bootTime=$script:B1 }) $null | Should -BeTrue
+    }
+    It 'acepta el DateTime que entrega ConvertFrom-Json de pwsh' {
+        $dt = [DateTime]::Parse($script:B1, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+        Test-AXEOneClickRebooted ([pscustomobject]@{ rebootNeeded=$true; bootTime=$dt }) $script:B1 | Should -BeFalse
+    }
+}

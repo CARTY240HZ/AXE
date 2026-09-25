@@ -22,6 +22,28 @@ function Get-AXEOneClickPending {
 
 function Get-AXEOneClickStatePath { Join-Path $script:AXEData 'oneclick_last.json' }
 
+function Get-AXEBootStamp {
+    # Arranque del SO en UTC (ISO 8601), o $null si CIM no responde. Con el se sabe si hubo reinicio
+    # entre guardar una optimizacion que lo pedia y volver a abrir AXE.
+    try { (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime.ToUniversalTime().ToString('o') } catch { $null }
+}
+
+function Test-AXEOneClickRebooted {
+    # PURA. $true si el reinicio que pedia la optimizacion YA ocurrio (o si no hacia falta). Sin
+    # uno de los dos arranques no se puede saber: se da por hecho, como antes de guardar el dato,
+    # para no dejar la medida del 'despues' bloqueada para siempre. Tolerancia de 60 s: el valor de
+    # CIM se redondea distinto segun la lectura.
+    param($State, [string]$NowBoot)
+    if(-not $State -or -not $State.rebootNeeded){ return $true }
+    # ConvertFrom-Json de pwsh ya entrega un DateTime; el de 5.1, el texto ISO. Se aceptan los dos.
+    $toUtc = { param($v)
+        if($v -is [DateTime]){ return $v.ToUniversalTime() }
+        [DateTime]::Parse([string]$v, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    }
+    if($null -eq $State.bootTime -or [string]::IsNullOrWhiteSpace([string]$State.bootTime) -or [string]::IsNullOrWhiteSpace($NowBoot)){ return $true }
+    try { [Math]::Abs(((& $toUtc $NowBoot) - (& $toUtc $State.bootTime)).TotalSeconds) -gt 60 } catch { $true }
+}
+
 function Save-AXEOneClickState($State){
     $State | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Get-AXEOneClickStatePath) -Encoding UTF8
 }
