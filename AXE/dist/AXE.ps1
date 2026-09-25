@@ -1,6 +1,6 @@
 ﻿# ================================================================
 # AXE 1.0.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-25 08:13:52Z
+# Build UTC: 2026-09-25 08:22:07Z
 # Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 26-oneclick.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 48a-websecurity.ps1, 49-webmain.ps1
 # ================================================================
 
@@ -4046,13 +4046,29 @@ function Get-AXEWebView2Runtime {
 function Get-AXEWebUIManifest([string]$Dir){
     # Recorre $Dir y devuelve ruta-relativa (con / , no \) -> SHA256 en mayusculas. Mismo
     # algoritmo tanto al incrustar (build.ps1) como al comprobar en runtime.
+    #   Los ficheros de TEXTO se hashean con los finales de linea normalizados (CRLF -> LF). Git los
+    # entrega con CRLF o LF segun core.autocrlf de cada maquina: hasheando los bytes crudos, el mismo
+    # commit daba un manifiesto distinto en local y en la CI, y el anti-deriva rechazaba el dist.
+    # Cambiar solo finales de linea no altera lo que ejecuta la WebView2, asi que no es una
+    # manipulacion que haya que detectar.
     $out = @{}
     if(-not (Test-Path $Dir)){ return $out }
     $base = (Resolve-Path $Dir).Path
-    Get-ChildItem -Path $Dir -Recurse -File | Sort-Object FullName | ForEach-Object {
-        $rel = $_.FullName.Substring($base.Length).TrimStart('\','/') -replace '\\','/'
-        $out[$rel] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
-    }
+    $text = '.js','.css','.html','.htm','.json','.svg','.txt','.md'
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        Get-ChildItem -Path $Dir -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $rel = $_.FullName.Substring($base.Length).TrimStart('\','/') -replace '\\','/'
+            $bytes = [IO.File]::ReadAllBytes($_.FullName)
+            if($text -contains $_.Extension.ToLowerInvariant()){
+                # UTF-8 ida y vuelta: sin perdida para UTF-8 valido (el BOM viaja como U+FEFF) y rapido;
+                # un bucle byte a byte en PowerShell retrasaba el arranque de la ventana.
+                $utf8 = New-Object Text.UTF8Encoding $false
+                $bytes = $utf8.GetBytes($utf8.GetString($bytes).Replace("`r`n", "`n"))
+            }
+            $out[$rel] = ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-','')
+        }
+    } finally { $sha.Dispose() }
     $out
 }
 
@@ -4069,7 +4085,7 @@ function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
 # Sustituido por build.ps1 con la tabla literal real (mismo mecanismo que $script:AXEVersion en
 # 00-header.ps1). $null en el fallback: correr src/ suelto sin build (dev/tests) desactiva la
 # comprobacion en vez de rechazar ficheros validos sin manifiesto que compararlos.
-$script:AXEWebUIManifest = @{'app.js'='FD5266ABF2BB3587A4ED4C0D856C656E7755C55D78D41BAFAE47884C41827F03';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='7BEA4669FFC596AF3A7AFDE57C5314490711DCF3200409C55D0D2745FAC40A3D';'styles.css'='C712B9856F80E9ECDA203CAAF61BA714FFE3285BCFC4859F320456DD780518D4'}
+$script:AXEWebUIManifest = @{'app.js'='FD5266ABF2BB3587A4ED4C0D856C656E7755C55D78D41BAFAE47884C41827F03';'bridge.js'='43EDCC179CBEA0F058A210056DE94EE55DE4F97920C8AB7CDA14E13A8A5A77E7';'index.html'='7BEA4669FFC596AF3A7AFDE57C5314490711DCF3200409C55D0D2745FAC40A3D';'styles.css'='C712B9856F80E9ECDA203CAAF61BA714FFE3285BCFC4859F320456DD780518D4'}
 if($script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ $script:AXEWebUIManifest = $null }
 
 
