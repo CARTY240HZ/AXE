@@ -3,7 +3,7 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y [Versionado Semántico](https://semver.org/lang/es/).
 
-## [1.0.0] — sin publicar
+## [1.0.0] — 2026-09-25
 
 ### Añadido
 - **Sesión de juego en la ventana** (spec `2026-07-25`, `webui/` + 5 cmds `session.*` del puente):
