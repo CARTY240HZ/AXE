@@ -3,6 +3,29 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y [Versionado Semántico](https://semver.org/lang/es/).
 
+## [1.1.1] — 2026-09-25
+
+Correcciones de la revisión automática del PR #15.
+
+### Seguridad
+- **El actualizador solo acepta la firma DEL PROYECTO** (`src/43-update.ps1`). Antes le bastaba
+  una firma Authenticode `Valid`, que solo prueba que *alguien* con un certificado de confianza
+  firmó el fichero: quien tomara el release podía firmar un AXE.ps1 malicioso con cualquier
+  certificado comprado aparte. Ahora el firmante tiene que estar en
+  `$script:AXEPublisherThumbprints`, que va vacía hasta que el proyecto tenga su certificado (el
+  updater no instala nada solo, igual que hasta ahora con releases sin firmar). `docs/SIGNING.md`.
+- **El broker ya no se queda colgado si el otro extremo enmudece** (`src/46-broker.ps1`). La lectura
+  del pipe no tenía límite de tiempo: una suspensión o un antivirus interceptando el pipe a mitad
+  dejaban el proceso ELEVADO esperando para siempre. Ahora 30 s para la petición y 20 min para la
+  respuesta (un lote con punto de restauración tarda minutos).
+
+### Corregido
+- **Optimizar en un clic ya no pierde una optimización pendiente de reinicio**. Si se lanzaba otra
+  antes de reiniciar, pisaba el registro de la primera (su «Deshacer» y su medida del después). Y
+  al reabrir AXE sin haber reiniciado, medía un «después» falso. Ahora AXE anota el arranque del PC
+  al guardar, sabe si ya se reinició, y hasta entonces no mide ni deja lanzar otra encima.
+- El botón «Optimizar» ya no parece activo cuando no se pudo calcular qué falta por aplicar.
+
 ## [1.1.0] — 2026-09-25
 
 ### Añadido
@@ -176,5 +199,6 @@ y [Versionado Semántico](https://semver.org/lang/es/).
 - **Build modular**: el motor se parte en módulos numerados en `src/`; `build.ps1` los concatena
   a `dist/AXE.ps1` (fuente única). Reversión con **fidelidad de snapshot** (no inventa defaults).
 
+[1.1.1]: https://github.com/CARTY240HZ/AXE/releases/tag/v1.1.1
 [1.1.0]: https://github.com/CARTY240HZ/AXE/releases/tag/v1.1.0
 [1.0.0]: https://github.com/CARTY240HZ/AXE/releases/tag/v1.0.0

@@ -99,6 +99,10 @@ $script:AXEBridgeMap = @{
     'optimize.pending' = { param($a)
         $s = Read-AXEOneClickState
         if($s -and -not $s.corrupt -and $s.done){ return $null }
+        # rebooted: si el reinicio que pedia esa optimizacion ya ocurrio. Sin el, el front media el
+        # 'despues' al reabrir AXE aunque no se hubiera reiniciado, y dejaba lanzar otra optimizacion
+        # encima que pisaba este registro (ultrareview #15).
+        if($s -and -not $s.corrupt){ $s | Add-Member -NotePropertyName rebooted -NotePropertyValue ([bool](Test-AXEOneClickRebooted $s (Get-AXEBootStamp))) -Force }
         $s
     }
     'optimize.save'    = { param($a)
@@ -112,6 +116,7 @@ $script:AXEBridgeMap = @{
         Save-AXEOneClickState ([pscustomobject]@{
             ts=(Get-Date).ToUniversalTime().ToString('u'); profile=[string]$a.profile; benchId=$bench
             applied=[string[]]$ids; rebootNeeded=[bool]$a.rebootNeeded; done=[bool]$a.done
+            bootTime=(Get-AXEBootStamp)
         })
         $true
     }

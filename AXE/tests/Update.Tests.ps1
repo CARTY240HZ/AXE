@@ -186,6 +186,44 @@ Describe 'Test-AXESignature - la negativa es lo que protege' -Tag 'unit' {
     }
 }
 
+Describe 'Firma del PROYECTO, no de cualquiera (REGRESION ultrareview #15)' -Tag 'unit','security' {
+    # Una firma 'Valid' solo prueba que el certificado encadena a una raiz de Windows. Con
+    # Get-AuthenticodeSignature simulado se comprueba la decision sin tocar el almacen de
+    # certificados de la maquina.
+    BeforeAll {
+        $script:TpAxe   = 'A1B2C3D4E5F60718293A4B5C6D7E8F9012345678'
+        $script:TpOtro  = 'FFEEDDCCBBAA99887766554433221100FFEEDDCC'
+        $script:SigFile = Join-Path ([IO.Path]::GetTempPath()) ('axe-sig-' + [guid]::NewGuid().ToString('N') + '.ps1')
+        Set-Content -LiteralPath $script:SigFile -Value '# x'
+    }
+    AfterAll { Remove-Item -LiteralPath $script:SigFile -Force -EA SilentlyContinue }
+
+    It 'Test-AXESignerPinned: solo la huella exacta de la lista (mayusculas indiferentes)' {
+        Test-AXESignerPinned $script:TpAxe @($script:TpAxe) | Should -BeTrue
+        Test-AXESignerPinned $script:TpAxe.ToLower() @($script:TpAxe) | Should -BeTrue
+        Test-AXESignerPinned $script:TpOtro @($script:TpAxe) | Should -BeFalse
+    }
+    It 'Test-AXESignerPinned: lista vacia o huella mal formada = nadie autorizado (<_>)' -ForEach @('', 'no-hex', 'A1B2') {
+        Test-AXESignerPinned $_ @($script:TpAxe) | Should -BeFalse
+    }
+    It 'la lista del proyecto arranca vacia: sin certificado propio el updater no instala nada solo' {
+        @($script:AXEPublisherThumbprints).Count | Should -Be 0
+        Test-AXESignerPinned $script:TpAxe | Should -BeFalse
+    }
+    It 'una firma VALIDA de otro editor NO basta' {
+        Mock Get-AuthenticodeSignature { [pscustomobject]@{ Status='Valid'; SignerCertificate=[pscustomobject]@{ Thumbprint=$script:TpOtro; Subject='CN=Cualquiera' } } }
+        Test-AXESignature $script:SigFile @($script:TpAxe) | Should -BeFalse
+    }
+    It 'una firma valida del proyecto SI basta' {
+        Mock Get-AuthenticodeSignature { [pscustomobject]@{ Status='Valid'; SignerCertificate=[pscustomobject]@{ Thumbprint=$script:TpAxe; Subject='CN=AXE' } } }
+        Test-AXESignature $script:SigFile @($script:TpAxe) | Should -BeTrue
+    }
+    It 'la huella correcta con la firma rota no basta' {
+        Mock Get-AuthenticodeSignature { [pscustomobject]@{ Status='HashMismatch'; SignerCertificate=[pscustomobject]@{ Thumbprint=$script:TpAxe; Subject='CN=AXE' } } }
+        Test-AXESignature $script:SigFile @($script:TpAxe) | Should -BeFalse
+    }
+}
+
 Describe 'Test-AXEAssetUrl - solo se descarga del repo oficial' -Tag 'unit' {
 
     It 'acepta la URL de release del repo oficial' {

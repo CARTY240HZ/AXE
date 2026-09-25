@@ -50,6 +50,17 @@ The script:
 3. Verify: `Get-AuthenticodeSignature AXE/dist/AXE.ps1` → `Valid` + a timestamp.
 4. Publish `dist/AXE.ps1` + its SHA256 + changelog.
 
+## Pin the publisher (required for auto-update)
+
+`AXE -Update` only replaces the script when the signature is `Valid` **and** the signer's
+thumbprint is in `$script:AXEPublisherThumbprints` (`src/43-update.ps1`). A `Valid` status alone
+only proves that *someone* with a Windows-trusted certificate signed it. The list ships empty, so
+until the project has its own certificate the updater never self-installs (it fails closed).
+
+When the certificate exists, add its SHA1 thumbprint (40 hex characters) to that list in the
+**same release before** the first signed one, rebuild, and ship it. When the certificate is
+renewed, list both old and new thumbprints for one release, then drop the old one.
+
 ## Status
 
 `Sign-AXE.ps1` is ready; **it needs a real code-signing certificate** (OV/EV or Azure

@@ -89,21 +89,41 @@ function Compare-AXEVersion {
 
 # --- Firma --------------------------------------------------------------------------------
 
+# Huellas SHA1 (40 hex) de los certificados con los que firma ESTE proyecto. Una firma 'Valid'
+# solo prueba que el certificado encadena a una raiz de confianza de Windows, o sea: que lo firmo
+# ALGUIEN. Sin esta lista, quien tomara el release (token filtrado, workflow comprometido) podria
+# firmar un AXE.ps1 malicioso con cualquier certificado de firma de codigo comprado a parte y el
+# updater lo instalaria. Vacia = ningun editor autorizado = el updater nunca reemplaza nada solo
+# (falla cerrado). Al conseguir el certificado del proyecto, su huella va aqui (docs/SIGNING.md).
+$script:AXEPublisherThumbprints = @()
+
+function Test-AXESignerPinned {
+    # PURA. La huella del firmante tiene que estar EXACTAMENTE en la lista del proyecto.
+    param([string]$Thumbprint, [string[]]$Pinned = $script:AXEPublisherThumbprints)
+    if([string]::IsNullOrWhiteSpace($Thumbprint) -or $Thumbprint -notmatch '^[0-9A-Fa-f]{40}$'){ return $false }
+    foreach($p in @($Pinned)){ if([string]$p -and ([string]$p).ToUpperInvariant() -ceq $Thumbprint.ToUpperInvariant()){ return $true } }
+    $false
+}
+
 function Test-AXESignature {
-    # $true SOLO con Status 'Valid'. 'NotSigned', 'HashMismatch', 'NotTrusted' y
-    # 'UnknownError' son todos $false: a la hora de decidir si se reemplaza un fichero que
-    # luego correra ELEVADO no se distingue "aun no firmado" de "firma rota".
-    param([string]$Path)
+    # $true SOLO con Status 'Valid' Y firmante de la lista del proyecto. 'NotSigned',
+    # 'HashMismatch', 'NotTrusted', 'UnknownError' y una firma valida de OTRO editor son todos
+    # $false: a la hora de decidir si se reemplaza un fichero que luego correra ELEVADO no se
+    # distingue "aun no firmado" de "firma rota" ni de "firmado por un desconocido".
+    param([string]$Path, [string[]]$Pinned = $script:AXEPublisherThumbprints)
     if([string]::IsNullOrWhiteSpace($Path)){ return $false }
     if(-not (Test-Path -LiteralPath $Path -PathType Leaf)){ return $false }
-    try { return ((Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop).Status -eq 'Valid') }
-    catch { return $false }
+    try {
+        $s = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+        if($s.Status -ne 'Valid' -or -not $s.SignerCertificate){ return $false }
+        return (Test-AXESignerPinned $s.SignerCertificate.Thumbprint $Pinned)
+    } catch { return $false }
 }
 
 function Get-AXESignatureInfo {
     # Detalle para el informe (quien firma, si lleva timestamp). Nunca lanza.
     param([string]$Path)
-    $out = [pscustomobject]@{ Path=$Path; Valid=$false; Status='NotChecked'; Signer=$null; TimeStamped=$false }
+    $out = [pscustomobject]@{ Path=$Path; Valid=$false; Status='NotChecked'; Signer=$null; Thumbprint=$null; Pinned=$false; TimeStamped=$false }
     if([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)){
         $out.Status = 'NotFound'; return $out
     }
@@ -112,6 +132,8 @@ function Get-AXESignatureInfo {
         $out.Status      = [string]$s.Status
         $out.Valid       = ($s.Status -eq 'Valid')
         $out.Signer      = if($s.SignerCertificate){ $s.SignerCertificate.Subject } else { $null }
+        $out.Thumbprint  = if($s.SignerCertificate){ $s.SignerCertificate.Thumbprint } else { $null }
+        $out.Pinned      = Test-AXESignerPinned $out.Thumbprint
         $out.TimeStamped = [bool]$s.TimeStamperCertificate
     } catch { $out.Status = 'Error' }
     $out
@@ -387,7 +409,8 @@ function Invoke-AXEUpdate {
         #     destino es escribible por el usuario y AXE.bat lo ejecuta ELEVADO despues.
         if(-not (Test-AXESignature $newPs)){
             return (& $mk 'refused' $Release.Version @"
-El AXE.ps1 de $($Release.Tag) no lleva firma Authenticode valida: no se reemplaza nada.
+El AXE.ps1 de $($Release.Tag) no lleva una firma Authenticode valida DEL PROYECTO: no se reemplaza nada.
+(Una firma de cualquier otro editor tampoco vale: solo prueba que lo firmo alguien, no que fuera AXE.)
 El checksum SI cuadra, pero viaja en el mismo release que el fichero, asi que prueba que
 llego entero, no QUIEN lo publico. Como AXE se ejecuta elevado, reemplazarlo sin firma
 convertiria al updater en la via de escalada de privilegios que el resto del proyecto evita.

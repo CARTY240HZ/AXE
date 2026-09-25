@@ -214,6 +214,13 @@ Describe 'Puente: Optimizar en un clic (spec 2026-09-24)' {
         $r.ok  | Should -BeFalse
         $r.err | Should -Match 'no_existe_xyz'
     }
+    It 'pending dice si ya se reinicio desde que se guardo (REGRESION ultrareview #15)' {
+        Mock Get-AXEBootStamp { '2026-09-25T08:00:00.0000000Z' }
+        [void](Invoke-AXEBridgeCmd 'optimize.save' @{ profile='seguro'; benchId='b1'; applied=@($script:OcKnownId); rebootNeeded=$true; done=$false })
+        (Invoke-AXEBridgeCmd 'optimize.pending' @{}).data.rebooted | Should -BeFalse
+        Mock Get-AXEBootStamp { '2026-09-25T11:00:00.0000000Z' }
+        (Invoke-AXEBridgeCmd 'optimize.pending' @{}).data.rebooted | Should -BeTrue
+    }
     It 'save -> pending ida y vuelta (con UN solo id: sigue siendo lista)' {
         $s = Invoke-AXEBridgeCmd 'optimize.save' @{ profile='equilibrado'; benchId='b123'; applied=@($script:OcKnownId); rebootNeeded=$true; done=$false }
         $s.ok | Should -BeTrue
