@@ -3,7 +3,7 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y [Versionado Semántico](https://semver.org/lang/es/).
 
-## [Sin publicar]
+## [1.0.0] — sin publicar
 
 ### Añadido
 - **Sesión de juego en la ventana** (spec `2026-07-25`, `webui/` + 5 cmds `session.*` del puente):
@@ -75,7 +75,7 @@ y [Versionado Semántico](https://semver.org/lang/es/).
   `v*` dispara el gate completo, empaqueta, firma **si hay certificado** y publica. Sin cert
   **degrada honesto**: el release sale marcado `SIN FIRMAR` en las notas y el updater no lo
   auto-instalará. No se finge una firma que no existe. Guard de coherencia tag ↔ `VERSION` (la
-  misma clase de deriva que degradó la versión a `6.1.0-dev`), y dry-run en PR para que el
+  misma clase de deriva que degradó la versión a `1.0.0-dev`), y dry-run en PR para que el
   pipeline falle allí y no la primera vez que se etiqueta una versión.
 - **Distribución winget** (`scripts/New-AXEWingetManifest.ps1`, `packaging/winget/README.md`):
   manifiestos **generados** del release real, nunca a mano — de sus ~40 campos, tres cambian por
@@ -119,7 +119,7 @@ y [Versionado Semántico](https://semver.org/lang/es/).
   Antes `build.ps1` solo corría `-SelfTest`: la suite existía pero no la ejecutaba nadie
   (cobertura ficticia). Ahora un solo test rojo aborta el build.
 
-## [7.0.0] — 2026-07-22
+## Historial previo — 2026-07-22 (cutover a interfaz web)
 
 ### Cambiado
 - **Cutover a interfaz web** como frontend único: carcasa WPF fina que aloja un control WebView2;
@@ -130,7 +130,7 @@ y [Versionado Semántico](https://semver.org/lang/es/).
 - Pantallas: Panel, Optimizar (aplicar/revertir catálogo), Telemetría, Prueba (A/B), Seguridad, Ajustes.
 - **Telemetría real** por runspace de fondo (CPU/RAM/jitter) sin congelar la ventana.
 
-## [6.x] — Trust & Proof + Gating
+## Historial previo — Trust & Proof + Gating
 
 ### Añadido
 - **Capa de medición nativa** (P/Invoke): timer resolution, jitter (media/máx/P99.9/stalls),
@@ -143,5 +143,4 @@ y [Versionado Semántico](https://semver.org/lang/es/).
 - **Build modular**: el motor se parte en módulos numerados en `src/`; `build.ps1` los concatena
   a `dist/AXE.ps1` (fuente única). Reversión con **fidelidad de snapshot** (no inventa defaults).
 
-[Sin publicar]: https://example.invalid/compare/v7.0.0...HEAD
-[7.0.0]: https://example.invalid/releases/tag/v7.0.0
+[1.0.0]: https://github.com/CARTY240HZ/AXE/releases/tag/v1.0.0
