@@ -38,7 +38,9 @@ $script:AXERoot = $root  # necesario para que 39-webdetect.ps1 inicialice correc
 $webuiDir = Join-Path $root 'webui'
 $manifest = Get-AXEWebUIManifest $webuiDir
 if($manifest.Count -eq 0){ throw "webui/ vacio o ausente en ${webuiDir}: no se puede construir el manifiesto de integridad" }
-$pairs = ($manifest.GetEnumerator() | ForEach-Object { "'{0}'='{1}'" -f $_.Key, $_.Value }) -join ';'
+# Ordenado: el orden de un hashtable cambia entre Windows PowerShell 5.1 y pwsh, y el anti-deriva de
+# la CI (pwsh) rechazaba un dist construido en local con 5.1 aunque los hashes fueran identicos.
+$pairs = ($manifest.GetEnumerator() | Sort-Object Key | ForEach-Object { "'{0}'='{1}'" -f $_.Key, $_.Value }) -join ';'
 # Manifiesto canónico: SOLO se sustituye la línea de ASIGNACIÓN en 39-webdetect.ps1, NO el guard de
 # fallback. Ambos van DENTRO del .ps1 que se acaba de construir: una vez sustituido, la variable
 # contiene la tabla real y el guard (dead code) nunca dispararia. Mismo mecanismo que $script:AXEVersion.
@@ -47,7 +49,9 @@ $built = $built.Replace($search, "`$script:AXEWebUIManifest = @{$pairs}")
 # Verificación robusta: si la línea de ASIGNACIÓN no fue sustituida, lanzar error. La línea guard
 # contiene el string literal, pero no la asignación completa, asi que seguimos buscando solo eso.
 if($built.Contains($search)){ throw "manifest placeholder replace fallo: no se encontro el patron esperado en 39-webdetect.ps1" }
-Set-Content -Path $out -Value $built -Encoding UTF8
+# UTF-8 CON BOM en ambos runtimes: 5.1 (el de produccion) lee sin BOM como ANSI y rompe los acentos,
+# y Set-Content -Encoding UTF8 solo pone BOM en 5.1 (en pwsh no), asi que el dist dependia de quien construyera.
+[IO.File]::WriteAllText($out, $built, (New-Object System.Text.UTF8Encoding $true))
 Write-Host ("BUILT: {0} ({1} lineas, {2} modulos)" -f $out,(Get-Content $out).Count,$modules.Count)
 foreach($m in $modules){ Write-Host ("  {0,-28} {1,5} lineas" -f $m.Name,(Get-Content $m.FullName).Count) }
 if($Sign){ Set-AuthenticodeSignature -FilePath $out -Certificate (Get-Item "Cert:\CurrentUser\My\$Sign") | Out-Null; Write-Host "Firmado ($Sign)" }
