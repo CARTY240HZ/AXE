@@ -9,7 +9,7 @@ if(-not(Test-Path $dist)){ New-Item -ItemType Directory -Path $dist | Out-Null }
 $out  = Join-Path $dist 'AXE.ps1'
 $modules = Get-ChildItem -Path $src -Filter '*.ps1' | Sort-Object Name
 if($modules.Count -eq 0){ throw 'No hay modulos en /src' }
-$ver = (Get-Content (Join-Path $root 'VERSION') -Raw -EA SilentlyContinue); if($ver){ $ver=$ver.Trim() } else { $ver='6.0.0-dev' }
+$ver = (Get-Content (Join-Path $root 'VERSION') -Raw -EA SilentlyContinue); if($ver){ $ver=$ver.Trim() } else { $ver='1.0.0-dev' }
 $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine("# ================================================================")
 [void]$sb.AppendLine("# AXE $ver - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY")
@@ -25,8 +25,8 @@ foreach($m in $modules){
 # Version canonica: SOLO se sustituye la linea de ASIGNACION de 00-header, NO el guard de
 # fallback. Ambos van DESPUES del param block (regla PS: param() primero). Fuente unica = VERSION.
 #   Un -replace global del token pisaba tambien el '*__AXE_VERSION__*' del guard de 00-header: tras
-# el build quedaba como '*7.0.0*', hacia MATCH contra la propia version y la app se AUTO-DEGRADABA
-# a '6.1.0-dev' en cada build (banner CLI y app.info del puente mentian). .Replace() literal toca
+# el build quedaba como '*1.0.0*', hacia MATCH contra la propia version y la app se AUTO-DEGRADABA
+# a '1.0.0-dev' en cada build (banner CLI y app.info del puente mentian). .Replace() literal toca
 # solo la asignacion; el guard conserva su token intacto => no dispara cuando SI hubo build.
 $built = $sb.ToString().Replace("`$script:AXEVersion = '__AXE_VERSION__'", "`$script:AXEVersion = '$ver'")
 

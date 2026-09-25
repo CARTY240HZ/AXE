@@ -17,8 +17,8 @@ anterior pasa la revision humana sin problema y luego falla en la maquina del us
 
 ```powershell
 # tras ./scripts/New-AXERelease.ps1
-./scripts/New-AXEWingetManifest.ps1 -Tag v7.0.0
-# -> dist/release/winget/7.0.0/{CARTY240HZ.AXE.yaml, .installer.yaml, .locale.en-US.yaml}
+./scripts/New-AXEWingetManifest.ps1 -Tag v1.0.0
+# -> dist/release/winget/1.0.0/{CARTY240HZ.AXE.yaml, .installer.yaml, .locale.en-US.yaml}
 ```
 
 ## Procedimiento (a mano, a proposito)
@@ -31,10 +31,10 @@ Microsoft es exactamente el tipo de cosa que no debe existir sin revision humana
 
 2. **Validar en local:**
    ```powershell
-   winget validate --manifest .\dist\release\winget\7.0.0
+   winget validate --manifest .\dist\release\winget\1.0.0
    # instalacion real desde el manifiesto local (necesita habilitar manifiestos locales):
    winget settings --enable LocalManifestFiles
-   winget install --manifest .\dist\release\winget\7.0.0
+   winget install --manifest .\dist\release\winget\1.0.0
    ```
    Comprueba a mano que tras instalar: `axe -List` funciona, la GUI abre, y `axe -Update -Check`
    responde. Si `webui/` o `webview2/` no viajaron dentro del zip, la GUI abre en blanco: eso lo
