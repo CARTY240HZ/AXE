@@ -28,7 +28,7 @@
   Directorio con los artefactos. Default: dist/release.
 
 .EXAMPLE
-  ./scripts/New-AXEWingetManifest.ps1 -Tag v7.0.0
+  ./scripts/New-AXEWingetManifest.ps1 -Tag v1.0.0
 #>
 [CmdletBinding()]
 param(

@@ -7,7 +7,7 @@
 <p align="center"><b>Optimizador de Windows para juegos — con honestidad como característica, no como eslogan.</b></p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-7.0.0-E0A32E">
+  <img alt="version" src="https://img.shields.io/badge/version-1.0.0-E0A32E">
   <img alt="tests" src="https://img.shields.io/badge/tests-passing-2ea043">
   <img alt="platform" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">

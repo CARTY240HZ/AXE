@@ -108,7 +108,7 @@ param(
     [switch]$NetMon,
     [string]$NetMonTarget = '1.1.1.1',
     [int]$NetMonCount = 20,
-    # v7.1: diagnosticos de latencia que el catalogo no puede tocar.
+    # Diagnosticos de latencia que el catalogo no puede tocar.
     #   -Mouse    sondeo del raton + aceleracion + escalado 1:1   (44-latency.ps1)
     #   -Dpc      tiempo en rutinas diferidas de drivers          (44-latency.ps1)
     #   -NetLoad  latencia bajo carga / bufferbloat               (37-netmon.ps1)
@@ -139,5 +139,5 @@ param(
 # Va DESPUES del param block (regla PS: param() debe ser la primera sentencia).
 # Fallback si el token no se reemplazo (se corre src suelto sin build).
 $script:AXEVersion = '__AXE_VERSION__'
-if($script:AXEVersion -like '*__AXE_VERSION__*'){ $script:AXEVersion = '6.1.0-dev' }
+if($script:AXEVersion -like '*__AXE_VERSION__*'){ $script:AXEVersion = '1.0.0-dev' }
 

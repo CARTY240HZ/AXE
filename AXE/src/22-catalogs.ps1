@@ -41,7 +41,7 @@ $script:DEBLOAT = @(
 function Get-DebloatInstalled($pkg){ [bool](Get-AppxPackage -Name $pkg -EA SilentlyContinue) }
 
 # $script:DNSPROFILES vivia aqui: 5 proveedores con sus IPs, sin un solo consumidor en todo el
-# repo (la pestana DNS que los mostraba murio en el cutover a WebUI, fase 8 de v7). Codigo muerto
+# repo (la pestana DNS que los mostraba murio en el cutover a WebUI, fase 8). Codigo muerto
 # que ademas afirmaba un ranking -"rapidos", "seguridad"- sin medir nada: justo lo que documenta
 # 33-fps que no se debe hacer. Quien quiera cambiar DNS tiene el tweak 'net_dns' en RED, que
 # declara en su propio Desc que NO da FPS. Si algun dia vuelve una seccion DNS, que llegue
