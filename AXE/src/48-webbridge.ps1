@@ -438,6 +438,12 @@ function Register-AXEBridge($core){
     Start-AXEBridgeWorker
     $core.add_WebMessageReceived({
         param($s,$e)
+        # Solo la interfaz propia habla con el puente. La navegacion ya se bloquea en 48a; esto es la
+        # segunda capa: un documento de otro origen no recibe ni respuesta.
+        if(-not (Test-AXETrustedWebUri ([string]$e.Source))){
+            try { Write-AXELog "Puente: mensaje descartado de origen no confiable '$($e.Source)'" 'WARN' } catch {}
+            return
+        }
         $reqId = -1
         try {
             $msg = $e.WebMessageAsJson | ConvertFrom-Json
@@ -517,6 +523,11 @@ function Register-AXEBridge($core){
     } catch { Write-AXELog "Telemetria: runspace productor no arranco: $($_.Exception.Message)" 'ERR' }
 
     $script:TelemTick = 0
+    # Arranque del SO, leido UNA vez. [Environment]::TickCount64 no existe en .NET Framework (5.1, el
+    # runtime de produccion): daba $null y el panel decia siempre "encendido hace 0 min". Si CIM no
+    # responde viaja null y el front no pinta nada, en vez de un cero inventado.
+    $script:AXEBootTime = $null
+    try { $script:AXEBootTime = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime } catch {}
     $script:TelemetryTimer = New-Object System.Windows.Threading.DispatcherTimer
     $script:TelemetryTimer.Interval = [TimeSpan]::FromMilliseconds(1000)
     $script:TelemetryTimer.Add_Tick({
@@ -527,7 +538,7 @@ function Register-AXEBridge($core){
                 evt  = 'telemetry'
                 data = [pscustomobject]@{
                     ts           = $(if($b.ts){ $b.ts } else { (Get-Date).ToString('HH:mm:ss') })
-                    uptimeS      = [int]([Environment]::TickCount64 / 1000)
+                    uptimeS      = $(if($script:AXEBootTime){ [int]((Get-Date) - $script:AXEBootTime).TotalSeconds } else { $null })
                     cpu          = $b.cpu
                     ram          = $b.ram
                     jitterUs     = $b.jitterUs
