@@ -1,7 +1,7 @@
 ﻿# ================================================================
 # AXE 1.0.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-25 06:50:10Z
-# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 49-webmain.ps1
+# Build UTC: 2026-09-25 07:13:19Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48a-websecurity.ps1, 48-webbridge.ps1, 49-webmain.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
@@ -4028,7 +4028,7 @@ function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
 # Sustituido por build.ps1 con la tabla literal real (mismo mecanismo que $script:AXEVersion en
 # 00-header.ps1). $null en el fallback: correr src/ suelto sin build (dev/tests) desactiva la
 # comprobacion en vez de rechazar ficheros validos sin manifiesto que compararlos.
-$script:AXEWebUIManifest = @{'app.js'='95F1D141A681E26BF3CBED61945A6044D561FF03EE5804D95F2076301E8D37DA';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='F70AA83081622158F214B2A6AF97B42BC0833BCA8FCA94DC0E09DC078B608E63';'styles.css'='C2C06EDD48F2257C546AD87AE15D0E1A916232FCF6D0040CD2893C5F60B03592'}
+$script:AXEWebUIManifest = @{'app.js'='98E245FF98CD7608AFC4CB3BC5A585FB64A37749936142D111A53057C5A8FC77';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='F70AA83081622158F214B2A6AF97B42BC0833BCA8FCA94DC0E09DC078B608E63';'styles.css'='C2C06EDD48F2257C546AD87AE15D0E1A916232FCF6D0040CD2893C5F60B03592'}
 if($script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ $script:AXEWebUIManifest = $null }
 
 
@@ -8009,6 +8009,12 @@ function Show-AXEWebHost {
             $core.Settings.AreDevToolsEnabled = $false
         }
         $core.Settings.IsStatusBarEnabled = $false
+        # Politica de origen (48a): solo https://axe.local navega; target=_blank va al navegador del
+        # sistema. Falla CERRADO: sin la politica no se registra el puente ni se carga la interfaz.
+        if(-not (Protect-AXEWebView2 $core)){
+            [System.Windows.MessageBox]::Show('No pude aplicar la politica de seguridad de la interfaz. Revisa el log.','AXE','OK','Error') | Out-Null
+            return
+        }
         # Zoom: se restaura el elegido la vez anterior y se guarda cada vez que cambia. Sin esto
         # Ctrl+rueda funcionaba pero se olvidaba al cerrar, que para quien necesita la interfaz mas
         # grande equivale a no tenerlo. Guardar es best-effort (Set-AXEUIZoom no lanza).
@@ -8063,6 +8069,71 @@ function Show-AXEWebHost {
 # El arranque (bootstrap) vive en 49-webmain.ps1, que carga DESPUES de 48-webbridge, para que
 # Register-AXEBridge (48) este definido cuando Show-AXEWebHost lo invoque. Si el arranque viviera
 # aqui, su 'exit 0' cortaria la carga antes de 48 y el puente quedaria sin enganchar (JS->PS muerto).
+
+
+# >>>>> MODULE: 48a-websecurity.ps1 >>>>>
+# =====================================================
+# REGION 14a - POLITICA DE ORIGEN DE LA WEBVIEW2
+# =====================================================
+# La interfaz es contenido local: https://axe.local/*. Nada mas navega dentro de la ventana ni
+# habla con el puente. Portado de la rama ai/least-privilege-broker (47b-websecurity), que nunca
+# llego a axe, con dos cambios: se aplica en el init del control (47-webhost) en vez de con un
+# temporizador que sondeaba, y los enlaces "fuente" de cada tweak se abren en el navegador del
+# sistema en vez de bloquearse (son parte del producto: cada tweak cita de donde sale).
+# Cargar este modulo solo DEFINE funciones; no toca WPF, asi que _load-engine lo carga en tests.
+
+function Test-AXETrustedWebUri([string]$Uri){
+    # PURA. Solo https://axe.local (puerto por defecto). Cualquier otra cosa -otro host, http,
+    # file:, data:, un puerto distinto- no es la interfaz de AXE.
+    $u = $null
+    if(-not [Uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$u)){ return $false }
+    $u.Scheme -eq 'https' -and $u.Host -eq 'axe.local' -and $u.IsDefaultPort
+}
+
+function Test-AXEExternalLinkUri([string]$Uri){
+    # PURA. Que se puede mandar al navegador del sistema: solo https y nunca la propia interfaz.
+    # Nada de file:, ms-settings:, javascript: ni esquemas que Windows resolveria a un programa.
+    $u = $null
+    if(-not [Uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$u)){ return $false }
+    $u.Scheme -eq 'https' -and -not (Test-AXETrustedWebUri $Uri)
+}
+
+function Protect-AXEWebView2($Core){
+    # Endurece un CoreWebView2 ya inicializado. Devuelve $true si la politica quedo aplicada.
+    try {
+        $Core.Settings.AreHostObjectsAllowed = $false
+        $Core.Settings.AreDefaultScriptDialogsEnabled = $false
+        $Core.Add_NavigationStarting({
+            param($s,$e)
+            if(-not (Test-AXETrustedWebUri $e.Uri)){
+                $e.Cancel = $true
+                try { Write-AXELog "WebView2: navegacion bloqueada a '$($e.Uri)'" 'WARN' } catch {}
+            }
+        })
+        $Core.Add_FrameNavigationStarting({
+            param($s,$e)
+            if(-not (Test-AXETrustedWebUri $e.Uri)){
+                $e.Cancel = $true
+                try { Write-AXELog "WebView2: frame bloqueado a '$($e.Uri)'" 'WARN' } catch {}
+            }
+        })
+        # target=_blank: nunca una ventana WebView2 nueva (seria un navegador sin barra de direcciones
+        # pegado a la app). Un https externo va al navegador del sistema; el resto se descarta.
+        $Core.Add_NewWindowRequested({
+            param($s,$e)
+            $e.Handled = $true
+            if(Test-AXEExternalLinkUri $e.Uri){
+                try { Start-Process ([string]([Uri]$e.Uri).AbsoluteUri) } catch { try { Write-AXELog "WebView2: no pude abrir '$($e.Uri)': $($_.Exception.Message)" 'WARN' } catch {} }
+            } else {
+                try { Write-AXELog "WebView2: ventana nueva bloqueada a '$($e.Uri)'" 'WARN' } catch {}
+            }
+        })
+        $true
+    } catch {
+        try { Write-AXELog "WebView2: la politica de seguridad no pudo aplicarse: $($_.Exception.Message)" 'ERR' } catch {}
+        $false
+    }
+}
 
 
 # >>>>> MODULE: 48-webbridge.ps1 >>>>>
@@ -8506,6 +8577,12 @@ function Register-AXEBridge($core){
     Start-AXEBridgeWorker
     $core.add_WebMessageReceived({
         param($s,$e)
+        # Solo la interfaz propia habla con el puente. La navegacion ya se bloquea en 48a; esto es la
+        # segunda capa: un documento de otro origen no recibe ni respuesta.
+        if(-not (Test-AXETrustedWebUri ([string]$e.Source))){
+            try { Write-AXELog "Puente: mensaje descartado de origen no confiable '$($e.Source)'" 'WARN' } catch {}
+            return
+        }
         $reqId = -1
         try {
             $msg = $e.WebMessageAsJson | ConvertFrom-Json
@@ -8585,6 +8662,11 @@ function Register-AXEBridge($core){
     } catch { Write-AXELog "Telemetria: runspace productor no arranco: $($_.Exception.Message)" 'ERR' }
 
     $script:TelemTick = 0
+    # Arranque del SO, leido UNA vez. [Environment]::TickCount64 no existe en .NET Framework (5.1, el
+    # runtime de produccion): daba $null y el panel decia siempre "encendido hace 0 min". Si CIM no
+    # responde viaja null y el front no pinta nada, en vez de un cero inventado.
+    $script:AXEBootTime = $null
+    try { $script:AXEBootTime = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime } catch {}
     $script:TelemetryTimer = New-Object System.Windows.Threading.DispatcherTimer
     $script:TelemetryTimer.Interval = [TimeSpan]::FromMilliseconds(1000)
     $script:TelemetryTimer.Add_Tick({
@@ -8595,7 +8677,7 @@ function Register-AXEBridge($core){
                 evt  = 'telemetry'
                 data = [pscustomobject]@{
                     ts           = $(if($b.ts){ $b.ts } else { (Get-Date).ToString('HH:mm:ss') })
-                    uptimeS      = [int]([Environment]::TickCount64 / 1000)
+                    uptimeS      = $(if($script:AXEBootTime){ [int]((Get-Date) - $script:AXEBootTime).TotalSeconds } else { $null })
                     cpu          = $b.cpu
                     ram          = $b.ram
                     jitterUs     = $b.jitterUs
