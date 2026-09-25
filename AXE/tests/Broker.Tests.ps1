@@ -38,6 +38,13 @@ Describe 'Test-AXEBrokerJsonDepth - tope de anidamiento' -Tag 'unit' {
     }
 }
 
+Describe 'Test-AXEBrokerClientPid - solo el proceso UI que lanzo el broker' -Tag 'unit','security' {
+    It 'acepta el PID exacto' { Test-AXEBrokerClientPid 4242 4242 | Should -BeTrue }
+    It 'rechaza otro PID aunque el token fuera valido' { Test-AXEBrokerClientPid 4243 4242 | Should -BeFalse }
+    It 'falla cerrado sin PID esperado (<_>)' -ForEach @(0, -1) { Test-AXEBrokerClientPid 4242 $_ | Should -BeFalse }
+    It 'rechaza un cliente que Windows no identifica (PID 0)' { Test-AXEBrokerClientPid 0 4242 | Should -BeFalse }
+}
+
 Describe 'Test-AXEBrokerTimestamp - ventana de frescura' -Tag 'unit' {
     It 'un timestamp de ahora mismo pasa' {
         $now = Get-Date
@@ -273,7 +280,8 @@ Describe 'Start-AXEBroker - servidor real sobre un pipe (mismo proceso: cliente 
 
         function New-TestPipeName { "AXE-Test-Broker-$([guid]::NewGuid().ToString('N'))" }
 
-        function Invoke-TestBroker([string]$PipeName, [string]$TokenPath){
+        # $ClientPid: por defecto ESTE proceso, que es el que conecta como cliente (Send-TestRequest).
+        function Invoke-TestBroker([string]$PipeName, [string]$TokenPath, [int]$ClientPid = $PID){
             # Corre Start-AXEBroker en un runspace de fondo para no bloquear el hilo del test
             # mientras espera la conexion del cliente.
             # NOTA (desvio deliberado respecto al brief, ver task-5-report.md): AddScript((Get-Content
@@ -294,8 +302,8 @@ Describe 'Start-AXEBroker - servidor real sobre un pipe (mismo proceso: cliente 
             $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
             $ps = [powershell]::Create(); $ps.Runspace = $rs
             foreach($f in '46-broker.ps1','05-core.ps1','28-revert-export.ps1'){ [void]$ps.AddScript(". '$PSScriptRoot/../src/$f'") }
-            [void]$ps.AddScript('param($p,$t) Start-AXEBroker $p $t')
-            [void]$ps.AddArgument($PipeName); [void]$ps.AddArgument($TokenPath)
+            [void]$ps.AddScript('param($p,$t,$c) Start-AXEBroker $p $t $c')
+            [void]$ps.AddArgument($PipeName); [void]$ps.AddArgument($TokenPath); [void]$ps.AddArgument($ClientPid)
             @{ RS=$rs; PS=$ps; Handle=$ps.BeginInvoke() }
         }
 
@@ -307,6 +315,24 @@ Describe 'Start-AXEBroker - servidor real sobre un pipe (mismo proceso: cliente 
                 Read-AXEBrokerFrame $client
             } finally { $client.Dispose() }
         }
+    }
+
+    It 'un cliente con otro PID (aunque tenga el token) se queda sin respuesta y el broker no ejecuta nada' {
+        # Simula el ataque: un proceso del mismo usuario lee el token y gana la carrera al pipe.
+        # El broker espera el PID de la UI (aqui uno que no es este proceso) y cierra sin responder.
+        $pipe = New-TestPipeName
+        $tokenPath = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N') + '.token')
+        Set-Content -LiteralPath $tokenPath -Value 'tokPid' -NoNewline
+        $bg = Invoke-TestBroker $pipe $tokenPath ($PID + 1)
+        Start-Sleep -Milliseconds 300
+        # El broker puede cerrar antes de que el cliente escriba: "pipe roto" cuenta igual que EOF.
+        $resp = $null
+        try { $resp = Send-TestRequest $pipe @{ cmd='os.format'; args=@{}; token='tokPid'; ts=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() } } catch {}
+        while(-not $bg.Handle.IsCompleted){ Start-Sleep -Milliseconds 50 }
+        $exit = $null; try { $exit = $bg.PS.EndInvoke($bg.Handle) } catch {}
+        $bg.RS.Close()
+        $resp | Should -BeNullOrEmpty
+        @($exit)[-1] | Should -Be 1
     }
 
     It 'una peticion valida (comando desconocido, sin necesitar admin real) recibe una respuesta framed' {
@@ -460,7 +486,7 @@ Describe 'CLI -Broker/-Token de extremo a extremo (dist/AXE.ps1 real, sin admin)
         $pipe = "AXE-Test-E2E-$([guid]::NewGuid().ToString('N'))"
         $tokenPath = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N') + '.token')
         Set-Content -LiteralPath $tokenPath -Value 'tokE2E' -NoNewline
-        $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-File',"`"$dist`"",'-Broker',$pipe,'-Token',"`"$tokenPath`"") -PassThru -WindowStyle Hidden
+        $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-File',"`"$dist`"",'-Broker',$pipe,'-Token',"`"$tokenPath`"",'-ClientPid',"$PID") -PassThru -WindowStyle Hidden
         Start-Sleep -Milliseconds 500
         $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe, [System.IO.Pipes.PipeDirection]::InOut)
         $client.Connect(5000)
