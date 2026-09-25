@@ -282,7 +282,12 @@ Describe 'Invoke-AXEBrokerCommand - motor de decision (sin pipe, con tweak sinte
         $script:TailRan = $false
         function Invoke-AXEMasterRevertTail { $script:TailRan = $true }
         [void](Invoke-AXEBrokerCommand 'tweaks.apply' @{ id = $script:DummyTweak.Id })
-        $r = Invoke-AXEBrokerCommand 'tweaks.masterRevert' @{}
+        # Solo el tweak sintetico: con el catalogo real, en un proceso elevado (el runner de CI lo
+        # es) masterRevert revertia ajustes REALES de la maquina que corre los tests.
+        $realCat = $script:CAT
+        $script:CAT = New-Object System.Collections.ArrayList
+        [void]$script:CAT.Add($script:DummyTweak)
+        try { $r = Invoke-AXEBrokerCommand 'tweaks.masterRevert' @{} } finally { $script:CAT = $realCat }
         $r.ok | Should -BeTrue
         $r.data.reverted | Should -BeGreaterOrEqual 1
         $script:TailRan | Should -BeTrue
@@ -310,7 +315,10 @@ Describe 'Measure-AXEFps - argumentos de PresentMon (REGRESION rutas con espacio
     }
 }
 
-Describe 'Start-AXEBroker - servidor real sobre un pipe (mismo proceso: cliente y servidor)' -Tag 'integration' {
+# -Tag ps51: el broker SOLO corre en Windows PowerShell 5.1 (Invoke-AXEPrivileged lanza powershell.exe).
+# En pwsh no existe el ctor de NamedPipeServerStream con PipeSecurity y el cliente no se llama
+# 'powershell': la CI corre este Describe en un paso aparte con shell 5.1.
+Describe 'Start-AXEBroker - servidor real sobre un pipe (mismo proceso: cliente y servidor)' -Tag 'integration','ps51' {
     # -Tag integration: aunque el pipe en si no exige admin (ACL al propio SID), lanza runspaces
     # de fondo reales y toca el sistema de ficheros de %LOCALAPPDATA%; se corre con
     # AXE_INTEGRATION=1 (mismo criterio que el resto del repo), nunca en el gate rapido local.
