@@ -75,6 +75,29 @@
         <div class="clock"><b id="clock">—</b><span id="uptime">—</span></div>
       </div>
 
+      <!-- OPTIMIZA TU PC (un clic · spec 2026-09-24) -->
+      <div class="card oneclick fade-in d1" id="ocCard">
+        <div class="oc-head">
+          <div>
+            <h3>Optimiza tu PC</h3>
+            <div class="oc-sub">mide antes, aplica con un solo aviso de Windows y mide después. Lo que cae dentro del ruido se dice.</div>
+          </div>
+          <button class="btn primary oc-go" id="ocGo" disabled><b>Optimizar</b><span id="ocGoSub">calculando…</span></button>
+        </div>
+        <div class="oc-profiles" id="ocProfiles" role="radiogroup" aria-label="Perfil de optimización">
+          <button class="oc-p" data-p="seguro" role="radio" aria-checked="false"><b>Seguro</b><span>solo cambios sin contrapartida</span><i class="oc-n">—</i></button>
+          <button class="oc-p on" data-p="equilibrado" role="radio" aria-checked="true"><b>Equilibrado</b><span>lo seguro + ajustes de latencia probados</span><i class="oc-n">—</i></button>
+          <button class="oc-p" data-p="maximo" role="radio" aria-checked="false"><b>Máximo</b><span>también los extremos · los revisas antes</span><i class="oc-n">—</i></button>
+        </div>
+        <ol class="oc-steps" id="ocSteps" hidden></ol>
+        <div class="oc-msg" id="ocMsg" hidden></div>
+        <div class="oc-result" id="ocResult" hidden></div>
+        <div class="oc-foot" id="ocFoot" hidden>
+          <button class="oc-link" id="ocReport" hidden>ver informe completo</button>
+          <button class="oc-undo" id="ocUndo" hidden>Deshacer esta optimización</button>
+        </div>
+      </div>
+
       <!-- SCORE -->
       <div class="card score fade-in d1">
         <div class="score-top">
@@ -165,7 +188,7 @@
 
       <!-- ACTIONS -->
       <div class="actions fade-in d6">
-        <button class="btn primary wide" id="btnMeasure">
+        <button class="btn wide" id="btnMeasure">
           <b>Medir ahora</b><span>timer · jitter · cobertura · reproducible</span>
         </button>
         <button class="btn" data-view="optimizar"><b>Optimizar</b><span>catálogo por tier</span></button>
@@ -445,6 +468,29 @@
       <button id="confirmNo">Cancelar</button>
       <button id="confirmYes" class="confirm-yes">Confirmar</button>
     </div>
+  </div>
+</div>
+
+<!-- Optimizar en un clic, perfil Máximo: los Tier 2 se revisan antes de aplicar -->
+<div class="sheet" id="ocSheet">
+  <div class="sheet-card">
+    <h2>Cambios extremos (Tier 2)</h2>
+    <div class="sub">Van todos marcados. Cada uno cambia algo de seguridad o de compatibilidad por rendimiento: desmarca lo que no quieras. Todo es reversible.</div>
+    <div class="oc-t2" id="ocT2List"></div>
+    <div class="sheet-close" style="gap:10px">
+      <button id="ocT2No">Cancelar</button>
+      <button id="ocT2Ok" class="confirm-yes">Aplicar selección</button>
+    </div>
+  </div>
+</div>
+
+<!-- Optimizar en un clic: informe completo del antes/después -->
+<div class="sheet" id="ocReportSheet">
+  <div class="sheet-card">
+    <h2>Informe: antes y después</h2>
+    <div class="sub">el mismo informe que Prueba y receta. Cada línea es lo que se midió en este equipo.</div>
+    <pre id="ocReportBody">—</pre>
+    <div class="sheet-close"><button id="ocReportClose">Cerrar</button></div>
   </div>
 </div>
 

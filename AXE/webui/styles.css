@@ -489,3 +489,71 @@ body{
      acompana. Se recorta el minimo, no el contenido: sigue por encima de lo que ocupa. */
   .score{min-height:360px}
 }
+
+/* ===== Optimiza tu PC: un clic (spec 2026-09-24) ===== */
+.oneclick{grid-column:span 4;display:flex;flex-direction:column;gap:14px}
+/* display:flex de los hijos anula el atributo hidden (la hoja del autor gana a la del navegador). */
+.oneclick [hidden]{display:none !important}
+.oc-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.oc-sub{color:var(--muted);font-size:12.5px;margin-top:4px;max-width:560px;line-height:1.45}
+.oc-go{min-width:190px;flex:none}
+.oc-profiles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.oc-p{position:relative;text-align:left;display:flex;flex-direction:column;gap:3px;cursor:pointer;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:11px 44px 11px 13px;
+  color:var(--fg);font:inherit;transition:border-color .15s ease,background .15s ease}
+.oc-p:hover{border-color:var(--line-2);background:var(--surface-3)}
+.oc-p b{font-size:13.5px;font-weight:600}
+.oc-p span{font-size:11.5px;color:var(--muted);line-height:1.35}
+.oc-p .oc-n{position:absolute;top:10px;right:12px;font-style:normal;font-family:var(--mono);font-size:15px;
+  font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
+.oc-p.on{border-color:var(--accent);background:var(--accent-dim)}
+.oc-p.on .oc-n{color:var(--accent)}
+.oc-p[disabled]{cursor:not-allowed;opacity:.65}
+.oc-p[disabled]:hover{border-color:var(--line);background:var(--surface-2)}
+.oc-p.on[disabled]:hover{border-color:var(--accent);background:var(--accent-dim)}
+.oc-steps{margin:0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12.5px}
+.oc-steps li{color:var(--faint);display:flex;align-items:center;gap:7px}
+.oc-steps li::before{content:"";width:8px;height:8px;border-radius:50%;border:1.5px solid currentColor}
+.oc-steps li.done{color:var(--muted)}
+.oc-steps li.done::before{background:var(--green);border-color:var(--green)}
+.oc-steps li.now{color:var(--fg)}
+.oc-steps li.now::before{background:var(--accent);border-color:var(--accent);animation:ocPulse 1.2s ease-in-out infinite}
+@keyframes ocPulse{50%{opacity:.35}}
+.oc-msg{font-size:12.5px;line-height:1.45;padding:9px 12px;border-radius:var(--r-sm);border:1px solid var(--line);
+  background:var(--surface-2);color:var(--fg)}
+.oc-msg.ok{border-color:rgba(95,175,141,.45)}
+.oc-msg.warn{border-color:rgba(224,163,46,.5)}
+.oc-msg.err{border-color:rgba(217,96,90,.55)}
+.oc-result{display:flex;flex-direction:column;gap:6px}
+.oc-applied{font-size:12.5px;color:var(--fg);font-weight:600}
+.oc-fail{font-family:var(--mono);font-size:11.5px;color:var(--red)}
+.oc-warn{font-size:12px;color:var(--amber)}
+.oc-row{display:grid;grid-template-columns:minmax(120px,1fr) auto auto;gap:12px;align-items:center;font-size:12.5px;
+  padding:6px 10px;border-radius:8px;background:var(--surface-2)}
+.oc-l{color:var(--muted)}
+.oc-v{font-family:var(--mono);color:var(--fg);font-variant-numeric:tabular-nums}
+.oc-tag{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);cursor:help}
+.oc-tag.ok{color:var(--green);border-color:rgba(95,175,141,.45)}
+.oc-tag.bad{color:var(--red);border-color:rgba(217,96,90,.5)}
+.oc-foot{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.oc-link{background:none;border:0;padding:0;color:var(--accent);font-family:var(--mono);font-size:11.5px;cursor:pointer}
+.oc-undo{background:var(--surface-2);border:1px solid rgba(217,96,90,.35);color:var(--red);border-radius:var(--r-sm);
+  padding:8px 14px;font:inherit;font-size:12.5px;cursor:pointer;margin-left:auto}
+.oc-undo:hover{background:var(--surface-3)}
+.oc-undo[disabled]{opacity:.6;cursor:not-allowed}
+.oc-t2{display:flex;flex-direction:column;gap:8px;max-height:48vh;overflow:auto;margin-bottom:4px}
+.oc-t2-item{display:flex;gap:10px;align-items:flex-start;padding:9px 11px;border:1px solid var(--line);
+  border-radius:var(--r-sm);background:var(--surface-2);cursor:pointer}
+.oc-t2-item input{margin-top:3px;accent-color:var(--accent)}
+.oc-t2-txt{display:flex;flex-direction:column;gap:2px}
+.oc-t2-txt b{font-size:12.5px;color:var(--fg);font-weight:600}
+.oc-t2-txt span{font-size:11.5px;color:var(--muted);line-height:1.4}
+@media (prefers-reduced-motion:reduce){ .oc-steps li.now::before{animation:none} }
+/* Cortes de la tarjeta DESPUES de su regla base: con la misma especificidad gana la ultima. */
+@media (max-width:1180px){ .oneclick{grid-column:span 2} }
+@media (max-width:760px){
+  .oneclick{grid-column:span 1}
+  .oc-head{flex-wrap:wrap}
+  .oc-go{width:100%}
+  .oc-profiles{grid-template-columns:1fr}
+}

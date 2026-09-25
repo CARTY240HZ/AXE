@@ -3,6 +3,24 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y [Versionado Semántico](https://semver.org/lang/es/).
 
+## [Sin publicar]
+
+### Añadido
+- **Optimiza tu PC en un clic** (spec `2026-09-24`, `src/26-oneclick.ps1`, broker
+  `tweaks.applyBatch/revertBatch`, puente `optimize.*`, tarjeta en el Panel). Tres perfiles
+  —Seguro (T0), Equilibrado (T0+T1), Máximo (+T2, revisables uno a uno antes de aplicar)— con el
+  número REAL de cambios pendientes en este equipo. Un clic mide antes (`bench.baseline`), aplica
+  el lote con **un solo UAC** y un punto de restauración dentro, y mide después; si algún cambio
+  pide reinicio, la medida del después se hace sola al volver a abrir AXE. El resultado usa las
+  etiquetas del motor (mejora real / dentro del ruido / empeora) y **Deshacer esta optimización**
+  revierte solo lo que aplicó ese clic. Los ids aplicados se guardan antes de medir, así que
+  deshacer funciona aunque la medida falle. «Medir ahora» pasa a acción secundaria.
+
+### Seguridad
+- **El broker solo acepta como cliente el PID exacto de la UI que lo lanzó** (`src/46-broker.ps1`).
+  Antes bastaba con que el cliente del pipe se llamara `powershell`: un proceso del mismo usuario
+  podía leer el token y ganar la carrera al pipe.
+
 ## [1.0.0] — 2026-09-25
 
 ### Añadido
