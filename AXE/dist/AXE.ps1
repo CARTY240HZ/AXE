@@ -1,7 +1,7 @@
 ﻿# ================================================================
 # AXE 1.0.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-25 07:42:22Z
-# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 48a-websecurity.ps1, 49-webmain.ps1
+# Build UTC: 2026-09-25 08:22:07Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 26-oneclick.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 48a-websecurity.ps1, 49-webmain.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
@@ -1528,6 +1528,45 @@ function Invoke-AXEAssistant($q){
     return "Temas: que aplico, input lag, fps, red, seguridad, portatil, ram, extremo, servicios, limpieza, debloat, startup."
 }
 
+
+
+# >>>>> MODULE: 26-oneclick.ps1 >>>>>
+# =====================================================
+# REGION 9c - OPTIMIZAR EN UN CLIC (spec 2026-09-24)
+# =====================================================
+# Que queda por aplicar, por tier, en ESTE equipo, y el registro de la ultima optimizacion (ids
+# aplicados + id del benchmark 'antes') que sobrevive al reinicio. La orquestacion (medir, aplicar
+# en lote por el broker, medir) la hace la UI con comandos existentes; aqui no se aplica nada.
+
+function Get-AXEOneClickPending {
+    # Una sola pasada por el catalogo; los tres perfiles salen de aqui (seguro=t0,
+    # equilibrado=t0+t1, maximo=+t2). Ilegible sin admin (BCD) cuenta como pendiente: aplicar
+    # es idempotente y no se puede saber si ya lo esta.
+    param([object[]]$Catalog = $script:CAT)
+    $out = @{ t0 = New-Object System.Collections.ArrayList; t1 = New-Object System.Collections.ArrayList; t2 = New-Object System.Collections.ArrayList }
+    foreach($tw in @($Catalog)){
+        if(-not $tw -or [int]$tw.Tier -notin 0,1,2){ continue }
+        try { if(Get-BlockReason $tw){ continue } } catch { continue }
+        if(-not (Test-AXETweakUnreadable $tw) -and (Test-TweakSafe $tw)){ continue }
+        [void]$out["t$([int]$tw.Tier)"].Add([pscustomobject]@{ id=[string]$tw.Id; name=[string]$tw.Name; desc=[string]$tw.Desc; reboot=[bool]$tw.Reboot })
+    }
+    [pscustomobject]@{ t0=@($out.t0); t1=@($out.t1); t2=@($out.t2) }
+}
+
+function Get-AXEOneClickStatePath { Join-Path $script:AXEData 'oneclick_last.json' }
+
+function Save-AXEOneClickState($State){
+    $State | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Get-AXEOneClickStatePath) -Encoding UTF8
+}
+
+function Read-AXEOneClickState {
+    # $null = no hay optimizacion registrada; corrupt=$true = la habia pero no se puede leer (la UI
+    # lo dice en vez de fingir que no paso nada).
+    $p = Get-AXEOneClickStatePath
+    if(-not (Test-Path -LiteralPath $p)){ return $null }
+    try { Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json -EA Stop }
+    catch { [pscustomobject]@{ corrupt=$true } }
+}
 
 
 # >>>>> MODULE: 28-revert-export.ps1 >>>>>
@@ -4007,13 +4046,29 @@ function Get-AXEWebView2Runtime {
 function Get-AXEWebUIManifest([string]$Dir){
     # Recorre $Dir y devuelve ruta-relativa (con / , no \) -> SHA256 en mayusculas. Mismo
     # algoritmo tanto al incrustar (build.ps1) como al comprobar en runtime.
+    #   Los ficheros de TEXTO se hashean con los finales de linea normalizados (CRLF -> LF). Git los
+    # entrega con CRLF o LF segun core.autocrlf de cada maquina: hasheando los bytes crudos, el mismo
+    # commit daba un manifiesto distinto en local y en la CI, y el anti-deriva rechazaba el dist.
+    # Cambiar solo finales de linea no altera lo que ejecuta la WebView2, asi que no es una
+    # manipulacion que haya que detectar.
     $out = @{}
     if(-not (Test-Path $Dir)){ return $out }
     $base = (Resolve-Path $Dir).Path
-    Get-ChildItem -Path $Dir -Recurse -File | Sort-Object FullName | ForEach-Object {
-        $rel = $_.FullName.Substring($base.Length).TrimStart('\','/') -replace '\\','/'
-        $out[$rel] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
-    }
+    $text = '.js','.css','.html','.htm','.json','.svg','.txt','.md'
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        Get-ChildItem -Path $Dir -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $rel = $_.FullName.Substring($base.Length).TrimStart('\','/') -replace '\\','/'
+            $bytes = [IO.File]::ReadAllBytes($_.FullName)
+            if($text -contains $_.Extension.ToLowerInvariant()){
+                # UTF-8 ida y vuelta: sin perdida para UTF-8 valido (el BOM viaja como U+FEFF) y rapido;
+                # un bucle byte a byte en PowerShell retrasaba el arranque de la ventana.
+                $utf8 = New-Object Text.UTF8Encoding $false
+                $bytes = $utf8.GetBytes($utf8.GetString($bytes).Replace("`r`n", "`n"))
+            }
+            $out[$rel] = ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-','')
+        }
+    } finally { $sha.Dispose() }
     $out
 }
 
@@ -4030,7 +4085,7 @@ function Test-AXEWebUIIntegrity([hashtable]$Expected, [hashtable]$Actual){
 # Sustituido por build.ps1 con la tabla literal real (mismo mecanismo que $script:AXEVersion en
 # 00-header.ps1). $null en el fallback: correr src/ suelto sin build (dev/tests) desactiva la
 # comprobacion en vez de rechazar ficheros validos sin manifiesto que compararlos.
-$script:AXEWebUIManifest = @{'app.js'='98E245FF98CD7608AFC4CB3BC5A585FB64A37749936142D111A53057C5A8FC77';'bridge.js'='0742DB9CEB13D1147BB3CA48D4994251290A6771CA4F2801E67C65D0B2D97AE2';'index.html'='F70AA83081622158F214B2A6AF97B42BC0833BCA8FCA94DC0E09DC078B608E63';'styles.css'='C2C06EDD48F2257C546AD87AE15D0E1A916232FCF6D0040CD2893C5F60B03592'}
+$script:AXEWebUIManifest = @{'app.js'='FD5266ABF2BB3587A4ED4C0D856C656E7755C55D78D41BAFAE47884C41827F03';'bridge.js'='43EDCC179CBEA0F058A210056DE94EE55DE4F97920C8AB7CDA14E13A8A5A77E7';'index.html'='7BEA4669FFC596AF3A7AFDE57C5314490711DCF3200409C55D0D2745FAC40A3D';'styles.css'='C712B9856F80E9ECDA203CAAF61BA714FFE3285BCFC4859F320456DD780518D4'}
 if($script:AXEWebUIManifest -like '*__AXE_WEBUI_MANIFEST__*'){ $script:AXEWebUIManifest = $null }
 
 
@@ -7505,7 +7560,8 @@ if($Session){
 
 # fps.capture: PresentMon abre una sesion ETW, que exige admin; desde que la UI no corre elevada
 # (issue #5) la captura fallaba siempre. Su unico dato libre se valida en Invoke-AXEBrokerCommand.
-$script:AXEBrokerCommands  = @('tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint','fps.capture')
+# applyBatch/revertBatch: Optimizar en un clic, N tweaks con UN UAC (spec 2026-09-24).
+$script:AXEBrokerCommands  = @('tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint','fps.capture','tweaks.applyBatch','tweaks.revertBatch')
 $script:AXEBrokerMaxBytes  = 65536   # 64 KB: tope de tamano del mensaje
 $script:AXEBrokerMaxDepth  = 8       # tope de profundidad JSON
 $script:AXEBrokerMaxSkewSec = 5      # ventana de frescura del timestamp
@@ -7627,8 +7683,48 @@ function Read-AXEBrokerRequest([string]$Json, [string]$ExpectedToken){
     }
 }
 
+function Test-AXEBrokerIds($Raw){
+    # Lote de ids del front: devuelve string[] valido o un string con el motivo. @() normaliza el id
+    # unico que PS 5.1 entrega como string al deserializar un array JSON de un elemento. Se valida
+    # el lote ENTERO antes de tocar nada: un id malo no aplica "la mitad".
+    $ids = @($Raw)
+    if($ids.Count -lt 1 -or $ids.Count -gt @($script:CAT).Count){ return 'lote vacio o demasiado grande' }
+    foreach($i in $ids){ if($i -isnot [string] -or $i -notmatch '^[A-Za-z0-9_]{1,48}$'){ return 'id invalido en el lote' } }
+    if(@($ids | Select-Object -Unique).Count -ne $ids.Count){ return 'ids duplicados en el lote' }
+    $known = @($script:CAT | ForEach-Object { [string]$_.Id })
+    foreach($i in $ids){ if($known -cnotcontains $i){ return "tweak desconocido: $i" } }
+    ,[string[]]$ids
+}
+
+function Initialize-AXEBrokerHW {
+    # El proceso broker sale en 49-webmain sin haber detectado hardware, y Get-BlockReason con
+    # $script:HW vacio devuelve $null = "aplicable": sin esto la revalidacion no bloqueaba nada.
+    if(-not $script:HW){ try { $script:HW = Get-AXEHardware } catch {} }
+    [bool]$script:HW
+}
+
+function Invoke-AXEBrokerApplyOne($tw){
+    # Protocolo de snapshot de siempre (capTweak -> Apply -> Commit-TweakState). Nunca lanza: un
+    # tweak roto se reporta y el lote sigue.
+    try {
+        $blk = Get-BlockReason $tw
+        if($blk){ return @{ id=$tw.Id; ok=$false; applied=$false; reboot=[bool]$tw.Reboot; err="no aplicable en este equipo: $blk" } }
+        if(Test-SnapEligible $tw){ $script:capTweak = $tw.Id }
+        try { & $tw.Apply } finally { $script:capTweak = $null }
+        Commit-TweakState $tw.Id
+        @{ id=$tw.Id; ok=$true; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot; err=$null }
+    } catch { @{ id=$tw.Id; ok=$false; applied=$false; reboot=[bool]$tw.Reboot; err=$_.Exception.Message } }
+}
+
+function Invoke-AXEBrokerRevertOne($tw){
+    try {
+        if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
+        @{ id=$tw.Id; ok=$true; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot; err=$null }
+    } catch { @{ id=$tw.Id; ok=$false; applied=$true; reboot=[bool]$tw.Reboot; err=$_.Exception.Message } }
+}
+
 function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
-    # Motor de decision del broker: los 5 unicos comandos que puede ejecutar, usando EXACTAMENTE
+    # Motor de decision del broker: los 7 unicos comandos que puede ejecutar, usando EXACTAMENTE
     # el mismo protocolo de snapshot ya arreglado en el bridge (auditoria 2026-09-22 s1.1) --
     # $script:CAT/Get-BlockReason/Test-SnapEligible/Commit-TweakState/Restore-TweakState son las
     # funciones REALES del motor, no una copia. Nunca lanza hacia fuera: cualquier excepcion se
@@ -7638,24 +7734,36 @@ function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
             'tweaks.apply' {
                 $tw = $script:CAT | Where-Object Id -eq ([string]$A.id) | Select-Object -First 1
                 if(-not $tw){ return @{ ok=$false; data=$null; err="tweak desconocido: $($A.id)" } }
-                # El proceso broker sale en 49-webmain sin haber detectado hardware, y Get-BlockReason
-                # con $script:HW vacio devuelve $null = "aplicable": la revalidacion no bloqueaba
-                # nada (un tweak solo-torre se aplicaba en portatil). Se detecta aqui; si no se puede,
-                # NO se aplica a ciegas. revert/masterRevert no lo necesitan: deshacer siempre vale.
-                if(-not $script:HW){ try { $script:HW = Get-AXEHardware } catch {} }
-                if(-not $script:HW){ return @{ ok=$false; data=$null; err='no pude detectar el hardware: no aplico a ciegas' } }
-                $blk = Get-BlockReason $tw
-                if($blk){ return @{ ok=$false; data=$null; err="no aplicable en este equipo: $blk" } }
-                if(Test-SnapEligible $tw){ $script:capTweak = $tw.Id }
-                try { & $tw.Apply } finally { $script:capTweak = $null }
-                Commit-TweakState $tw.Id
-                @{ ok=$true; data=@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }; err=$null }
+                # Sin hardware detectable NO se aplica a ciegas. revert/masterRevert no lo necesitan:
+                # deshacer siempre vale.
+                if(-not (Initialize-AXEBrokerHW)){ return @{ ok=$false; data=$null; err='no pude detectar el hardware: no aplico a ciegas' } }
+                $r = Invoke-AXEBrokerApplyOne $tw
+                if(-not $r.ok){ return @{ ok=$false; data=$null; err=$r.err } }
+                @{ ok=$true; data=@{ id=$r.id; applied=$r.applied; reboot=$r.reboot }; err=$null }
             }
             'tweaks.revert' {
                 $tw = $script:CAT | Where-Object Id -eq ([string]$A.id) | Select-Object -First 1
                 if(-not $tw){ return @{ ok=$false; data=$null; err="tweak desconocido: $($A.id)" } }
-                if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
-                @{ ok=$true; data=@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }; err=$null }
+                $r = Invoke-AXEBrokerRevertOne $tw
+                if(-not $r.ok){ return @{ ok=$false; data=$null; err=$r.err } }
+                @{ ok=$true; data=@{ id=$r.id; applied=$r.applied; reboot=$r.reboot }; err=$null }
+            }
+            'tweaks.applyBatch' {
+                $ids = Test-AXEBrokerIds $A.ids
+                if($ids -is [string]){ return @{ ok=$false; data=$null; err=$ids } }
+                if(-not (Initialize-AXEBrokerHW)){ return @{ ok=$false; data=$null; err='no pude detectar el hardware: no aplico a ciegas' } }
+                # Checkpoint del sistema ANTES del lote, dentro del mismo UAC. Best-effort: si falla
+                # (SR desactivado, anticheat, limite de 24 h) el lote sigue con snapshots + .reg.
+                $rp = New-AXERestorePoint 'AXE: antes de Optimizar en un clic'
+                # Orden del CATALOGO, no el recibido: determinista.
+                $res = @($script:CAT | Where-Object { $ids -ccontains [string]$_.Id } | ForEach-Object { Invoke-AXEBrokerApplyOne $_ })
+                @{ ok=$true; data=@{ results=$res; restorePoint=@{ status=[string]$rp.Status; message=[string]$rp.Message } }; err=$null }
+            }
+            'tweaks.revertBatch' {
+                $ids = Test-AXEBrokerIds $A.ids
+                if($ids -is [string]){ return @{ ok=$false; data=$null; err=$ids } }
+                $res = @($script:CAT | Where-Object { $ids -ccontains [string]$_.Id } | ForEach-Object { Invoke-AXEBrokerRevertOne $_ })
+                @{ ok=$true; data=@{ results=$res }; err=$null }
             }
             'tweaks.masterRevert' {
                 $done = 0; $err = 0
@@ -8173,6 +8281,31 @@ $script:AXEBridgeMap = @{
             }
         })
     }
+    # --- Optimizar en un clic (26-oneclick, spec 2026-09-24) ---
+    # plan: lo pendiente por tier en ESTE equipo (lee el estado de cada tweak: worker). pending: la
+    # ultima optimizacion si aun falta medir el 'despues' (null si ya se enseno; corrupt si no se
+    # puede leer). save: escribe ese registro. Nada de esto aplica un tweak: eso va por el broker.
+    'optimize.plan'    = { param($a) Get-AXEOneClickPending }
+    'optimize.pending' = { param($a)
+        $s = Read-AXEOneClickState
+        if($s -and -not $s.corrupt -and $s.done){ return $null }
+        $s
+    }
+    'optimize.save'    = { param($a)
+        if([string]$a.profile -cnotin 'seguro','equilibrado','maximo'){ throw "perfil desconocido: $($a.profile)" }
+        # @(): PS 5.1 entrega un array JSON de UN elemento como string suelto.
+        $ids = @(@($a.applied) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+        $known = @($script:CAT | ForEach-Object { [string]$_.Id })
+        foreach($i in $ids){ if($known -cnotcontains $i){ throw "id desconocido: $i" } }
+        $bench = [string]$a.benchId
+        if($bench.Length -gt 64){ throw 'benchId demasiado largo' }
+        Save-AXEOneClickState ([pscustomobject]@{
+            ts=(Get-Date).ToUniversalTime().ToString('u'); profile=[string]$a.profile; benchId=$bench
+            applied=[string[]]$ids; rebootNeeded=[bool]$a.rebootNeeded; done=[bool]$a.done
+        })
+        $true
+    }
+
     # --- Fase 7: Telemetria / Prueba / Seguridad ---
     # Todo re-empaqueta funciones YA EXISTENTES del motor (32/33/34/35/36). El front pinta las
     # 'lines' del motor TAL CUAL (mismo texto que la CLI): la honestidad vive en el motor, no aqui.
@@ -8485,7 +8618,8 @@ function Invoke-AXEBridgeCmd {
 # Se quedan en el hilo de UI: lo instantaneo (app.info, hw.get, catalog.tiers) y session.* (su
 # estado -job, timers- vive en ESTE proceso).
 $script:AXEBridgeWorkerCmds = @('measure.score','measure.timerSweep','tweaks.list','net.probe',
-    'diag.get','prueba.baseline','prueba.report','bench.baseline','bench.after','advisor.get')
+    'diag.get','prueba.baseline','prueba.report','bench.baseline','bench.after','advisor.get',
+    'optimize.plan','optimize.pending','optimize.save')
 $script:AXEBridgeWorker = $null
 
 function Start-AXEBridgeWorker([string]$DistPath = $PSCommandPath){

@@ -17,7 +17,8 @@
 
 # fps.capture: PresentMon abre una sesion ETW, que exige admin; desde que la UI no corre elevada
 # (issue #5) la captura fallaba siempre. Su unico dato libre se valida en Invoke-AXEBrokerCommand.
-$script:AXEBrokerCommands  = @('tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint','fps.capture')
+# applyBatch/revertBatch: Optimizar en un clic, N tweaks con UN UAC (spec 2026-09-24).
+$script:AXEBrokerCommands  = @('tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint','fps.capture','tweaks.applyBatch','tweaks.revertBatch')
 $script:AXEBrokerMaxBytes  = 65536   # 64 KB: tope de tamano del mensaje
 $script:AXEBrokerMaxDepth  = 8       # tope de profundidad JSON
 $script:AXEBrokerMaxSkewSec = 5      # ventana de frescura del timestamp
@@ -139,8 +140,48 @@ function Read-AXEBrokerRequest([string]$Json, [string]$ExpectedToken){
     }
 }
 
+function Test-AXEBrokerIds($Raw){
+    # Lote de ids del front: devuelve string[] valido o un string con el motivo. @() normaliza el id
+    # unico que PS 5.1 entrega como string al deserializar un array JSON de un elemento. Se valida
+    # el lote ENTERO antes de tocar nada: un id malo no aplica "la mitad".
+    $ids = @($Raw)
+    if($ids.Count -lt 1 -or $ids.Count -gt @($script:CAT).Count){ return 'lote vacio o demasiado grande' }
+    foreach($i in $ids){ if($i -isnot [string] -or $i -notmatch '^[A-Za-z0-9_]{1,48}$'){ return 'id invalido en el lote' } }
+    if(@($ids | Select-Object -Unique).Count -ne $ids.Count){ return 'ids duplicados en el lote' }
+    $known = @($script:CAT | ForEach-Object { [string]$_.Id })
+    foreach($i in $ids){ if($known -cnotcontains $i){ return "tweak desconocido: $i" } }
+    ,[string[]]$ids
+}
+
+function Initialize-AXEBrokerHW {
+    # El proceso broker sale en 49-webmain sin haber detectado hardware, y Get-BlockReason con
+    # $script:HW vacio devuelve $null = "aplicable": sin esto la revalidacion no bloqueaba nada.
+    if(-not $script:HW){ try { $script:HW = Get-AXEHardware } catch {} }
+    [bool]$script:HW
+}
+
+function Invoke-AXEBrokerApplyOne($tw){
+    # Protocolo de snapshot de siempre (capTweak -> Apply -> Commit-TweakState). Nunca lanza: un
+    # tweak roto se reporta y el lote sigue.
+    try {
+        $blk = Get-BlockReason $tw
+        if($blk){ return @{ id=$tw.Id; ok=$false; applied=$false; reboot=[bool]$tw.Reboot; err="no aplicable en este equipo: $blk" } }
+        if(Test-SnapEligible $tw){ $script:capTweak = $tw.Id }
+        try { & $tw.Apply } finally { $script:capTweak = $null }
+        Commit-TweakState $tw.Id
+        @{ id=$tw.Id; ok=$true; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot; err=$null }
+    } catch { @{ id=$tw.Id; ok=$false; applied=$false; reboot=[bool]$tw.Reboot; err=$_.Exception.Message } }
+}
+
+function Invoke-AXEBrokerRevertOne($tw){
+    try {
+        if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
+        @{ id=$tw.Id; ok=$true; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot; err=$null }
+    } catch { @{ id=$tw.Id; ok=$false; applied=$true; reboot=[bool]$tw.Reboot; err=$_.Exception.Message } }
+}
+
 function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
-    # Motor de decision del broker: los 5 unicos comandos que puede ejecutar, usando EXACTAMENTE
+    # Motor de decision del broker: los 7 unicos comandos que puede ejecutar, usando EXACTAMENTE
     # el mismo protocolo de snapshot ya arreglado en el bridge (auditoria 2026-09-22 s1.1) --
     # $script:CAT/Get-BlockReason/Test-SnapEligible/Commit-TweakState/Restore-TweakState son las
     # funciones REALES del motor, no una copia. Nunca lanza hacia fuera: cualquier excepcion se
@@ -150,24 +191,36 @@ function Invoke-AXEBrokerCommand([string]$Cmd, [hashtable]$A){
             'tweaks.apply' {
                 $tw = $script:CAT | Where-Object Id -eq ([string]$A.id) | Select-Object -First 1
                 if(-not $tw){ return @{ ok=$false; data=$null; err="tweak desconocido: $($A.id)" } }
-                # El proceso broker sale en 49-webmain sin haber detectado hardware, y Get-BlockReason
-                # con $script:HW vacio devuelve $null = "aplicable": la revalidacion no bloqueaba
-                # nada (un tweak solo-torre se aplicaba en portatil). Se detecta aqui; si no se puede,
-                # NO se aplica a ciegas. revert/masterRevert no lo necesitan: deshacer siempre vale.
-                if(-not $script:HW){ try { $script:HW = Get-AXEHardware } catch {} }
-                if(-not $script:HW){ return @{ ok=$false; data=$null; err='no pude detectar el hardware: no aplico a ciegas' } }
-                $blk = Get-BlockReason $tw
-                if($blk){ return @{ ok=$false; data=$null; err="no aplicable en este equipo: $blk" } }
-                if(Test-SnapEligible $tw){ $script:capTweak = $tw.Id }
-                try { & $tw.Apply } finally { $script:capTweak = $null }
-                Commit-TweakState $tw.Id
-                @{ ok=$true; data=@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }; err=$null }
+                # Sin hardware detectable NO se aplica a ciegas. revert/masterRevert no lo necesitan:
+                # deshacer siempre vale.
+                if(-not (Initialize-AXEBrokerHW)){ return @{ ok=$false; data=$null; err='no pude detectar el hardware: no aplico a ciegas' } }
+                $r = Invoke-AXEBrokerApplyOne $tw
+                if(-not $r.ok){ return @{ ok=$false; data=$null; err=$r.err } }
+                @{ ok=$true; data=@{ id=$r.id; applied=$r.applied; reboot=$r.reboot }; err=$null }
             }
             'tweaks.revert' {
                 $tw = $script:CAT | Where-Object Id -eq ([string]$A.id) | Select-Object -First 1
                 if(-not $tw){ return @{ ok=$false; data=$null; err="tweak desconocido: $($A.id)" } }
-                if(-not ((Test-SnapEligible $tw) -and (Restore-TweakState $tw.Id))){ & $tw.Revert }
-                @{ ok=$true; data=@{ id=$tw.Id; applied=[bool](Test-TweakSafe $tw); reboot=[bool]$tw.Reboot }; err=$null }
+                $r = Invoke-AXEBrokerRevertOne $tw
+                if(-not $r.ok){ return @{ ok=$false; data=$null; err=$r.err } }
+                @{ ok=$true; data=@{ id=$r.id; applied=$r.applied; reboot=$r.reboot }; err=$null }
+            }
+            'tweaks.applyBatch' {
+                $ids = Test-AXEBrokerIds $A.ids
+                if($ids -is [string]){ return @{ ok=$false; data=$null; err=$ids } }
+                if(-not (Initialize-AXEBrokerHW)){ return @{ ok=$false; data=$null; err='no pude detectar el hardware: no aplico a ciegas' } }
+                # Checkpoint del sistema ANTES del lote, dentro del mismo UAC. Best-effort: si falla
+                # (SR desactivado, anticheat, limite de 24 h) el lote sigue con snapshots + .reg.
+                $rp = New-AXERestorePoint 'AXE: antes de Optimizar en un clic'
+                # Orden del CATALOGO, no el recibido: determinista.
+                $res = @($script:CAT | Where-Object { $ids -ccontains [string]$_.Id } | ForEach-Object { Invoke-AXEBrokerApplyOne $_ })
+                @{ ok=$true; data=@{ results=$res; restorePoint=@{ status=[string]$rp.Status; message=[string]$rp.Message } }; err=$null }
+            }
+            'tweaks.revertBatch' {
+                $ids = Test-AXEBrokerIds $A.ids
+                if($ids -is [string]){ return @{ ok=$false; data=$null; err=$ids } }
+                $res = @($script:CAT | Where-Object { $ids -ccontains [string]$_.Id } | ForEach-Object { Invoke-AXEBrokerRevertOne $_ })
+                @{ ok=$true; data=@{ results=$res }; err=$null }
             }
             'tweaks.masterRevert' {
                 $done = 0; $err = 0

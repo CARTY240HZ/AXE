@@ -450,6 +450,226 @@
     } finally { btn.disabled = false; }
   });
 
+  // ---------- Optimiza tu PC: un clic (spec 2026-09-24) ----------
+  // La orquesta el front con comandos que ya existen: bench.baseline → tweaks.applyBatch (broker,
+  // UN UAC, punto de restauración dentro) → optimize.save → bench.after, o reinicio y medir al
+  // volver. Los ids aplicados se guardan ANTES de medir el después: pase lo que pase con la
+  // medida, «Deshacer» sabe qué deshacer.
+  const OC = { profile: 'equilibrado', plan: null, busy: false, last: null };
+  const ocArr = (x) => (Array.isArray(x) ? x : (x == null ? [] : [x]));   // PS 5.1: array de 1 = objeto suelto
+  const OC_TAG = { mejor: ['mejora real', 'ok'], peor: ['empeora', 'bad'], ruido: ['dentro del ruido', 'unk'] };
+
+  function ocProfileItems(p) {
+    const pl = OC.plan || {};
+    const base = ocArr(pl.t0).concat(p === 'seguro' ? [] : ocArr(pl.t1));
+    return { base: base, t2: p === 'maximo' ? ocArr(pl.t2) : [] };
+  }
+  function ocLock(on) {
+    OC.busy = on;
+    document.querySelectorAll('#ocProfiles .oc-p').forEach((b) => { b.disabled = on; });
+    $('ocUndo').disabled = on;
+    ocRenderGo();
+  }
+  function ocRenderGo() {
+    const go = $('ocGo'), sub = $('ocGoSub');
+    if (!OC.plan) { go.disabled = true; return; }
+    const it = ocProfileItems(OC.profile), n = it.base.length + it.t2.length;
+    go.disabled = OC.busy;
+    go.classList.toggle('busy', OC.busy);
+    sub.textContent = OC.busy ? 'en curso…' : (n ? n + (n === 1 ? ' cambio pendiente' : ' cambios pendientes') : 'nada pendiente');
+  }
+  function ocRenderPlan() {
+    document.querySelectorAll('#ocProfiles .oc-p').forEach((b) => {
+      const it = ocProfileItems(b.dataset.p), n = it.base.length + it.t2.length;
+      b.querySelector('.oc-n').textContent = OC.plan ? String(n) : '—';
+      const on = b.dataset.p === OC.profile;
+      b.classList.toggle('on', on); b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    ocRenderGo();
+  }
+  function ocLoadPlan() {
+    return AXE.call('optimize.plan', {}).then((p) => { OC.plan = p || { t0: [], t1: [], t2: [] }; ocRenderPlan(); })
+      .catch((e) => { OC.plan = null; $('ocGoSub').textContent = 'no disponible'; ocMsg('No pude calcular qué falta por aplicar: ' + e.message, 'err'); });
+  }
+  function ocMsg(text, kind) { const m = $('ocMsg'); m.hidden = !text; m.className = 'oc-msg' + (kind ? ' ' + kind : ''); m.textContent = text || ''; }
+  function ocSteps(labels, current, detail) {
+    const host = $('ocSteps'); host.textContent = '';
+    host.hidden = !labels;
+    (labels || []).forEach((l, i) => {
+      const li = elt('li', i < current ? 'done' : (i === current ? 'now' : ''), (i === current && detail) ? detail : l);
+      host.appendChild(li);
+    });
+  }
+  function ocClearResult() { $('ocResult').hidden = true; $('ocResult').textContent = ''; $('ocReport').hidden = true; ocRenderUndo(); }
+  function ocRenderUndo() {
+    const ids = OC.last ? ocArr(OC.last.ids) : [];
+    $('ocUndo').hidden = !ids.length;
+    $('ocUndo').textContent = 'Deshacer esta optimización' + (ids.length ? ' (' + ids.length + ')' : '');
+    $('ocFoot').hidden = $('ocUndo').hidden && $('ocReport').hidden;
+  }
+  function ocSave(extra) {
+    const l = OC.last || {};
+    return AXE.call('optimize.save', Object.assign({ profile: l.profile, benchId: l.benchId || '', applied: ocArr(l.ids), rebootNeeded: false, done: false }, extra));
+  }
+  function ocRefreshCatalog() { if (loaded.optimizar) AXE.call('tweaks.list', {}).then((l) => renderCatalog(Array.isArray(l) ? l : [])).catch(() => {}); }
+
+  // Qué se aplicó, qué falló y por qué, y el punto de restauración si no se pudo crear.
+  function ocRenderApplied(results, rp) {
+    const box = $('ocResult'); box.hidden = false;
+    const ok = results.filter((r) => r.ok), bad = results.filter((r) => !r.ok);
+    box.appendChild(elt('div', 'oc-applied', ok.length + (ok.length === 1 ? ' cambio aplicado' : ' cambios aplicados') + (bad.length ? ' · ' + bad.length + ' no se pudieron aplicar' : '')));
+    bad.forEach((r) => box.appendChild(elt('div', 'oc-fail', r.id + ': ' + (r.err || 'error desconocido'))));
+    if (rp && rp.status && rp.status !== 'ok') box.appendChild(elt('div', 'oc-warn', 'Punto de restauración: ' + (rp.message || 'no se pudo crear') + '. Cada cambio sigue siendo reversible uno a uno.'));
+  }
+  function ocFmt(v) { return (v == null || isNaN(Number(v))) ? '—' : Number(v).toLocaleString('es-ES', { maximumFractionDigits: 3 }); }
+  function ocRenderVerdict(r) {
+    const box = $('ocResult'); box.hidden = false;
+    const rows = ocArr(r && r.verdict);
+    if (!rows.length) box.appendChild(elt('div', 'oc-warn', 'La medida no dio métricas comparables.'));
+    rows.forEach((v) => {
+      const t = OC_TAG[v.tag] || [v.tag || '?', 'unk'];
+      const row = elt('div', 'oc-row ' + t[1]);
+      row.appendChild(elt('span', 'oc-l', v.label || v.key));
+      row.appendChild(elt('span', 'oc-v', ocFmt(v.before) + ' → ' + ocFmt(v.after) + (v.unit ? ' ' + v.unit : '')));
+      const tag = elt('span', 'oc-tag ' + t[1], t[0]); tag.title = v.reason || ''; row.appendChild(tag);
+      box.appendChild(row);
+    });
+    const lines = ocArr(r && r.lines);
+    $('ocReportBody').textContent = lines.join('\n') || '—';
+    $('ocReport').hidden = !lines.length;
+    ocRenderUndo();
+  }
+
+  async function ocMeasureAfter(benchId) {
+    try {
+      const r = await AXE.call('bench.after', { id: benchId }, 180000);
+      ocSteps(null); ocRenderVerdict(r);
+      ocMsg('Hecho. Esto es lo que ha cambiado en este equipo, medido antes y después.', 'ok');
+    } catch (e) {
+      ocSteps(null);
+      ocMsg('Los cambios están aplicados, pero no pude medir el después: ' + e.message + '. Puedes deshacerlos igualmente.', 'warn');
+    }
+    // done=true tras enseñar el resultado (o el motivo): al reabrir no se vuelve a medir en bucle.
+    try { await ocSave({ done: true }); } catch (e) { /* el resultado ya está en pantalla */ }
+  }
+
+  // Máximo: los Tier 2 se revisan antes. Devuelve los marcados, o null si se cancela.
+  function ocPickT2(items) {
+    const list = $('ocT2List'); list.textContent = '';
+    items.forEach((t) => {
+      const lab = elt('label', 'oc-t2-item');
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = true; cb.value = t.id;
+      lab.appendChild(cb);
+      const txt = elt('div', 'oc-t2-txt');
+      txt.appendChild(elt('b', null, t.name + (t.reboot ? ' · reinicio' : '')));
+      txt.appendChild(elt('span', null, t.desc || ''));
+      lab.appendChild(txt);
+      list.appendChild(lab);
+    });
+    const sh = $('ocSheet'); sh.classList.add('open'); $('ocT2Ok').focus();
+    return new Promise((res) => {
+      const done = (v) => { sh.classList.remove('open'); $('ocT2Ok').onclick = null; $('ocT2No').onclick = null; sh.onclick = null; document.removeEventListener('keydown', onKey); res(v); };
+      const onKey = (e) => { if (e.key === 'Escape') done(null); };
+      $('ocT2Ok').onclick = () => { const on = new Set([...list.querySelectorAll('input:checked')].map((c) => c.value)); done(items.filter((t) => on.has(t.id))); };
+      $('ocT2No').onclick = () => done(null);
+      sh.onclick = (e) => { if (e.target === sh) done(null); };
+      document.addEventListener('keydown', onKey);
+    });
+  }
+
+  async function ocRun() {
+    if (OC.busy || !OC.plan) return;
+    const profile = OC.profile, it = ocProfileItems(profile);
+    ocClearResult(); ocMsg('');
+    if (!it.base.length && !it.t2.length) { ocMsg('Ya optimizado con este perfil: no queda nada pendiente en este equipo.', 'ok'); return; }
+    ocLock(true);
+    try {
+      const labels = ['Midiendo tu PC'].concat(it.t2.length ? ['Revisar cambios extremos'] : []).concat(['Aplicando cambios', 'Midiendo de nuevo']);
+      let step = 0;
+      ocSteps(labels, step, 'Midiendo tu PC… (~10-30 s, no toques el equipo)');
+      let base;
+      try { base = await AXE.call('bench.baseline', {}, 180000); }
+      catch (e) { ocSteps(null); ocMsg('No pude medir tu PC, así que no he aplicado nada (sin un «antes» no hay prueba): ' + e.message, 'err'); return; }
+      step++;
+      let items = it.base;
+      if (it.t2.length) {
+        ocSteps(labels, step);
+        const pick = await ocPickT2(it.t2);
+        if (pick === null) { ocSteps(null); ocMsg('Cancelado, no se ha cambiado nada.', 'warn'); return; }
+        items = items.concat(pick); step++;
+      }
+      if (!items.length) { ocSteps(null); ocMsg('No has dejado ningún cambio marcado: no se ha cambiado nada.', 'warn'); return; }
+      ocSteps(labels, step, 'Aplicando ' + items.length + (items.length === 1 ? ' cambio' : ' cambios') + '… acepta el aviso de Windows');
+      let res;
+      try { res = await AXE.call('tweaks.applyBatch', { ids: items.map((t) => t.id) }, 600000); }
+      catch (e) {
+        ocSteps(null);
+        if (/cancelad/i.test(e.message)) ocMsg('Cancelado, no se ha cambiado nada.', 'warn');
+        else ocMsg('No se pudo aplicar: ' + e.message + '. No se ha guardado nada como aplicado.', 'err');
+        return;
+      }
+      const results = ocArr(res && res.results);
+      const okIds = results.filter((r) => r.ok).map((r) => r.id);
+      const reboot = results.filter((r) => r.ok && r.reboot).length;
+      OC.last = { ids: okIds, profile: profile, benchId: base.id };
+      try { await ocSave({ rebootNeeded: reboot > 0 }); }
+      catch (e) { ocMsg('Aplicado, pero no pude guardar el registro (' + e.message + '): «Deshacer» solo funcionará mientras no cierres AXE.', 'warn'); }
+      ocRenderApplied(results, res && res.restorePoint); ocRenderUndo();
+      ocRefreshCatalog();
+      if (!okIds.length) { ocSteps(null); ocMsg('No se pudo aplicar ningún cambio. Abajo, el motivo de cada uno.', 'err'); try { await ocSave({ done: true }); } catch (e) {} return; }
+      if (reboot) {
+        ocSteps(null);
+        ocMsg('Reinicia para completar: ' + reboot + (reboot === 1 ? ' cambio lo necesita' : ' cambios lo necesitan') + '. Al volver a abrir AXE mediré el después solo.', 'warn');
+        return;
+      }
+      step++;
+      ocSteps(labels, step, 'Midiendo de nuevo… (~10-30 s)');
+      await ocMeasureAfter(base.id);
+    } finally { ocLock(false); ocLoadPlan(); }
+  }
+
+  async function ocUndo() {
+    const ids = OC.last ? ocArr(OC.last.ids) : [];
+    if (OC.busy || !ids.length) return;
+    const ok = await confirmDialog('Deshacer esta optimización', 'Revierte los ' + ids.length + ' cambios que aplicó este clic a su valor anterior real (nada más). Pide un aviso de Windows.', true);
+    if (!ok) return;
+    ocLock(true); ocMsg('Deshaciendo… acepta el aviso de Windows', null);
+    try {
+      const r = await AXE.call('tweaks.revertBatch', { ids: ids }, 600000);
+      const res = ocArr(r && r.results), bad = res.filter((x) => !x.ok), reboot = res.some((x) => x.ok && x.reboot);
+      try { await ocSave({ applied: bad.map((x) => x.id), done: true }); } catch (e) {}
+      OC.last = bad.length ? Object.assign({}, OC.last, { ids: bad.map((x) => x.id) }) : null;
+      ocClearResult();
+      ocMsg((res.length - bad.length) + ' cambios deshechos' + (bad.length ? ' · ' + bad.length + ' fallaron: ' + bad.map((x) => x.id + ' (' + (x.err || 'error') + ')').join(', ') : '') + (reboot ? ' · reinicia para completar' : ''), bad.length ? 'err' : 'ok');
+      ocRefreshCatalog();
+    } catch (e) {
+      ocMsg(/cancelad/i.test(e.message) ? 'Cancelado, no se ha revertido nada.' : 'No se pudo deshacer: ' + e.message, /cancelad/i.test(e.message) ? 'warn' : 'err');
+    } finally { ocLock(false); ocRenderUndo(); ocLoadPlan(); }
+  }
+
+  function initOneClick() {
+    document.querySelectorAll('#ocProfiles .oc-p').forEach((b) => b.addEventListener('click', () => { if (OC.busy) return; OC.profile = b.dataset.p; ocRenderPlan(); }));
+    $('ocGo').addEventListener('click', ocRun);
+    $('ocUndo').addEventListener('click', ocUndo);
+    $('ocReport').addEventListener('click', () => $('ocReportSheet').classList.add('open'));
+    $('ocReportClose').addEventListener('click', () => $('ocReportSheet').classList.remove('open'));
+    $('ocReportSheet').addEventListener('click', (e) => { if (e.target === $('ocReportSheet')) $('ocReportSheet').classList.remove('open'); });
+    addEventListener('keydown', (e) => { if (e.key === 'Escape') $('ocReportSheet').classList.remove('open'); });
+    ocLoadPlan();
+    // Optimización pendiente de medir (tras reiniciar, o si se cerró la ventana a mitad): se mide sola.
+    AXE.call('optimize.pending', {}).then(async (p) => {
+      if (!p) return;
+      if (p.corrupt) { ocMsg('No pude leer el registro de la última optimización (fichero dañado). Tus ajustes siguen como estén: puedes revertirlos en Optimizar.', 'warn'); return; }
+      OC.last = { ids: ocArr(p.applied), profile: p.profile, benchId: p.benchId };
+      ocRenderUndo();
+      if (!p.benchId || OC.busy) return;
+      ocLock(true);
+      try { ocSteps(['Midiendo el después'], 0, 'Midiendo el después de tu última optimización… (~10-30 s)'); await ocMeasureAfter(p.benchId); }
+      finally { ocLock(false); ocRenderUndo(); }
+    }).catch(() => {});
+  }
+  initOneClick();
+
   // ================= Fase 7: vistas =================
   // Telemetría: barrido de timer bajo demanda (el jitter en vivo lo pinta el handler de telemetría
   // sobre #teleScope, reusando el mismo feed real; no se duplica el muestreo).

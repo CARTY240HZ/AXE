@@ -5,7 +5,7 @@ BeforeAll {
 }
 
 Describe 'Test-AXEBrokerCommand - whitelist cerrada del broker' -Tag 'unit' {
-    It '<_> esta permitido' -ForEach 'tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint','fps.capture' {
+    It '<_> esta permitido' -ForEach 'tweaks.apply','tweaks.revert','tweaks.masterRevert','safety.restorePoint','fps.capture','tweaks.applyBatch','tweaks.revertBatch' {
         Test-AXEBrokerCommand $_ | Should -BeTrue
     }
     It 'un comando desconocido se rechaza' {
@@ -224,6 +224,65 @@ Describe 'Invoke-AXEBrokerCommand - motor de decision (sin pipe, con tweak sinte
             $r.err | Should -Match 'hardware'
         } finally { $script:HW = $script:DesktopHW }
     }
+    # --- Lotes (Optimizar en un clic): un UAC para N tweaks ---
+    It 'applyBatch aplica en ORDEN DE CATALOGO, informa el punto de restauracion, y revertBatch deshace' {
+        $env:AXE_NOSR = '1'
+        $t2 = [pscustomobject]@{ Id='_test_batch_b'; Cat='TEST'; Tier=0; Reboot=$true; Name='b'; Desc='b'; Requires=@{}
+            Test={ (Get-RV $script:DummyKey 'W') -eq 1 }; Apply={ Set-RD $script:DummyKey 'W' 1 }; Revert={ Del-RV $script:DummyKey 'W' } }
+        [void]$script:CAT.Add($t2)
+        try {
+            $r = Invoke-AXEBrokerCommand 'tweaks.applyBatch' @{ ids = @('_test_batch_b', $script:DummyTweak.Id) }
+            $r.ok | Should -BeTrue
+            @($r.data.results | ForEach-Object { $_.id }) | Should -Be @($script:DummyTweak.Id, '_test_batch_b')
+            @($r.data.results | Where-Object { $_.ok -and $_.applied }).Count | Should -Be 2
+            ($r.data.results | Where-Object id -eq '_test_batch_b').reboot | Should -BeTrue
+            $r.data.restorePoint.status | Should -Not -BeNullOrEmpty
+            $v = Invoke-AXEBrokerCommand 'tweaks.revertBatch' @{ ids = @($script:DummyTweak.Id, '_test_batch_b') }
+            $v.ok | Should -BeTrue
+            @($v.data.results | Where-Object { $_.ok -and -not $_.applied }).Count | Should -Be 2
+            (Get-RV $script:DummyKey 'W') | Should -BeNullOrEmpty
+        } finally { $script:CAT.Remove($t2) }
+    }
+    It 'applyBatch con UN solo id (PS 5.1 lo entrega como string) funciona' {
+        $env:AXE_NOSR = '1'
+        $r = Invoke-AXEBrokerCommand 'tweaks.applyBatch' @{ ids = $script:DummyTweak.Id }
+        $r.ok | Should -BeTrue
+        @($r.data.results).Count | Should -Be 1
+        [void](Invoke-AXEBrokerCommand 'tweaks.revertBatch' @{ ids = $script:DummyTweak.Id })
+    }
+    It 'applyBatch rechaza el lote entero ANTES de tocar nada: <_.n>' -ForEach @(
+        @{ n='vacio'; ids=@() }, @{ n='duplicado'; ids=@('_test_broker_cmd_dummy','_test_broker_cmd_dummy') },
+        @{ n='desconocido'; ids=@('_no_existe_') }, @{ n='no string'; ids=@(7) }, @{ n='inyeccion'; ids=@('a;b') }
+    ) {
+        $env:AXE_NOSR = '1'
+        $before = Get-RV $script:DummyKey 'V'
+        $r = Invoke-AXEBrokerCommand 'tweaks.applyBatch' @{ ids = $_.ids }
+        $r.ok | Should -BeFalse
+        (Get-RV $script:DummyKey 'V') | Should -Be $before
+    }
+    It 'applyBatch: un tweak que lanza no para el resto del lote' {
+        $env:AXE_NOSR = '1'
+        $bad = [pscustomobject]@{ Id='_test_batch_bad'; Cat='TEST'; Tier=0; Reboot=$false; Name='x'; Desc='x'; Requires=@{}
+            Test={ $false }; Apply={ throw 'roto a proposito' }; Revert={} }
+        [void]$script:CAT.Insert(0, $bad)
+        try {
+            $r = Invoke-AXEBrokerCommand 'tweaks.applyBatch' @{ ids = @('_test_batch_bad', $script:DummyTweak.Id) }
+            $r.ok | Should -BeTrue
+            ($r.data.results | Where-Object id -eq '_test_batch_bad').err | Should -Match 'a proposito'
+            ($r.data.results | Where-Object id -eq $script:DummyTweak.Id).applied | Should -BeTrue
+        } finally { $script:CAT.Remove($bad); [void](Invoke-AXEBrokerCommand 'tweaks.revertBatch' @{ ids = $script:DummyTweak.Id }) }
+    }
+    It 'applyBatch sin hardware detectable no aplica nada' {
+        $env:AXE_NOSR = '1'
+        $script:HW = $null
+        function Get-AXEHardware { throw 'CIM caido' }
+        try {
+            $r = Invoke-AXEBrokerCommand 'tweaks.applyBatch' @{ ids = @($script:DummyTweak.Id) }
+            $r.ok  | Should -BeFalse
+            $r.err | Should -Match 'hardware'
+        } finally { $script:HW = $script:DesktopHW }
+    }
+
     # REGRESION: al portar masterRevert al broker se perdio la cola (autoruns + residuos v1) y el
     # campo cambio de 'reverted' a 'done': la UI decia "Master revert: undefined revertidos".
     It 'masterRevert devuelve reverted y ejecuta la cola Invoke-AXEMasterRevertTail' {

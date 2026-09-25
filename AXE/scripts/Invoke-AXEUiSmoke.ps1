@@ -80,7 +80,7 @@ try {
     }
 
     # 3. Cada comando de SOLO LECTURA por el puente real (UI -> PS -> worker -> PS -> UI).
-    $cmds = 'app.info','hw.get','catalog.tiers','measure.score','tweaks.list','diag.get','net.probe','advisor.get','session.detect','session.status','session.preview'
+    $cmds = 'app.info','hw.get','catalog.tiers','measure.score','tweaks.list','diag.get','net.probe','advisor.get','session.detect','session.status','session.preview','optimize.plan','optimize.pending'
     $js = "(async()=>{const o=[];for(const c of $(ConvertTo-Json @($cmds) -Compress)){const t=performance.now();try{await AXE.call(c,{});o.push({c,ok:true,ms:Math.round(performance.now()-t)})}catch(e){o.push({c,ok:false,ms:Math.round(performance.now()-t),err:e.message})}}return JSON.stringify(o)})()"
     foreach($r in (Invoke-Js $js 600 | ConvertFrom-Json)){
         '{0,-18} {1,6} ms  {2}' -f $r.c, $r.ms, $(if($r.ok){'ok'}else{"ERROR: $($r.err)"})
@@ -112,7 +112,30 @@ try {
             "escritura: apply ok=$($a.ok) applied=$($a.d.applied) reg=$mid | revert ok=$($r.ok) applied=$($r.d.applied) reg=$end (original=$orig)"
             if(-not $a.ok -or -not $a.d.applied -or $mid -ne 0){ [void]$fails.Add("tweaks.apply por el broker: $($a.err) applied=$($a.d.applied) reg=$mid") }
             if(-not $r.ok -or $r.d.applied -or "$end" -ne "$orig"){ [void]$fails.Add("tweaks.revert no dejo el registro como estaba: $($r.err) reg=$end original=$orig") }
+
+            # Lote (Optimizar en un clic): mismo tweak por applyBatch/revertBatch. UN id: es justo el
+            # caso en que PS 5.1 deserializa el array como string suelto (Test-AXEBrokerIds).
+            $orig = & $read
+            $a = Invoke-Js "AXE.call('tweaks.applyBatch',{ids:['sys_bing']},600000).then(d=>JSON.stringify({ok:true,d}),e=>JSON.stringify({ok:false,err:e.message}))" 660 | ConvertFrom-Json
+            $mid = & $read
+            $r = Invoke-Js "AXE.call('tweaks.revertBatch',{ids:['sys_bing']},600000).then(d=>JSON.stringify({ok:true,d}),e=>JSON.stringify({ok:false,err:e.message}))" 660 | ConvertFrom-Json
+            $end = & $read
+            $ar = @($a.d.results) | Select-Object -First 1; $rr = @($r.d.results) | Select-Object -First 1
+            "lote: applyBatch ok=$($a.ok) item=$($ar.ok)/$($ar.applied) rp=$($a.d.restorePoint.status) reg=$mid | revertBatch ok=$($r.ok) item=$($rr.ok)/$($rr.applied) reg=$end (original=$orig)"
+            if(-not $a.ok -or -not $ar.ok -or -not $ar.applied -or $mid -ne 0){ [void]$fails.Add("tweaks.applyBatch por el broker: $($a.err) $($ar.err) reg=$mid") }
+            if(-not $a.d.restorePoint -or -not $a.d.restorePoint.status){ [void]$fails.Add('tweaks.applyBatch no informo del punto de restauracion') }
+            if(-not $r.ok -or -not $rr.ok -or $rr.applied -or "$end" -ne "$orig"){ [void]$fails.Add("tweaks.revertBatch no dejo el registro como estaba: $($r.err) $($rr.err) reg=$end original=$orig") }
         }
+    }
+
+    # 4a. La tarjeta «Optimiza tu PC» pinta los tres recuentos REALES (numeros, no '—').
+    $js = "(async()=>{for(let i=0;i<120;i++){const n=[...document.querySelectorAll('#ocProfiles .oc-n')].map(e=>e.textContent);if(n.length===3&&n.every(x=>/^\d+$/.test(x)))return JSON.stringify({ok:true,n,go:document.getElementById('ocGoSub').textContent});await new Promise(r=>setTimeout(r,500))}return JSON.stringify({ok:false,n:[...document.querySelectorAll('#ocProfiles .oc-n')].map(e=>e.textContent)})})()"
+    $r = Invoke-Js $js 90 | ConvertFrom-Json
+    "un clic: recuentos seguro/equilibrado/maximo = $(@($r.n) -join '/')  ($($r.go))"
+    if(-not $r.ok){ [void]$fails.Add("la tarjeta Optimiza tu PC no pinto los tres recuentos: $(@($r.n) -join '/')") }
+    else {
+        $n = @($r.n | ForEach-Object { [int]$_ })
+        if(-not ($n[0] -le $n[1] -and $n[1] -le $n[2])){ [void]$fails.Add("recuentos incoherentes (cada perfil incluye al anterior): $($n -join '/')") }
     }
 
     # 4c. CLIC en cada boton de solo medida, como un usuario: navega a la vista, pulsa, espera a
@@ -140,7 +163,7 @@ try {
     # 5. Captura de cada vista del router.
     $views = Invoke-Js "JSON.stringify([...document.querySelectorAll('.nav-item[data-view]')].map(n=>n.dataset.view))" | ConvertFrom-Json
     foreach($v in $views){
-        [void](Invoke-Js "document.querySelector('.nav-item[data-view=`"$v`"]').click()")
+        [void](Invoke-Js "document.querySelector('.nav-item[data-view=`"$v`"]').click();document.querySelectorAll('.view').forEach(e=>{e.scrollTop=0})")
         Start-Sleep -Milliseconds 800
         Save-Shot $v
     }
@@ -150,7 +173,7 @@ try {
     foreach($z in $sizes){
         [void](Send-Cdp 'Emulation.setDeviceMetricsOverride' @{ width=$z.w; height=$z.h; deviceScaleFactor=$z.s; mobile=$false })
         foreach($v in $views){
-            [void](Invoke-Js "document.querySelector('.nav-item[data-view=`"$v`"]').click()")
+            [void](Invoke-Js "document.querySelector('.nav-item[data-view=`"$v`"]').click();document.querySelectorAll('.view').forEach(e=>{e.scrollTop=0})")
             Start-Sleep -Milliseconds 500
             $ov = Invoke-Js "JSON.stringify([...document.querySelectorAll('body *')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.right>innerWidth+1&&getComputedStyle(e).position!=='fixed'}).slice(0,3).map(e=>(e.id||e.className||e.tagName)+'@'+Math.round(e.getBoundingClientRect().right)))"
             if($ov -ne '[]'){ [void]$fails.Add("desborda en horizontal a $($z.w)x$($z.h)@$($z.s) en '$v': $ov") }

@@ -340,6 +340,20 @@ Describe 'Get-AXEWebUIManifest / Test-AXEWebUIIntegrity - integridad de webui/' 
         $m.Keys | Should -Contain 'sub/app.js'
         $m['index.html'] | Should -Match '^[0-9A-F]{64}$'
     }
+    It 'REGRESION: el mismo texto con CRLF o con LF da el mismo hash (git lo entrega distinto segun la maquina)' {
+        $d1 = Join-Path ([IO.Path]::GetTempPath()) ('axe-eol-a-' + [guid]::NewGuid().ToString('N'))
+        $d2 = Join-Path ([IO.Path]::GetTempPath()) ('axe-eol-b-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $d1,$d2 -Force | Out-Null
+            $bom = New-Object Text.UTF8Encoding $true
+            [IO.File]::WriteAllText((Join-Path $d1 'app.js'), "const a = 'ñ';`r`nlet b = 2;`r`n", $bom)
+            [IO.File]::WriteAllText((Join-Path $d2 'app.js'), "const a = 'ñ';`nlet b = 2;`n", $bom)
+            (Get-AXEWebUIManifest $d1)['app.js'] | Should -Be (Get-AXEWebUIManifest $d2)['app.js']
+            # Y un cambio de CONTENIDO sigue detectandose aunque los finales de linea coincidan.
+            [IO.File]::WriteAllText((Join-Path $d2 'app.js'), "const a = 'n';`nlet b = 2;`n", $bom)
+            (Get-AXEWebUIManifest $d1)['app.js'] | Should -Not -Be (Get-AXEWebUIManifest $d2)['app.js']
+        } finally { Remove-Item $d1,$d2 -Recurse -Force -EA SilentlyContinue }
+    }
     It 'dos manifiestos identicos coinciden' {
         $a = Get-AXEWebUIManifest $script:TmpWebUI
         $b = Get-AXEWebUIManifest $script:TmpWebUI
