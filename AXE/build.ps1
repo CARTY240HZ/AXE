@@ -7,7 +7,10 @@ $src  = Join-Path $root 'src'
 $dist = Join-Path $root 'dist'
 if(-not(Test-Path $dist)){ New-Item -ItemType Directory -Path $dist | Out-Null }
 $out  = Join-Path $dist 'AXE.ps1'
-$modules = Get-ChildItem -Path $src -Filter '*.ps1' | Sort-Object Name
+# Orden ORDINAL: Sort-Object Name es linguistico y 5.1 ignora el guion ('48a-' antes que '48-') mientras
+# pwsh no, asi que el mismo src daba dos dist distintos y el anti-deriva de la CI los rechazaba.
+$modules = @(Get-ChildItem -Path $src -Filter '*.ps1')
+[Array]::Sort($modules, [Comparison[IO.FileInfo]]{ param($a,$b) [string]::CompareOrdinal($a.Name, $b.Name) })
 if($modules.Count -eq 0){ throw 'No hay modulos en /src' }
 $ver = (Get-Content (Join-Path $root 'VERSION') -Raw -EA SilentlyContinue); if($ver){ $ver=$ver.Trim() } else { $ver='1.0.0-dev' }
 $sb = New-Object System.Text.StringBuilder

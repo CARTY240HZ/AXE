@@ -1,7 +1,7 @@
 ﻿# ================================================================
 # AXE 1.0.0 - BUILT from /src by build.ps1 - DO NOT EDIT DIRECTLY
-# Build UTC: 2026-09-25 07:13:19Z
-# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48a-websecurity.ps1, 48-webbridge.ps1, 49-webmain.ps1
+# Build UTC: 2026-09-25 07:23:47Z
+# Modules: 00-header.ps1, 05-core.ps1, 10-reg-helpers.ps1, 15-startup.ps1, 20-tweaks.ps1, 22-catalogs.ps1, 23-defender.ps1, 25-assistant.ps1, 28-revert-export.ps1, 30-profiles.ps1, 31-gamegpu.ps1, 32-measure.ps1, 33-fps.ps1, 34-safety.ps1, 35-diag.ps1, 36-report.ps1, 37-netmon.ps1, 38-regedit.ps1, 39-webdetect.ps1, 40-session.ps1, 41-bench.ps1, 42-advisor.ps1, 43-update.ps1, 44-latency.ps1, 45-cli.ps1, 46-broker.ps1, 47-webhost.ps1, 48-webbridge.ps1, 48a-websecurity.ps1, 49-webmain.ps1
 # ================================================================
 
 # >>>>> MODULE: 00-header.ps1 >>>>>
@@ -8071,71 +8071,6 @@ function Show-AXEWebHost {
 # aqui, su 'exit 0' cortaria la carga antes de 48 y el puente quedaria sin enganchar (JS->PS muerto).
 
 
-# >>>>> MODULE: 48a-websecurity.ps1 >>>>>
-# =====================================================
-# REGION 14a - POLITICA DE ORIGEN DE LA WEBVIEW2
-# =====================================================
-# La interfaz es contenido local: https://axe.local/*. Nada mas navega dentro de la ventana ni
-# habla con el puente. Portado de la rama ai/least-privilege-broker (47b-websecurity), que nunca
-# llego a axe, con dos cambios: se aplica en el init del control (47-webhost) en vez de con un
-# temporizador que sondeaba, y los enlaces "fuente" de cada tweak se abren en el navegador del
-# sistema en vez de bloquearse (son parte del producto: cada tweak cita de donde sale).
-# Cargar este modulo solo DEFINE funciones; no toca WPF, asi que _load-engine lo carga en tests.
-
-function Test-AXETrustedWebUri([string]$Uri){
-    # PURA. Solo https://axe.local (puerto por defecto). Cualquier otra cosa -otro host, http,
-    # file:, data:, un puerto distinto- no es la interfaz de AXE.
-    $u = $null
-    if(-not [Uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$u)){ return $false }
-    $u.Scheme -eq 'https' -and $u.Host -eq 'axe.local' -and $u.IsDefaultPort
-}
-
-function Test-AXEExternalLinkUri([string]$Uri){
-    # PURA. Que se puede mandar al navegador del sistema: solo https y nunca la propia interfaz.
-    # Nada de file:, ms-settings:, javascript: ni esquemas que Windows resolveria a un programa.
-    $u = $null
-    if(-not [Uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$u)){ return $false }
-    $u.Scheme -eq 'https' -and -not (Test-AXETrustedWebUri $Uri)
-}
-
-function Protect-AXEWebView2($Core){
-    # Endurece un CoreWebView2 ya inicializado. Devuelve $true si la politica quedo aplicada.
-    try {
-        $Core.Settings.AreHostObjectsAllowed = $false
-        $Core.Settings.AreDefaultScriptDialogsEnabled = $false
-        $Core.Add_NavigationStarting({
-            param($s,$e)
-            if(-not (Test-AXETrustedWebUri $e.Uri)){
-                $e.Cancel = $true
-                try { Write-AXELog "WebView2: navegacion bloqueada a '$($e.Uri)'" 'WARN' } catch {}
-            }
-        })
-        $Core.Add_FrameNavigationStarting({
-            param($s,$e)
-            if(-not (Test-AXETrustedWebUri $e.Uri)){
-                $e.Cancel = $true
-                try { Write-AXELog "WebView2: frame bloqueado a '$($e.Uri)'" 'WARN' } catch {}
-            }
-        })
-        # target=_blank: nunca una ventana WebView2 nueva (seria un navegador sin barra de direcciones
-        # pegado a la app). Un https externo va al navegador del sistema; el resto se descarta.
-        $Core.Add_NewWindowRequested({
-            param($s,$e)
-            $e.Handled = $true
-            if(Test-AXEExternalLinkUri $e.Uri){
-                try { Start-Process ([string]([Uri]$e.Uri).AbsoluteUri) } catch { try { Write-AXELog "WebView2: no pude abrir '$($e.Uri)': $($_.Exception.Message)" 'WARN' } catch {} }
-            } else {
-                try { Write-AXELog "WebView2: ventana nueva bloqueada a '$($e.Uri)'" 'WARN' } catch {}
-            }
-        })
-        $true
-    } catch {
-        try { Write-AXELog "WebView2: la politica de seguridad no pudo aplicarse: $($_.Exception.Message)" 'ERR' } catch {}
-        $false
-    }
-}
-
-
 # >>>>> MODULE: 48-webbridge.ps1 >>>>>
 # =====================================================
 # REGION 14 - PUENTE RPC (JS <-> PS). SUPERFICIE DE ATAQUE.
@@ -8689,6 +8624,71 @@ function Register-AXEBridge($core){
         } catch { if($env:AXE_WEBUI_DEBUG -eq '1'){ Write-AXELog "Telemetria TX fallo: $($_.Exception.Message)" 'ERR' } }
     })
     $script:TelemetryTimer.Start()
+}
+
+
+# >>>>> MODULE: 48a-websecurity.ps1 >>>>>
+# =====================================================
+# REGION 14a - POLITICA DE ORIGEN DE LA WEBVIEW2
+# =====================================================
+# La interfaz es contenido local: https://axe.local/*. Nada mas navega dentro de la ventana ni
+# habla con el puente. Portado de la rama ai/least-privilege-broker (47b-websecurity), que nunca
+# llego a axe, con dos cambios: se aplica en el init del control (47-webhost) en vez de con un
+# temporizador que sondeaba, y los enlaces "fuente" de cada tweak se abren en el navegador del
+# sistema en vez de bloquearse (son parte del producto: cada tweak cita de donde sale).
+# Cargar este modulo solo DEFINE funciones; no toca WPF, asi que _load-engine lo carga en tests.
+
+function Test-AXETrustedWebUri([string]$Uri){
+    # PURA. Solo https://axe.local (puerto por defecto). Cualquier otra cosa -otro host, http,
+    # file:, data:, un puerto distinto- no es la interfaz de AXE.
+    $u = $null
+    if(-not [Uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$u)){ return $false }
+    $u.Scheme -eq 'https' -and $u.Host -eq 'axe.local' -and $u.IsDefaultPort
+}
+
+function Test-AXEExternalLinkUri([string]$Uri){
+    # PURA. Que se puede mandar al navegador del sistema: solo https y nunca la propia interfaz.
+    # Nada de file:, ms-settings:, javascript: ni esquemas que Windows resolveria a un programa.
+    $u = $null
+    if(-not [Uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$u)){ return $false }
+    $u.Scheme -eq 'https' -and -not (Test-AXETrustedWebUri $Uri)
+}
+
+function Protect-AXEWebView2($Core){
+    # Endurece un CoreWebView2 ya inicializado. Devuelve $true si la politica quedo aplicada.
+    try {
+        $Core.Settings.AreHostObjectsAllowed = $false
+        $Core.Settings.AreDefaultScriptDialogsEnabled = $false
+        $Core.Add_NavigationStarting({
+            param($s,$e)
+            if(-not (Test-AXETrustedWebUri $e.Uri)){
+                $e.Cancel = $true
+                try { Write-AXELog "WebView2: navegacion bloqueada a '$($e.Uri)'" 'WARN' } catch {}
+            }
+        })
+        $Core.Add_FrameNavigationStarting({
+            param($s,$e)
+            if(-not (Test-AXETrustedWebUri $e.Uri)){
+                $e.Cancel = $true
+                try { Write-AXELog "WebView2: frame bloqueado a '$($e.Uri)'" 'WARN' } catch {}
+            }
+        })
+        # target=_blank: nunca una ventana WebView2 nueva (seria un navegador sin barra de direcciones
+        # pegado a la app). Un https externo va al navegador del sistema; el resto se descarta.
+        $Core.Add_NewWindowRequested({
+            param($s,$e)
+            $e.Handled = $true
+            if(Test-AXEExternalLinkUri $e.Uri){
+                try { Start-Process ([string]([Uri]$e.Uri).AbsoluteUri) } catch { try { Write-AXELog "WebView2: no pude abrir '$($e.Uri)': $($_.Exception.Message)" 'WARN' } catch {} }
+            } else {
+                try { Write-AXELog "WebView2: ventana nueva bloqueada a '$($e.Uri)'" 'WARN' } catch {}
+            }
+        })
+        $true
+    } catch {
+        try { Write-AXELog "WebView2: la politica de seguridad no pudo aplicarse: $($_.Exception.Message)" 'ERR' } catch {}
+        $false
+    }
 }
 
 
