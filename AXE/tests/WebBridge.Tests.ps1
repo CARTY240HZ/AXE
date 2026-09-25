@@ -2,7 +2,7 @@
 BeforeAll {
     . "$PSScriptRoot/_load-engine.ps1"
     # _load-engine salta 00-header (bloque param/#Requires); en dist ese modulo fija la version.
-    # Aqui la suplimos para probar app.info como en produccion (donde nunca es nula: fallback 6.1.0-dev).
+    # Aqui la suplimos para probar app.info como en produccion (donde nunca es nula: fallback 1.0.0-dev).
     if(-not $script:AXEVersion){ $script:AXEVersion = '0.0.0-test' }
 }
 
