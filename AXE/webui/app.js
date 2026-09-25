@@ -404,11 +404,13 @@
       foot.appendChild(elt('span', 'tw-blocked-why', t.blocked));
     } else {
       const act = elt('button', 'tw-act' + (t.applied ? ' revert' : ''), t.applied ? 'Revertir' : 'Aplicar');
-      act.addEventListener('click', () => toggleTweak(t, card, act));
-      // Estado desconocido: se ofrecen las DOS acciones; forzar una sería adivinar el estado.
+      act.addEventListener('click', () => toggleTweak(t, card, act, unknown ? true : !t.applied));
+      // Estado desconocido: se ofrecen las DOS acciones; forzar una sería adivinar el estado. Cada
+      // botón dice qué hace y lo hace: antes Revertir marcaba t.applied=true ANTES de llamar, y si el
+      // UAC se cancelaba el botón Aplicar quedaba mandando un revertir.
       if (unknown) {
         const rev = elt('button', 'tw-act revert', 'Revertir');
-        rev.addEventListener('click', () => { t.applied = true; toggleTweak(t, card, rev); });
+        rev.addEventListener('click', () => toggleTweak(t, card, rev, false));
         foot.appendChild(rev);
       }
       foot.appendChild(act);
@@ -417,8 +419,7 @@
     return card;
   }
 
-  async function toggleTweak(t, card, act) {
-    const wantApply = !t.applied;
+  async function toggleTweak(t, card, act, wantApply) {
     if (wantApply && t.tier === 2) {
       const ok = await confirmDialog('Tweak EXTREMO (Tier 2)', t.name + '\n\n' + (t.desc || '') + '\n\nOpt-in, de mayor riesgo. Es reversible, pero puede requerir reinicio. ¿Aplicar?', true);
       if (!ok) return;
