@@ -129,6 +129,8 @@ param(
     # $Games/S24) antes de anadirlos.
     [string]$Broker,
     [string]$Token,
+    # PID del proceso UI que lanzo el broker: el broker solo acepta ese cliente en el pipe.
+    [int]$ClientPid,
     # Solo definir el motor, sin CLI ni ventana: lo usa el worker de fondo del puente
     # (Start-AXEBridgeWorker, 48-webbridge) al hacer dot-source de este mismo script. grep
     # '$LibOnly' sobre src/ = 0 hits fuera de 00/49 (leccion $Games/S24).
