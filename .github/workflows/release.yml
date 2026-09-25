@@ -27,7 +27,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Pester + PSScriptAnalyzer
         shell: pwsh
@@ -117,7 +117,7 @@ jobs:
         run: ./AXE/scripts/New-AXEWingetManifest.ps1 -Tag '${{ github.ref_name }}'
 
       - name: Artifact (siempre, tambien en el dry-run de PR)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: AXE-release
           path: AXE/dist/release/**
@@ -133,7 +133,7 @@ jobs:
       #   Solo en tag: en el dry-run de PR no hay artefacto publicado al que atar procedencia.
       - name: Attestation de procedencia
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
             AXE/dist/release/AXE.ps1
@@ -141,7 +141,7 @@ jobs:
 
       - name: Publicar release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             AXE/dist/release/AXE.ps1
